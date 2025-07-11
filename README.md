@@ -1,4 +1,4 @@
-# :lemon::dizzy: **LEMONsc: Learning the Evolution of Massive objects in Nuclear star clusters**
+# :lemon::dizzy: **LEMONsc: Learning the Evolution of Massive Objects in Nuclear star clusters**
 
 ---
 ## :computer: **Project Structure**

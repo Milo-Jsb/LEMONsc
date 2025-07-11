@@ -1,0 +1,42 @@
+boosting_type:
+  value: gbdt
+
+n_estimators:
+  suggest_int:
+    low: 100
+    high: 500
+
+learning_rate:
+  suggest_float:
+    low: 0.01
+    high: 0.3
+
+max_depth:
+  suggest_int:
+    low: 4
+    high: 20
+
+num_leaves:
+  suggest_int:
+    low: 20
+    high: 100
+
+subsample:
+  suggest_float:
+    low: 0.5
+    high: 1.0
+
+colsample_bytree:
+  suggest_float:
+    low: 0.5
+    high: 1.0
+
+reg_alpha:
+  suggest_float:
+    low: 0.0
+    high: 1.0
+
+reg_lambda:
+  suggest_float:
+    low: 0.0
+    high: 1.0

@@ -1,0 +1,110 @@
+{
+  "1": {
+    "column": "lineType",
+    "description": "Type of event (e.g., INITMODEL, COLLISION, BIN_EVOL, etc.)"
+  },
+  "2": {
+    "column": "encId",
+    "description": "Unique encounter ID of each event"
+  },
+  "3": {
+    "column": "encCase",
+    "description": "Case/type of the encounter (if applicable)"
+  },
+  "4": {
+    "column": "time",
+    "description": "Time of the event in Myr"
+  },
+  "5": {
+    "column": "id",
+    "description": "ID of the primary star involved in the interaction"
+  },
+  "6": {
+    "column": "idComp",
+    "description": "ID of the companion star (if star was in a binary)"
+  },
+  "7": {
+    "column": "idCompNew",
+    "description": "Updated ID of the companion star post-interaction"
+  },
+  "8": {
+    "column": "im",
+    "description": "object id (can change)"
+  },
+  "9": {
+    "column": "massOld",
+    "description": "Mass of the primary before the event [Msun]"
+  },
+  "10": {
+    "column": "massNew",
+    "description": "Mass of the primary after the event [Msun]"
+  },
+  "11": {
+    "column": "massCompNew",
+    "description": "Mass of the companion after the event [Msun]"
+  },
+  "12": {
+    "column": "r",
+    "description": "Radial distance from cluster center [pc]"
+  },
+  "13": {
+    "column": "aOld",
+    "description": "Semi-major axis before the interaction [Rsun]: value is O if star was single"
+  },
+  "14": {
+    "column": "aNew",
+    "description": "Semi-major axis after the interaction [Rsun]: value is O if star was single"
+  },
+  "15": {
+    "column": "eOld",
+    "description": "Eccentricity before the interaction : value is O if star was single"
+  },
+  "16": {
+    "column": "eNew",
+    "description": "Eccentricity after the interaction"
+  },
+  "17": {
+    "column": "binType",
+    "description": "Binary type (0: single, 1: binary, 2+: higher-order)"
+  },
+  "18": {
+    "column": "starType",
+    "description": "Stellar type of the primary"
+  },
+  "19": {
+    "column": "compType",
+    "description": "Stellar type of the companion"
+  },
+  "20": {
+    "column": "interM1Old",
+    "description": "Mass of the first interacting object before the event [Msun]"
+  },
+  "21": {
+    "column": "interM2Old",
+    "description": "Mass of the second interacting object before the event [Msun]"
+  },
+  "22": {
+    "column": "interAOld",
+    "description": "Semi-major axis of binary before the event [Rsun]"
+  },
+  "23": {
+    "column": "interStar1",
+    "description": "Stellar type of the first interacting object"
+  },
+  "24": {
+    "column": "interStar2",
+    "description": "Stellar type of the second interacting object"
+  },
+  "25": {
+    "column": "mergMass1",
+    "description": "Mass of merged object (if applicable) [Msun] (mass of colliding object)"
+  },
+  "26": {
+    "column": "mergStarType1",
+    "description": "Stellar type of the merged object (stellar type of colliding object)"
+  },
+  "27": {
+    "column": "massCompOld",
+    "description": "Mass of the companion before the interaction [Msun]"
+  }
+}

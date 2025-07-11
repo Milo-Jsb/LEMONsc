@@ -1,0 +1,17 @@
+{
+  "0": "Fully convective low-mass MS star (M < 0.7 Msun)",
+  "1": "Main Sequence star (M > 0.7 Msun)",
+  "2": "Hertzsprung Gap (subgiant star)",
+  "3": "First Giant Branch",
+  "4": "Core Helium Burning",
+  "5": "First Asymptotic Giant Branch",
+  "6": "Second Asymptotic Giant Branch",
+  "7": "Main Sequence Naked Helium star",
+  "8": "Hertzsprung Gap Naked Helium star",
+  "9": "Giant Branch Naked Helium star",
+  "10": "Helium White Dwarf",
+  "11": "Carbon/Oxygen White Dwarf",
+  "12": "Oxygen/Neon White Dwarf",
+  "13": "Neutron Star",
+  "14": "Black Hole"
+}

@@ -13,6 +13,7 @@ aiohttp>=3.9.0
 loguru
 optuna
 xgboost
+lightgbm
 python-dotenv>=1.0.0
 python-magic>=0.4.27
 python-docx>=1.0.0

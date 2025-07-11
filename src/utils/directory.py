@@ -1,5 +1,6 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
 import os
+import yaml
 import json
 
 import numpy  as np
@@ -168,4 +169,96 @@ def load_mocca_survey_imbh_history(file_path: str, init_conds_sim: bool= False, 
         raise
 
     return [sim_df, init_conds, col_dict, stellar_dict], [system_df, system_dict]
+
+#--------------------------------------------------------------------------------------------------------------------------#
+def load_search_space(path: str, verbose: bool = False):
+    """
+    ________________________________________________________________________________________________________________________
+    Load search space configuration from a YAML file.
+    ________________________________________________________________________________________________________________________
+    Parameters:
+    -> path    (str)  : Mandatory. Path to the YAML configuration file containing search space parameters.
+    -> verbose (bool) : Optional. Enable verbose logging for debugging purposes.
+    ________________________________________________________________________________________________________________________
+    Returns:
+    -> dict : Dictionary containing the search space configuration loaded from the YAML file.
+    ________________________________________________________________________________________________________________________
+    Raises:
+    -> FileNotFoundError, yaml.YAMLError, TypeError
+    ________________________________________________________________________________________________________________________
+    """
+    # Input validation ----------------------------------------------------------------------------------------------------#
+    if not isinstance(path, str):
+        raise TypeError("path must be a string")
+    
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Search space configuration file not found: {path}")
+    
+    if verbose: print(f"Loading search space configuration from: {path}")
+    
+    try:
+        with open(path, 'r') as f:
+            search_space = yaml.safe_load(f)
+        
+        if verbose: print(f"Successfully loaded search space configuration with {len(search_space)} parameters")
+        return search_space
+        
+    except yaml.YAMLError as e:
+        print(f"Error parsing YAML file: {e}")
+        raise
+    except Exception as e:
+        print(f"Error loading search space configuration: {e}")
+        raise
+
+#--------------------------------------------------------------------------------------------------------------------------#
+def parse_trial_params(trial, search_space: dict, verbose: bool = False):
+    """
+    ________________________________________________________________________________________________________________________
+    Parse trial parameters from a search space configuration dictionary using Optuna trial suggestions.
+    ________________________________________________________________________________________________________________________
+    Parameters:
+    -> trial        (optuna.Trial) : Mandatory. Optuna trial object for parameter suggestions.
+    -> search_space (dict)         : Mandatory. Dictionary containing search space configuration.
+    -> verbose      (bool)         : Optional. Enable verbose logging for debugging purposes.
+    ________________________________________________________________________________________________________________________
+    Returns:
+    -> dict : Dictionary containing parsed parameters with their suggested values from the trial.
+    ________________________________________________________________________________________________________________________
+    Raises:
+    -> TypeError, ValueError
+    ________________________________________________________________________________________________________________________
+    """
+    # Input validation ----------------------------------------------------------------------------------------------------#
+    if not isinstance(search_space, dict):
+        raise TypeError("search_space must be a dictionary")
+    
+    if search_space is None or len(search_space) == 0:
+        raise ValueError("search_space cannot be None or empty")
+    
+    if verbose: print(f"Parsing trial parameters from search space with {len(search_space)} configurations")
+    
+    try:
+        params = {}
+        for key, value in search_space.items():
+            if isinstance(value, dict):
+                if 'suggest_int' in value:
+                    params[key] = trial.suggest_int(**value['suggest_int'], name=key)
+                elif 'suggest_float' in value:
+                    params[key] = trial.suggest_float(**value['suggest_float'], name=key)
+                elif 'suggest_categorical' in value:
+                    params[key] = trial.suggest_categorical(**value['suggest_categorical'], name=key)
+                elif 'value' in value:
+                    params[key] = value['value']
+                else:
+                    if verbose: print(f"Warning: Unknown parameter configuration for key '{key}'")
+                    params[key] = value
+            else:
+                params[key] = value
+        
+        if verbose: print(f"Successfully parsed {len(params)} trial parameters")
+        return params
+        
+    except Exception as e:
+        print(f"Error parsing trial parameters: {e}")
+        raise
 #--------------------------------------------------------------------------------------------------------------------------#
