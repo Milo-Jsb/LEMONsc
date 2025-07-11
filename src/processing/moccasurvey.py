@@ -6,7 +6,7 @@ import numpy as np
 from typing import Tuple, Optional
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
-from src.utils.directory       import load_mocca_imbh_history
+from src.utils.directory       import load_mocca_survey_imbh_history
 from src.utils.phyfactors      import critical_mass, relaxation_time, core_collapse_time,  collision_time
 from src.processing.format     import time_preparation, target_preparation
 
@@ -40,12 +40,12 @@ def mocca_survey_dataset(simulations_path: list, experiment_type: str, augmentat
     for path in simulations_path:
 
         # Retrieve imbh simulation and the system initial conditions ------------------------------------------------------#
-        imbh_history, system = load_mocca_imbh_history( file_path   = f"{path}/",
-                                                        init_conds_sim  = False,
-                                                        col_description = False,
-                                                        stellar_map     = False,
-                                                        init_conds_evo  = True,
-                                                        verbose         = False)
+        imbh_history, system = load_mocca_survey_imbh_history(file_path   = f"{path}/",
+                                                            init_conds_sim  = False,
+                                                            col_description = False,
+                                                            stellar_map     = False,
+                                                            init_conds_evo  = True,
+                                                            verbose         = False)
             
         # Drop duplicate times in the imbh_dataframe
         imbh_df = imbh_history[0].drop_duplicates(subset="time[Myr]")
