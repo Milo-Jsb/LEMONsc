@@ -6,18 +6,22 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1
 
 # Set the working directory
 WORKDIR /workspace
 
-# Install system dependencies and cleanup in a single layer. Group all apt-get commands to reduce layers
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Fix time synchronization issue and install system dependencies
+RUN echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid && \
+    apt-get update --allow-releaseinfo-change && apt-get install -y --no-install-recommends \
     git \
     curl \
     libgl1-mesa-glx \
     python3-pip \
     nvidia-cuda-toolkit \
+    texlive \
+    ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir --upgrade pip setuptools wheel
@@ -29,4 +33,4 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Make port 8883 available to the world outside this container
-EXPOSE 8883
+EXPOSE 8885

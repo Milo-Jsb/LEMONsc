@@ -76,6 +76,51 @@ def crossing_time(hm_radius: float, v_disp: Optional[float] = None, mtot: Option
     # Return as Quantity
     return t_cross
 
+# Computation of number density within half-mass radius ------------------------------------------------------------------#
+def rho_at_rh(n_stars: int, hm_radius: float) -> u.Quantity:
+    """
+    ________________________________________________________________________________________________________________________
+    Calculate the number density within the half-mass radius of a star cluster. (Unit conversion is handled by Astropy)
+    ________________________________________________________________________________________________________________________
+    Parameters:
+        n_stars   (int)             [#]    : Number of stars in the cluster. Mandatory.
+        hm_radius (float)           [pc]   : Half-mass radius of the star cluster. Mandatory.
+    ________________________________________________________________________________________________________________________
+    Returns:
+        n_density (unit.Quantity)   [pc^-3]: Number density within the half-mass radius of the star cluster, assuming a 
+                                             uniform distribution of stars across the cluster volume.
+    ________________________________________________________________________________________________________________________
+    Notes:
+        Formula assumes a uniform distribution of stars across the cluster volume. The number density is approximated as:
+        
+                n_density = (3 * n_stars) / (8 * pi * hm_radius^3)
+        
+        This approximation is valid for a homogeneous sphere and provides a reasonable estimate of the stellar number 
+        density within the half-mass radius of the cluster.
+    ________________________________________________________________________________________________________________________
+    """
+    # Input validation
+    if n_stars <= 0:
+        raise ValueError("Number of stars in the cluster must be greater than zero")
+    if hm_radius <= 0:
+        raise ValueError("Half-mass radius must be positive")
+    
+    # Convert inputs to astropy quantities
+    hm_radius = hm_radius * u.pc
+    
+    # Calculate number density within half-mass radius
+    n_density = (3 * n_stars) / (8 * np.pi * hm_radius**3)
+    
+    # Assert that the result is in pc^-3 units
+    assert n_density.unit == u.pc**(-3), f"Number density must be in pc^-3, got {n_density.unit}"
+    
+    # Validate that result is reasonable (should be positive)
+    if n_density.value <= 0:
+        raise ValueError("Number density calculation resulted in non-positive value")
+    
+    # Return as Quantity
+    return n_density
+
 # Computation of relaxation time ------------------------------------------------------------------------------------------#
 def relaxation_time(n_stars: int, hm_radius: float, 
                     v_disp : Optional[float] = None, 

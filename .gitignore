@@ -1,5 +1,8 @@
 notebooks/.ipynb_checkpoints/
 rawdata/moccasurvey/simulations/
 datasets/
+figures/
+outputs/
+logs/
 src/processing/__pycache__/
 src/utils/__pycache__/

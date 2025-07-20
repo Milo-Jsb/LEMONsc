@@ -1,0 +1,10 @@
+# Default hyperparameters for Random Forest model (LightGBM in RF mode)
+boosting_type: "rf"
+learning_rate: 1.0
+bagging_freq: 1
+bagging_fraction: 0.8
+feature_fraction: 0.8
+force_col_wise: true
+n_estimators: 100
+verbosity: -1
+random_state: 42 

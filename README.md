@@ -6,6 +6,8 @@
 LEMONsc/
     │_ rawdata/                # gitignore. The authors reserve the rights to share the data upon reasonable request.
     │_ datasets/               # gitignore. The authors reserve the rights to share the data upon reasonable request.
+    |_ logs/                   # gitignore. Store the output of the preliminary functions.
+    |_ scripts/                # main working functions and experiments.
     │_ src/                    # source scripts. Data preprocessing and additional funtions.
     │_ notebooks/              # interactive jupyter notebooks for test, vizualization and tutorials.
     │_ Dockerfile              # proposed image for running the experiments.

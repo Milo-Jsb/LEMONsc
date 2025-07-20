@@ -85,9 +85,9 @@ def _load_mocca_survey_system_data(system_path:str, verbose:bool =False):
 
 #--------------------------------------------------------------------------------------------------------------------------#
 def load_mocca_survey_imbh_history(file_path: str, init_conds_sim: bool= False, col_description: bool= False, 
-                            stellar_map: bool= False, 
-                            init_conds_evo: bool= False,
-                            verbose: bool = False):
+                            stellar_map    : bool= False, 
+                            init_conds_evo : bool= False,
+                            verbose        : bool= False):
     """
     ________________________________________________________________________________________________________________________
     Load MOCCA-Survey IMBH history data from simulation files.
@@ -171,13 +171,13 @@ def load_mocca_survey_imbh_history(file_path: str, init_conds_sim: bool= False, 
     return [sim_df, init_conds, col_dict, stellar_dict], [system_df, system_dict]
 
 #--------------------------------------------------------------------------------------------------------------------------#
-def load_search_space(path: str, verbose: bool = False):
+def load_yaml_dict(path: str, verbose: bool = False):
     """
     ________________________________________________________________________________________________________________________
     Load search space configuration from a YAML file.
     ________________________________________________________________________________________________________________________
     Parameters:
-    -> path    (str)  : Mandatory. Path to the YAML configuration file containing search space parameters.
+    -> path    (str)  : Mandatory. Path to the YAML configuration file.
     -> verbose (bool) : Optional. Enable verbose logging for debugging purposes.
     ________________________________________________________________________________________________________________________
     Returns:
@@ -192,22 +192,22 @@ def load_search_space(path: str, verbose: bool = False):
         raise TypeError("path must be a string")
     
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Search space configuration file not found: {path}")
+        raise FileNotFoundError(f"File not found: {path}")
     
-    if verbose: print(f"Loading search space configuration from: {path}")
+    if verbose: print(f"Loading configuration from: {path}")
     
     try:
         with open(path, 'r') as f:
-            search_space = yaml.safe_load(f)
+            yaml_dict = yaml.safe_load(f)
         
-        if verbose: print(f"Successfully loaded search space configuration with {len(search_space)} parameters")
-        return search_space
+        if verbose: print(f"Successfully loaded configuration with {len(yaml_dict)} parameters")
+        return yaml_dict
         
     except yaml.YAMLError as e:
         print(f"Error parsing YAML file: {e}")
         raise
     except Exception as e:
-        print(f"Error loading search space configuration: {e}")
+        print(f"Error loading configuration: {e}")
         raise
 
 #--------------------------------------------------------------------------------------------------------------------------#
