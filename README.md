@@ -30,17 +30,28 @@ cd LEMONSc
 We strongly suggest the use of Docker to perform your experiments, a docker image is contained in Dockerfile. For a containerized setup, use the provided scripts:
 ```
 bash core-build-container.sh
-bash core-run-container.sh
 ```
 Please have in mind that you need to expose an available port when using a remote host.
 
 ---
-## :ballot_box_with_check: **How to run the Jupyter Notebooks**
+## :ballot_box_with_check: **How to run**
 
-After running the container from the terminal use the following instruction:
+You can run the container using:
+```
+bash core-run-container.sh
+```
+
+This script finds an available port to expose and open the container, feel free to update or change the instruction. After running the container from the terminal use the following instruction to run the interactive notebooks:
 
 ```
 jupyter notebook --ip 0.0.0.0 --port 8883 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
 ```
 
+Or you can recreate our experiments using the scripts provided. For the MOCCA simulations retrieved from the MOCCA Survey we provide the following operations:
+
+```
+python3 -m scripts.get_features --mode [PROCESS] --dataset moccasurvey --exp_name [NAME-OF-STUDY] --exp_type [TYPE-OF-TARGET]
+```
+
+The ```get_features()``` script is created to load all simulations in a moccasurvey format, vizualize the evolution of the moss massive object in all the survey, compare different augmentation methods, and prepare tabular features for a ML regression problem.
 ---
