@@ -3,16 +3,27 @@ import numpy  as np
 import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing       import Optional
+from collections  import defaultdict
+from typing       import Optional, List
 from scipy.signal import savgol_filter, medfilt
 
+# Internal parameters -----------------------------------------------------------------------------------------------------#
+window_length  = 15 # window_length    (Savgol filter)
+polyorder      = 2  # polynomial order (Savgol filter)
+medfilt_kernel = 5  # Kernel size      (median filter)
+        
+# Fix the name tag of the target based on preparation ---------------------------------------------------------------------#
+def __get_target_name(base: str, norm_target: bool, log10_target: bool) -> List[str]:
+    """Helper function to generate target names based on normalization and scaling options."""
+    if norm_target:
+        return [f"{base}/M_tot"]
+    elif log10_target:
+        return [f"log({base})"]
+    return [base]
+
 # Helper function for normalization and log scaling -----------------------------------------------------------------------#
-def _normalize_and_logscale(arr: np.ndarray, norm_factor: Optional[float] = None, log10_scale: bool = False) -> np.ndarray:
-    """
-    ________________________________________________________________________________________________________________________
-    Normalize and/or log-scale an array.
-    ________________________________________________________________________________________________________________________
-    """
+def __normalize_and_logscale(arr: np.ndarray, norm_factor: Optional[float] = None, log10_scale: bool = False) -> np.ndarray:
+    """Normalize and/or log-scale an array"""
     result = arr.copy()
     if norm_factor is not None:
         result = result / norm_factor
@@ -24,28 +35,22 @@ def _normalize_and_logscale(arr: np.ndarray, norm_factor: Optional[float] = None
 def target_preparation(mass_evolution: pd.Series, time_evolution: Optional[pd.Series], norm_factor: Optional[float], 
     target_type    : str,
     log10_scale    : bool = False,
-    window_length  : int = 15,
-    polyorder      : int = 2,
-    medfilt_kernel : int = 5
     ) -> np.ndarray:
     """
     _______________________________________________________________________________________________________________________
     Create the target vector for a regression problem. (Preprocess supported through scipy and numpy)
     _______________________________________________________________________________________________________________________
     Parameters:
-        mass_evolution (pd.Series)           : Raw target. Assuming data in format to preprocess. Mandatory.
-        time_evolution (Optional[pd.Series]) : If "dM/dt", clean time evolution must be provided with same dimensions as 
-                                               the mass evolution (assuming an irregular timestep). Optional.
-        norm_factor    (Optional[float])     : If provided, the output is normalized by dividing by this value. Optional.
-        target_type    (str)                 : Type of target to prepare. Options are "point_mass", "delta_mass" and 
-                                               "mass_rate". Mandatory.
-        log10_scale    (bool)                : Scale the target using np.log1p().
-        window_length  (int)                 : Window length for Savitzky-Golay smoothing. Default 15.
-        polyorder      (int)                 : Polynomial order for Savitzky-Golay smoothing. Default 2.
-        medfilt_kernel (int)                 : Kernel size for median filter. Default 5.
+        - mass_evolution (pd.Series)           : Raw target. Assuming data in format to preprocess. Mandatory.
+        - time_evolution (Optional[pd.Series]) : If "dM/dt", clean time evolution must be provided with same dimensions as 
+                                                 the mass evolution (assuming an irregular timestep). Optional.
+        - norm_factor    (Optional[float])     : If provided, the output is normalized by dividing by this value. Optional.
+        - target_type    (str)                 : Type of target to prepare. Options are "point_mass", "delta_mass" and 
+                                                 "mass_rate". Mandatory.
+        - log10_scale    (bool)                : Scale the target using np.log1p().
     _______________________________________________________________________________________________________________________
     Returns:
-        tgt (np.ndarray) : Target evolution ready to implement in a regression problem.
+        - tgt (np.ndarray) : Target evolution ready to implement in a regression problem.
     _______________________________________________________________________________________________________________________
     """
     # Input validation ----------------------------------------------------------------------------------------------------#
@@ -74,7 +79,7 @@ def target_preparation(mass_evolution: pd.Series, time_evolution: Optional[pd.Se
     if target_type == "point_mass":
         tgt = savgol_filter(mass_evolution.to_numpy(), window_length=window_length, polyorder=polyorder)
         tgt = np.clip(tgt, 0, None)
-        tgt = _normalize_and_logscale(tgt, norm_factor, log10_scale)
+        tgt = __normalize_and_logscale(tgt, norm_factor, log10_scale)
         return tgt
 
     # Change in mass estimation -------------------------------------------------------------------------------------------#
@@ -85,7 +90,7 @@ def target_preparation(mass_evolution: pd.Series, time_evolution: Optional[pd.Se
         tgt   = np.clip(dmass, 0, None)
         if np.any(np.isnan(tgt)):
             raise ValueError("NaNs encountered in log1p(dM) — check input values.")
-        tgt = _normalize_and_logscale(tgt, norm_factor, log10_scale)
+        tgt = __normalize_and_logscale(tgt, norm_factor, log10_scale)
         return tgt
 
     # Growth rate estimation ----------------------------------------------------------------------------------------------#
@@ -101,7 +106,7 @@ def target_preparation(mass_evolution: pd.Series, time_evolution: Optional[pd.Se
         tgt   = np.clip(rate, 0, None)
         if np.any(np.isnan(tgt)) or np.any(np.isinf(tgt)):
             raise ValueError("NaNs or Infs encountered in dM/dt computation — check time steps.")
-        tgt = _normalize_and_logscale(tgt, norm_factor, log10_scale)
+        tgt = __normalize_and_logscale(tgt, norm_factor, log10_scale)
         return tgt
 
     # Fallback 
@@ -146,4 +151,153 @@ def time_preparation(time_evolution: pd.Series, norm_factor: Optional[float] = N
         return time, diff
     else:
         return time
+
+# Filter and downsize a dataset based in a 2D histogram -------------------------------------------------------------------#
+def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray, 
+                                 min_count: int = 10, 
+                                 max_count: int = 100, 
+                                 seed     : Optional[int] = None
+                                ) -> np.ndarray:
+    """
+    ________________________________________________________________________________________________________________________
+    Filter and downsample a dataset based on 2D histogram binning.
+    ________________________________________________________________________________________________________________________
+    Parameters:
+        - x          (np.ndarray)        : X-coordinates of the points. Mandatory.
+        - y          (np.ndarray)        : Y-coordinates of the points. Mandatory.
+        - H          (np.ndarray)        : 2D histogram array. Mandatory.
+        - xedges     (np.ndarray)        : X-axis bin edges. Mandatory.
+        - yedges     (np.ndarray)        : Y-axis bin edges. Mandatory.
+        - min_count  (int)               : Minimum count threshold. Points in bins with fewer points are discarded. 
+        - max_count  (int)               : Maximum count threshold. Points in bins with more points are downsampled.
+        - seed       (Optional[int])     : Random seed for reproducible downsampling. 
+    ________________________________________________________________________________________________________________________
+    Returns:
+        - selected_indices (np.ndarray) : Array of indices corresponding to the selected points.
+    ________________________________________________________________________________________________________________________
+    Notes:
+        Points in bins with accumulation < min_count are discarded. For bins with accumulation > max_count, random 
+        downsampling is performed. Between min_count and max_count, all points are kept.
+    ________________________________________________________________________________________________________________________
+    """
+    # Input validation ----------------------------------------------------------------------------------------------------#
+    if len(x) != len(y):
+        raise ValueError("x and y must have the same length.")
+    if min_count < 0:
+        raise ValueError("min_count must be non-negative.")
+    if max_count <= 0:
+        raise ValueError("max_count must be positive.")
+    if min_count >= max_count:
+        raise ValueError("min_count must be less than max_count.")
+    
+    # Set random seed if provided
+    if seed is not None:
+        np.random.seed(seed)
+    
+    # Asignar cada punto a su bin -----------------------------------------------------------------------------------------#
+    x_bin = np.digitize(x, xedges) - 1
+    y_bin = np.digitize(y, yedges) - 1
+
+    valid = (x_bin >= 0) & (x_bin < H.shape[0]) & (y_bin >= 0) & (y_bin < H.shape[1])
+
+    # Agrupar puntos por bin
+    bin_points = defaultdict(list)
+    for i in np.where(valid)[0]:
+        bin_id = (x_bin[i], y_bin[i])
+        bin_points[bin_id].append(i)
+
+    selected_indices = []
+
+    for bin_id, indices in bin_points.items():
+        count = len(indices)
+        if count < min_count:
+            continue 
+        elif count > max_count:
+            sampled = np.random.choice(indices, size=max_count, replace=False)
+            selected_indices.extend(sampled)
+        else:
+            selected_indices.extend(indices)
+
+    selected_indices = np.array(selected_indices)
+    return selected_indices
+       
 #--------------------------------------------------------------------------------------------------------------------------#
+def tabular_features(process_df: pd.DataFrame, names:list, return_names=True):
+
+    # Set possible features and possible names with nested operations -----------------------------------------------------#
+    default_feats = {
+        "M_MMO/M_tot" :{
+            "label"     : r"$M_{\rm{MMO}}/M_{\rm{tot}}$",
+            "operation" : lambda df: df['M_MMO'] / df['M_tot']
+             },
+        "log(M_MMO)" :{
+            "label"     : r"$\log(M_{\rm{MMO}})$",
+            "operation" : lambda df: np.log10(df['M_MMO'] + 1)
+        },
+        "t/t_coll" :{
+            "label"     : r"$t/t_{\rm{coll}}$",
+            "operation" : lambda df: df['t'] / df['t_coll']
+        },
+        "log(t_coll/t_cc)" :{
+            "label"     : r"$\log(t_{\rm{coll}}/t_{\rm cc})$",
+            "operation" : lambda df: np.log10((df['t_coll']/df['t_cc']) + 1)
+        },
+        "log(t)" :{
+            "label"     : r"$\log(t)$",
+            "operation" : lambda df: np.log10(df['t']+1)
+        },
+        "log(rho(R_h))" :{
+            "label"     : r"$\log(\rho(R_{h}))$",
+            "operation" : lambda df: np.log10(df['rho(R_h)'] + 1)
+        },
+        "M_tot/M_crit" :{
+            "label"     : r"$M_{\rm tot}/M_{\rm crit}$",
+            "operation" : lambda df: df['M_tot'] / df['M_crit']
+        },
+        "R_h/R_core" :{
+            "label"     : r"$R_{h}/R_{\rm{core}}$",
+            "operation" : lambda df: df['R_h'] / df['R_core']
+        },
+        "type_sim" :{
+            "label"     : r"environment",
+            "operation" : lambda df: df['type_sim'].astype("category")  
+        }}
+
+    # Function to apply operations and create new columns -----------------------------------------------------------------#
+    def apply_operations(df, feature_dict):
+        """Apply operations from the feature dictionary to create new columns"""
+        result_df = df.copy()
+        
+        for feature_name, feature_info in feature_dict.items():
+            if 'operation' in feature_info:
+                try:
+                    result_df[feature_name] = feature_info['operation'](df)
+                except KeyError as e:
+                    print(f"Warning: Column {e} not found for feature {feature_name}")
+                except Exception as e:
+                    print(f"Error processing feature {feature_name}: {e}")
+        
+        return result_df
+
+    # Apply operations to create new features -----------------------------------------------------------------------------#
+    process_df = apply_operations(process_df, default_feats)
+    
+    # Filter columns based on names if provided
+    if names:
+        available_features = [name for name in names if name in default_feats]
+        if return_names:
+            # Return labels 
+            labels = [default_feats[name]['label'] for name in available_features]
+            return process_df[available_features], labels
+        else:
+            return process_df[available_features]
+    
+    # Return all features if no names specified
+    feature_columns = list(default_feats.keys())
+    if return_names:
+        
+        # Return labels
+        labels = [default_feats[name]['label'] for name in feature_columns]
+        return process_df[feature_columns], labels
+    else:
+        return process_df[feature_columns]

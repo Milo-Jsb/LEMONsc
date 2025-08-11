@@ -47,11 +47,11 @@ This script finds an available port to expose and open the container, feel free 
 jupyter notebook --ip 0.0.0.0 --port 8883 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
 ```
 
-Or you can recreate our experiments using the scripts provided. For the MOCCA simulations retrieved from the MOCCA Survey we provide the following operations:
+Or you can recreate our experiments using the scripts provided. For the MOCCA simulations retrieved from the MOCCA Survey Database I we provide the following operations:
 
 ```
 python3 -m scripts.get_features --mode [PROCESS] --dataset moccasurvey --exp_name [NAME-OF-STUDY] --exp_type [TYPE-OF-TARGET]
 ```
-The  ```get_features()``` script is created to load all simulations in a moccasurvey format, vizualize the evolution of the moss massive object in all the survey, compare different augmentation methods, and prepare tabular features for a ML regression problem.
+The  ```get_features()``` script is created to load all simulations in a moccasurvey format, vizualize the evolution of the moss massive object in all the survey, compare different augmentation methods, and prepare tabular features for a ML regression problem. Check the file for options in the configuration. 
 
 ---

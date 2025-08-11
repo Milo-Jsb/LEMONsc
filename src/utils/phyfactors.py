@@ -13,12 +13,12 @@ def crossing_time(hm_radius: float, v_disp: Optional[float] = None, mtot: Option
     Calculate the crossing time of a star cluster. (Unit conversion is handled by Astropy)
     ________________________________________________________________________________________________________________________
     Parameters:
-        hm_radius (float)           [pc]   : Half-mass radius of the star cluster. Mandatory.
-        v_disp    (Optional[float]) [km/s] : Velocity dispersion of the star cluster. Optional.
-        mtot      (Optional[float]) [Msun] : Total mass of the star cluster. Mandatory if v_disp is None.
+        - hm_radius (float)           [pc]   : Half-mass radius of the star cluster. Mandatory.
+        - v_disp    (Optional[float]) [km/s] : Velocity dispersion of the star cluster. Optional.
+        - mtot      (Optional[float]) [Msun] : Total mass of the star cluster. Mandatory if v_disp is None.
     ________________________________________________________________________________________________________________________
     Returns:
-        t_cross   (unit.Quantity)   [Myr]  : Crossing time of the star cluster (time that takes a star to travel across the 
+        - t_cross   (unit.Quantity)   [Myr]  : Crossing time of the star cluster (time that takes a star to travel across the 
                                              whole system under the influence of the gravitational field of the cluster).
     ________________________________________________________________________________________________________________________
     Notes:
@@ -204,8 +204,6 @@ def core_collapse_time(m_mean: float, m_max: float, n_stars: int, hm_radius: flo
         raise ValueError("mean mass per star must be greater than zero")
     if m_max <= 0:
         raise ValueError("max mass must be greater than zero")
-    if m_mean > m_max:
-        raise ValueError("mean mass cannot exceed maximum mass")
     
     # Convert inputs to astropy quantities
     m_mean = m_mean * u.solMass

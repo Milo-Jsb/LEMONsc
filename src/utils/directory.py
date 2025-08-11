@@ -21,7 +21,7 @@ def list_all_directories(directory: str):
     return all_dirs
 
 # Safe Load of JSONfiles --------------------------------------------------------------------------------------------------#
-def _load_json_file(json_path: str, description: str, verbose: bool= False):
+def __load_json_file(json_path: str, description: str, verbose: bool= False):
     """
     ________________________________________________________________________________________________________________________
     Helper function: Load a JSON existing file from a given path.
@@ -35,141 +35,6 @@ def _load_json_file(json_path: str, description: str, verbose: bool= False):
         if verbose: print(f"Warning: {description} file not found: {json_path}")
         return None
     
-#--------------------------------------------------------------------------------------------------------------------------#
-def _parse_mocca_survey_imbh_history_init_conds(file_path: str):
-    """
-    ________________________________________________________________________________________________________________________
-    Helper function: Load initial conditions from a single IMBH-HISTORY.DAT file into a dictionary, with respective column
-    names for the dataframe.
-    ________________________________________________________________________________________________________________________
-    """
-    init_conds = {}
-    with open(file_path, 'r') as f:
-        for i in range(86):
-            line = f.readline().strip()
-            if line.startswith('#'):
-                parts = line[1:].strip().split('=', 1)
-                if len(parts) == 2:
-                    key, value = parts[0].strip(), parts[1].strip()
-                    init_conds[key] = value
-        columns_line = f.readline().strip()
-        if not columns_line.startswith('#'):
-            raise ValueError("Expected column headers at line 86")
-        columns = columns_line[1:].split()
-    return init_conds, columns
-
-#--------------------------------------------------------------------------------------------------------------------------#
-def _load_mocca_survey_system_data(system_path:str, verbose:bool =False):
-    """
-    ________________________________________________________________________________________________________________________
-    Helper function: Load the evolution of the initial conditions of the sistem from a single MOCCA-Survey simulation, load column
-    description into a dictionary.
-    ________________________________________________________________________________________________________________________
-    """
-    if not os.path.exists(system_path):
-        print(f"Warning: System file not found: {system_path}")
-        return None, None
-
-    with open('./rawdata/moccasurvey/mapping_dicts/system_columns.json', 'r') as f:
-        system_dict = json.load(f)
-
-    column_names = [system_dict[str(i)]['column'] for i in range(1, len(system_dict) + 1) if str(i) in system_dict]
-
-    system_df = pd.read_csv(system_path, sep="\s+", header=None, names=column_names)
-    system_df = system_df.apply(pd.to_numeric, errors='coerce')
-    
-    if verbose:
-        print(f"Successfully loaded {len(system_df)} rows of system evolution data with {len(column_names)} columns")
-
-    return system_df, system_dict
-
-#--------------------------------------------------------------------------------------------------------------------------#
-def load_mocca_survey_imbh_history(file_path: str, init_conds_sim: bool= False, col_description: bool= False, 
-                            stellar_map    : bool= False, 
-                            init_conds_evo : bool= False,
-                            verbose        : bool= False):
-    """
-    ________________________________________________________________________________________________________________________
-    Load MOCCA-Survey IMBH history data from simulation files.
-    ________________________________________________________________________________________________________________________
-    Parameters:
-    -> file_path       (str)  : Mandatory. Path to the IMBH history data file (imbh-history.dat)
-    -> init_conds_sim  (bool) : Optional. Extract initial conditions from first 86 lines (imbh-history.dat).
-    -> col_description (bool) : Optional. Load column descriptions from mapping file. Need to exits.
-    -> stellar_map     (bool) : Optional. Load stellar type mappings from mapping file. Need to exits.
-    -> init_conds_evo  (bool) : Optional. Load evolution of init conds of the system and their description. (system.dat)
-    ________________________________________________________________________________________________________________________
-    Returns:
-    -> [sim_df, init_conds, col_dict, stellar_dict], [system_df, system_dict]
-        
-        sim_df       (pandas.DataFrame or None) : Main simulation data starting from line 87.
-        init_conds   (dict or None)             : Initial simulation conditions (if init_conds_sim=True).
-        col_dict     (dict or None)             : Column descriptions (if col_description=True).
-        stellar_dict (dict or None)             : Stellar type mappings (if stellar_map=True).
-
-        system_df    (pandas.DataFrame or None) : Evolution of the init conds in the system (if init_conds_evo=True).
-        system_dict  (dict or None)             : Column description for dataframe (if init_conds_evo=True).
-
-    ________________________________________________________________________________________________________________________
-    Raises:
-    -> FileNotFoundError, ValueError, JSONDecodeError
-    ________________________________________________________________________________________________________________________
-    """
-    # Input validation ----------------------------------------------------------------------------------------------------#
-    imbh_path   = f"{file_path}imbh-history.dat"
-    system_path = f"{file_path}system.dat"
-
-    if not isinstance(file_path, str):
-        raise TypeError("file_path must be a string")
-    
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Folder not found: {file_path}")
-    
-    # Initialize return values
-    sim_df       = None 
-    init_conds   = None
-    stellar_dict = None
-    col_dict     = None
-    system_df    = None
-    system_dict  = None
-    
-    if verbose: print(f"Loading IMBH history from: {imbh_path}")
-    
-    try:
-        # Load optional JSON mapping files --------------------------------------------------------------------------------#
-        if col_description: col_dict = _load_json_file( "./rawdata/moccasurvey/mapping_dicts/imbh_history.json", 
-                                                        "description for imbh-history.dat")
-        if stellar_map: stellar_dict = _load_json_file( "./rawdata/moccasurvey/mapping_dicts/stellar_types.json",
-                                                        "stellar type mapping dictionary")
-            
-        # Parse initial conditions and columns for the dataframe ----------------------------------------------------------#
-        if init_conds_sim:
-            init_conds, columns = _parse_mocca_survey_imbh_history_init_conds(imbh_path)
-        else:
-            with open(imbh_path, 'r') as f:
-                for _ in range(86): f.readline()
-                columns = f.readline().strip()[1:].split()
-        
-        # Load main simulation data ---------------------------------------------------------------------------------------#
-        if verbose: print("Loading main simulation data with pandas...")
-        sim_df = pd.read_csv(imbh_path,
-                            skiprows  = 87,
-                            header    = None,
-                            names     = columns,
-                            sep       = r'\s+', 
-                            index_col = False,
-                            engine    = 'python')
-        if verbose: print(f"Loaded {len(sim_df)} rows of simulation data")
-
-        # Load system.dat file if requested
-        if init_conds_evo: system_df, system_dict = _load_mocca_survey_system_data(system_path)
-
-    except Exception as e:
-        print(f"Error: {e}")
-        raise
-
-    return [sim_df, init_conds, col_dict, stellar_dict], [system_df, system_dict]
-
 #--------------------------------------------------------------------------------------------------------------------------#
 def load_yaml_dict(path: str, verbose: bool = False):
     """
@@ -209,56 +74,5 @@ def load_yaml_dict(path: str, verbose: bool = False):
     except Exception as e:
         print(f"Error loading configuration: {e}")
         raise
-
-#--------------------------------------------------------------------------------------------------------------------------#
-def parse_trial_params(trial, search_space: dict, verbose: bool = False):
-    """
-    ________________________________________________________________________________________________________________________
-    Parse trial parameters from a search space configuration dictionary using Optuna trial suggestions.
-    ________________________________________________________________________________________________________________________
-    Parameters:
-    -> trial        (optuna.Trial) : Mandatory. Optuna trial object for parameter suggestions.
-    -> search_space (dict)         : Mandatory. Dictionary containing search space configuration.
-    -> verbose      (bool)         : Optional. Enable verbose logging for debugging purposes.
-    ________________________________________________________________________________________________________________________
-    Returns:
-    -> dict : Dictionary containing parsed parameters with their suggested values from the trial.
-    ________________________________________________________________________________________________________________________
-    Raises:
-    -> TypeError, ValueError
-    ________________________________________________________________________________________________________________________
-    """
-    # Input validation ----------------------------------------------------------------------------------------------------#
-    if not isinstance(search_space, dict):
-        raise TypeError("search_space must be a dictionary")
     
-    if search_space is None or len(search_space) == 0:
-        raise ValueError("search_space cannot be None or empty")
-    
-    if verbose: print(f"Parsing trial parameters from search space with {len(search_space)} configurations")
-    
-    try:
-        params = {}
-        for key, value in search_space.items():
-            if isinstance(value, dict):
-                if 'suggest_int' in value:
-                    params[key] = trial.suggest_int(**value['suggest_int'], name=key)
-                elif 'suggest_float' in value:
-                    params[key] = trial.suggest_float(**value['suggest_float'], name=key)
-                elif 'suggest_categorical' in value:
-                    params[key] = trial.suggest_categorical(**value['suggest_categorical'], name=key)
-                elif 'value' in value:
-                    params[key] = value['value']
-                else:
-                    if verbose: print(f"Warning: Unknown parameter configuration for key '{key}'")
-                    params[key] = value
-            else:
-                params[key] = value
-        
-        if verbose: print(f"Successfully parsed {len(params)} trial parameters")
-        return params
-        
-    except Exception as e:
-        print(f"Error parsing trial parameters: {e}")
-        raise
 #--------------------------------------------------------------------------------------------------------------------------#

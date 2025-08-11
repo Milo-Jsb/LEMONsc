@@ -20,54 +20,67 @@ from src.utils.directory import load_yaml_dict
 class MLTreeRegressor:
     """
     ________________________________________________________________________________________________________________________
-    MLTreeRegressor: A comprehensive machine learning tree-based regressor wrapper supporting: 
-    
-        - LightGBM       (lightgbm.LGBMRegressor in gtb mode)
-        - XGBoost        (xgboost.XGBRegressor)
+    MLTreeRegressor: A comprehensive machine learning tree-based regressor wrapper for basic model comparison
+    ________________________________________________________________________________________________________________________
+    Models supported:
         - Random Forest  (lightgbm.LGBMRegressor in rf mode)
+        - LightGBM       (lightgbm.LGBMRegressor in gtb mode)
+        - XGBoost        (xgboost.XGBRegressor in gbtree mode)
+        - DARTBoost      (xgboost.XGBRegressor in dart mode)
     ________________________________________________________________________________________________________________________
     """
     
     # Initialization of the Regressor--------------------------------------------------------------------------------------#
-    def __init__(self, model_type: str = "lightgbm", model_params: Optional[Dict] = None, 
-                feat_names: Optional[list] = None, device: str = "cpu", verbose: bool = False):
+    def __init__(self, model_type: str = "lightgbm", model_params: Optional[Dict] = None, feat_names: Optional[list] = None, 
+                n_jobs  : Optional[int] = None,
+                device  : str           = "cpu", 
+                verbose : bool          = False):
         """
         ____________________________________________________________________________________________________________________
         Initialize the MLTreeRegressor with specified model type and parameters.
         ____________________________________________________________________________________________________________________
         Parameters:
-        -> model_type   (str)  : Mandatory. Type of model to use ('lightgbm', 'xgboost', 'random_forest').
-        -> model_params (dict) : Optional. Dictionary containing model-specific hyperparameters.
-        -> feat_names   (list) : Optional. List of feature names.
-        -> device       (str)  : Optional. 'cpu' (default) or 'gpu' for CUDA acceleration.
-        -> verbose      (bool) : Optional. Enable verbose logging for debugging purposes.
+            - model_type   (str)  : Mandatory. Type of model to use ('lightgbm', 'xgboost', 'random_forest', 'dartboost').
+            - model_params (dict) : Optional. Dictionary containing model-specific hyperparameters.
+            - feat_names   (list) : Optional. List of feature names.
+            - device       (str)  : Optional. 'cpu' (default) or 'cuda' for GPU CUDA driven acceleration.
+            - n_jobs       (int)  : Optional. Number of cores to use during computation.
+            - verbose      (bool) : Optional. Enable verbose logging for debugging purposes.
+        
         ____________________________________________________________________________________________________________________
         Raises:
-        -> ValueError, TypeError
+            - ValueError, TypeError
         ____________________________________________________________________________________________________________________
         """
-        # Input validation
+        # Input validation ------------------------------------------------------------------------------------------------#
         if not isinstance(model_type, str):
             raise TypeError("model_type must be a string")
         if model_params is not None and not isinstance(model_params, dict):
             raise TypeError("model_params must be a dictionary or None")
-        if device not in ["cpu", "gpu"]:
-            raise ValueError("device must be either 'cpu' or 'gpu'")
+        if device not in ["cpu", "cuda"]:
+            raise ValueError("device must be either 'cpu' or 'cuda'")
+        # Main parameters -------------------------------------------------------------------------------------------------#
+        
         self.model_type       = model_type.lower()
         self.model_params     = model_params or {}
+        self.n_jobs           = n_jobs
         self.verbose          = verbose
         self.is_fitted        = False
         self.feature_names    = feat_names
         self.device           = device
-        # Validate model type 
-        supported_models = ["lightgbm", "xgboost", "random_forest"]
+        
+        # Validate model type ---------------------------------------------------------------------------------------------#
+        supported_models = ["lightgbm", "xgboost", "random_forest", "dartboost"]
         if self.model_type not in supported_models:
             raise ValueError(f"Unsupported model type: {self.model_type}. Supported types: {supported_models}")
-        # Create the class element
+        
+        # Create the class element ----------------------------------------------------------------------------------------#
         if self.verbose: print(f"Initializing {self.model_type} model (device={self.device})...")
+        
         try:
             self.model = self._init_model()
             if self.verbose: print(f"Successfully initialized {self.model_type} model")
+        
         except Exception as e:
             raise ValueError(f"Error initializing model: {e}")
 
@@ -78,58 +91,90 @@ class MLTreeRegressor:
         Initialize the underlying model with appropriate default parameters.
         ____________________________________________________________________________________________________________________
         Returns:
-        -> model : Initialized model instance (LGBMRegressor or XGBRegressor)
+            - model : Initialized model instance (LGBMRegressor or XGBRegressor)
         ____________________________________________________________________________________________________________________
         """
+        
         params = self.model_params.copy()
+        
+        # Original RandomForest Regressor (LightGBM with no Boosting) -----------------------------------------------------#
         if self.model_type == "random_forest":
+            
+            # Retrieve default parameters and update the dictionary
             default_params = load_yaml_dict(path= "./src/models/mltrees/model_params/rf.yaml")
             default_params.update(params)
-            if self.device == "gpu":
-                default_params["device"] = "gpu"
-            else:
-                default_params["device"] = "cpu"
+            
+            # Set type of computation
+            default_params["importance_type"] = "gain"
+            default_params["n_jobs"]          = self.n_jobs
+            default_params["device"]          = self.device   
+
             return LGBMRegressor(**default_params)
-        elif self.model_type == "xgboost":
-            default_params = load_yaml_dict(path= "./src/models/mltrees/model_params/xgb.yaml")
-            default_params.update(params)
-            if self.device == "gpu":
-                default_params["tree_method"] = "gpu_hist"
-                default_params["predictor"] = "gpu_predictor"
-            else:
-                default_params["tree_method"] = "hist"
-                default_params["predictor"] = "auto"
-            return XGBRegressor(**default_params)
+        
+        # LightGBM --------------------------------------------------------------------------------------------------------#
         elif self.model_type == "lightgbm":
+            
+            # Retrieve default parameters and update the dictionary
             default_params = load_yaml_dict(path= "./src/models/mltrees/model_params/lgbm.yaml")
             default_params.update(params)
-            if self.device == "gpu":
-                default_params["device"] = "gpu"
-            else:
-                default_params["device"] = "cpu"
+            
+            # Set type of computation
+            default_params["importance_type"] = "gain"
+            default_params["n_jobs"]          = self.n_jobs
+            default_params["device"]          = self.device  
+
             return LGBMRegressor(**default_params)
+        
+        # Extreme Gradient Boosting algorithm -----------------------------------------------------------------------------#
+        elif self.model_type == "xgboost":
+
+            # Retrieve default parameters and update the dictionary
+            default_params = load_yaml_dict(path= "./src/models/mltrees/model_params/xgb.yaml")
+            default_params.update(params)
+
+            # Set type of computation
+            default_params["importance_type"] = "gain"
+            default_params["n_jobs"]          = self.n_jobs
+            default_params["tree_method"]     = "hist"
+            default_params["booster"]         = "gbtree"
+            default_params["device"]          = self.device
+
+            return XGBRegressor(**default_params)
+        
+        # Extreme Gradient Boosting algorithm -----------------------------------------------------------------------------#
+        elif self.model_type == "dartboost":
+
+            # Retrieve default parameters and update the dictionary
+            default_params = load_yaml_dict(path= "./src/models/mltrees/model_params/dart.yaml")
+            default_params.update(params)
+
+            # Set type of computation
+            default_params["importance_type"] = "gain"
+            default_params["booster"]         = "dart"
+            default_params["n_jobs"]          = self.n_jobs
+            default_params["device"]          = self.device
+
+            return XGBRegressor(**default_params)
+
 
     # Fit a given model using data points ---------------------------------------------------------------------------------#
     def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: Union[np.ndarray, pd.Series], 
-                X_val: Optional[Union[np.ndarray, pd.DataFrame]] = None, 
-                y_val: Optional[Union[np.ndarray, pd.Series]]    = None,
-                early_stopping_rounds: Optional[int] = 50) -> "MLTreeRegressor":
+            dict_params: Optional[dict]=None
+            ) -> "MLTreeRegressor":
         """
         ____________________________________________________________________________________________________________________
         Fit the model to the training data with optional validation set for early stopping.
         ____________________________________________________________________________________________________________________
         Parameters:
-        -> X_train               (np.ndarray/pd.DataFrame) : Mandatory. Training features.
-        -> y_train               (np.ndarray/pd.Series)    : Mandatory. Training targets.
-        -> X_val                 (np.ndarray/pd.DataFrame) : Optional. Validation features for early stopping.
-        -> y_val                 (np.ndarray/pd.Series)    : Optional. Validation targets for early stopping.
-        -> early_stopping_rounds (int)                     : Optional. Number of rounds for early stopping.
+            - X_train     (np.ndarray/pd.DataFrame) : Mandatory. Training features.
+            - y_train     (np.ndarray/pd.Series)    : Mandatory. Training targets.
+            - dict_params (dict)                    : Optional. Additional parameters to set for each regressor.           
         ____________________________________________________________________________________________________________________
         Returns:
-        -> self : Fitted model instance
+            - self : Fitted model instance
         ____________________________________________________________________________________________________________________
         Raises:
-        -> ValueError, TypeError, NotFittedError
+            - ValueError, TypeError, NotFittedError
         ________________________________________________________________________________________________________________________
         """
         # Input validation
@@ -138,9 +183,6 @@ class MLTreeRegressor:
         
         if len(X_train) != len(y_train):
             raise ValueError("X_train and y_train must have the same number of samples")
-        
-        if X_val is not None and y_val is not None and len(X_val) != len(y_val):
-            raise ValueError("X_val and y_val must have the same number of samples")
         
         # Store feature names if available
         if hasattr(X_train, 'columns') and (self.feature_names is None):
@@ -151,13 +193,6 @@ class MLTreeRegressor:
         try:
             # Prepare fit parameters
             fit_params = {}
-            
-            # Add evaluation set for early stopping
-            if X_val is not None and y_val is not None:
-                fit_params['eval_set'] = [(X_val, y_val)]
-                if early_stopping_rounds is not None and self.model_type in ["xgboost", "lightgbm"]:
-                    fit_params['early_stopping_rounds'] = early_stopping_rounds
-                    fit_params['verbose']               = False
             
             # Fit the model
             self.model.fit(X_train, y_train, **fit_params)
@@ -171,19 +206,21 @@ class MLTreeRegressor:
         return self
 
     # Perfom inference with new data points -------------------------------------------------------------------------------# 
-    def predict(self, X: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
+    def predict(self, X: Union[np.ndarray, pd.DataFrame], num_round:Optional[int]=None) -> np.ndarray:
         """
         ____________________________________________________________________________________________________________________   
         Make predictions using the fitted model.
         ____________________________________________________________________________________________________________________
         Parameters:
-        -> X (np.ndarray/pd.DataFrame) : Mandatory. Features to predict on.
+            - X           (np.ndarray/pd.DataFrame): Mandatory. Features to predict on.
+            - num_rounds  (int)                    : Optional. When predicting with DART, this sets the number of trees 
+                                                     used for predictions.
         ____________________________________________________________________________________________________________________
         Returns:
-        -> np.ndarray : Predicted values
+            - preds (np.ndarray) : Predicted values
         ____________________________________________________________________________________________________________________
         Raises:
-        -> NotFittedError, ValueError
+            - NotFittedError, ValueError
         ____________________________________________________________________________________________________________________
         """
         if not self.is_fitted:
@@ -193,24 +230,41 @@ class MLTreeRegressor:
             raise ValueError("X cannot be None")
         
         try:
-            return self.model.predict(X)
+            if self.model_type =="dartboost":     
+                # If num_round is not specified, use the number of trees from the trained model
+                if num_round is None:
+                    n_trees = self.get_n_trees()
+                    if n_trees is not None:
+                        num_round = n_trees
+                    else:
+                        # Fallback to a reasonable default if we can't get the number of trees
+                        num_round = 100
+                        if self.verbose:
+                            print(f"Warning: Could not determine number of trees, using default: {num_round}")
+                
+                preds = self.model.predict(X, iteration_range=(0, num_round))
+            else:
+                preds = self.model.predict(X)
+            
+            return preds
+        
         except Exception as e:
             raise ValueError(f"Error making predictions: {e}")
 
     # Return feature importance for evaluation of the training ------------------------------------------------------------#
-    def get_feature_importance(self, importance_type: str = "gain") -> Dict[str, float]:
+    def get_feature_importance(self) -> Dict[str, float]:
         """
         ____________________________________________________________________________________________________________________
         Get feature importance scores from the fitted model.
         ____________________________________________________________________________________________________________________
-        Parameters:
-        -> importance_type (str) : Optional. Type of importance ('gain', 'split', 'cover' for LightGBM).
-        ____________________________________________________________________________________________________________________
         Returns:
-        -> dict : Dictionary mapping feature names to importance scores
+            - dict : Dictionary mapping feature names to importance scores
         ____________________________________________________________________________________________________________________
         Raises:
-        -> NotFittedError, AttributeError, ValueError
+            - NotFittedError, AttributeError, ValueError
+        ____________________________________________________________________________________________________________________
+        Notes:
+            - For fair comparison, all models are set up to "gain" importance type.
         ____________________________________________________________________________________________________________________
         """
         # Input and model validation
@@ -243,7 +297,9 @@ class MLTreeRegressor:
 
     # Metric evaluation of a given model ----------------------------------------------------------------------------------#
     def evaluate(self, X: Union[np.ndarray, pd.DataFrame], y: Union[np.ndarray, pd.Series], 
-                 metrics: Optional[List[str]] = None) -> Dict[str, float]:
+                 metrics   : Optional[List[str]] = None,
+                 num_round : Optional[int]       = None
+                 ) -> Dict[str, float]:
         """
         ____________________________________________________________________________________________________________________
         Evaluate the model performance using multiple metrics.
@@ -275,7 +331,22 @@ class MLTreeRegressor:
         
         try:
             # Get model predictions
-            y_pred  = self.predict(X)
+            if self.model_type =="dartboost":     
+                # If num_round is not specified, use the number of trees from the trained model
+                if num_round is None:
+                    n_trees = self.get_n_trees()
+                    if n_trees is not None:
+                        num_round = n_trees
+                    else:
+                        # Fallback to a reasonable default if we can't get the number of trees
+                        num_round = 100
+                        if self.verbose:
+                            print(f"Warning: Could not determine number of trees, using default: {num_round}")
+                
+                y_pred = self.model.predict(X, iteration_range=(0, num_round))
+            else:
+                y_pred = self.model.predict(X)
+
             results = {}
             
             # Compute metrics and store in dictionary
@@ -319,12 +390,11 @@ class MLTreeRegressor:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             
             save_data = {
-                "model_type"       : self.model_type,
-                "model_params"     : self.model_params,
-                "model"            : self.model,
-                "is_fitted"        : self.is_fitted,
-                "feature_names"    : self.feature_names,
-                "training_history" : self.training_history
+                "model_type"    : self.model_type,
+                "model_params"  : self.model_params,
+                "model"         : self.model,
+                "is_fitted"     : self.is_fitted,
+                "feature_names" : self.feature_names
                         }
             
             joblib.dump(save_data, path)
@@ -352,13 +422,14 @@ class MLTreeRegressor:
         -> FileNotFoundError, ValueError, OSError
         ____________________________________________________________________________________________________________________
         """
-        # Input validation
+        # Input validation ------------------------------------------------------------------------------------------------#
         if not isinstance(path, str):
             raise TypeError("path must be a string")
         
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model file not found: {path}")
         
+        # Load weihgts and information using binary files -----------------------------------------------------------------#
         try:
             # Load informaion stored at the path folder
             data = joblib.load(path)
@@ -370,7 +441,6 @@ class MLTreeRegressor:
             instance.model            = data["model"]
             instance.is_fitted        = data.get("is_fitted", False)
             instance.feature_names    = data.get("feature_names", None)
-            instance.training_history = data.get("training_history", {})
             
             if verbose: print(f"Model loaded successfully from: {path}")
             
@@ -379,6 +449,28 @@ class MLTreeRegressor:
         except Exception as e:
             raise ValueError(f"Error loading model: {e}")
 
+    # Get number of trees from trained model ------------------------------------------------------------------------------#
+    def get_n_trees(self) -> Optional[int]:
+        """
+        ____________________________________________________________________________________________________________________
+        Get the number of trees from the trained model.
+        ____________________________________________________________________________________________________________________
+        Returns:
+            - int or None : Number of trees in the model, or None if not available
+        ____________________________________________________________________________________________________________________
+        """
+        if not self.is_fitted:
+            return None
+        
+        try:
+            # For XGBoost and LightGBM models
+            if hasattr(self.model, "n_estimators"):
+                return self.model.n_estimators
+            else:
+                return None
+        except Exception:
+            return None
+
     # Retrive model information -------------------------------------------------------------------------------------------#
     def get_model_info(self) -> Dict[str, Any]:
         """
@@ -386,7 +478,7 @@ class MLTreeRegressor:
         Get comprehensive information about the model.
         ____________________________________________________________________________________________________________________
         Returns:
-        -> dict : Dictionary containing model information
+            - dict : Dictionary containing model information
         ____________________________________________________________________________________________________________________
         """
         info = {
@@ -401,4 +493,4 @@ class MLTreeRegressor:
         
         return info
 
-#---------------------------------------------------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------------------------------------------------#
