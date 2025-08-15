@@ -113,7 +113,7 @@ class PathManager:
         """Get path for stratified simulation files."""
         return os.path.join(self.stratified_path, f"{env_type}_simulations.txt")
 
-# Data Processing Classes -------------------------------------------------------------------------------------------------#
+# Process individual simulations ------------------------------------------------------------------------------------------#
 class SimulationProcessor:
     """Efficient simulation data processor with caching."""
     
@@ -193,6 +193,7 @@ class SimulationProcessor:
                     f.write('\n'.join(paths) + '\n')
                 logger.info(f"Saved {len(paths)} {env_type} simulation paths to {filepath}")
 
+# How to partition the simulations in the datafile ------------------------------------------------------------------------#
 class DataPartitioner:
     """Efficient data partitioning with stratification support."""
     
@@ -272,26 +273,24 @@ class DataPartitioner:
         
         return train_simulations, val_simulations, test_simulations
 
+# Preprocess all simulations ----------------------------------------------------------------------------------------------#
 class DataProcessor:
     """Optimized data processing"""
     
     def __init__(self, config: ProcessingFeaturesConfig):
         self.config = config
     
-    def process_simulations(self, simulations: List[str], exp_type: str, 
-                           augmentation: bool = False, apply_noise: bool = False, 
-                           n_virtual: Optional[int] = None, verbose: bool = True) -> Tuple[List, List, List]:
+    def process_simulations(self, simulations: List[str], exp_type: str, augmentation: bool= False, 
+                            apply_noise : bool          = False, 
+                            n_virtual   : Optional[int] = None, 
+                            verbose     : bool          = True
+                            ) -> Tuple[List, List, List]:
         """Process simulations efficiently with reduced memory allocations."""
         time_list, mass_list, phy_list = [], [], []
         config = DEFAULT_CONFIG[exp_type]
         
         # Statistics tracking
-        stats = {
-            'used_sims': 0,
-            'ignored_sims': 0,
-            'environment': [],
-            'points_per_sim': []
-        }
+        stats = {'used_sims': 0, 'ignored_sims': 0, 'environment': [], 'points_per_sim': [] }
 
         processor = SimulationProcessor(self.config)
         
@@ -361,6 +360,7 @@ class DataProcessor:
         logger.info(f"  - SLOW formation channel sims   : {slow_count}")
         logger.info(f"  - Average points per simulation : {avg_points:.1f} ± {std_points:.1f}")
 
+# Perfom Downsampling in a full dataset if needed -------------------------------------------------------------------------#
 class DownsamplingProcessor:
     """Optimized downsampling with channel separation."""
     
@@ -405,7 +405,8 @@ class DownsamplingProcessor:
                 continue
             
             # Perform downsampling
-            H1, xedges, yedges = np.histogram2d(time_feat, mass_feat, bins=[self.config.histogram_bins, self.config.histogram_bins])
+            H1, xedges, yedges = np.histogram2d(time_feat, mass_feat, 
+                                                bins=[self.config.histogram_bins, self.config.histogram_bins])
             
             idxs = filter_and_downsample_hist2d(time_feat, mass_feat, H1, xedges, yedges, 
                                                 min_count = self.config.downsample_min_count, 
@@ -424,6 +425,7 @@ class DownsamplingProcessor:
         else:
             return np.array([]), np.array([]), np.array([])
 
+# Unique class for plot relevant features of the dataset or simulations ----------------------------------------------------#
 class PlotGenerator:
     """Optimized plotting of files."""
     
@@ -654,18 +656,47 @@ def run_feats_mode(data_path: str, out_path: str, exp_type: str, folds: int,
     
     logger.success("Features generation completed")
 
-def run_plot_mode(datafile, out_figs: str):
+def run_plot_mode(datafile:str, contfeats:list, catfeats:list, target:list, out_figs: str, 
+                  config: ProcessingFeaturesConfig = DEFAULT_PARAMS):
     """Run the plotting mode pipeline."""
-    logger.info(f"Plotting information for tabular training moccasurvey dataset")
+    logger.info(f"Plotting information for tabular training dataset")
     
+    # Initialize plot generator
+    plot_generator         = PlotGenerator(config)
+
     # Load files
-    tab_features_df = pd.read_csv(datafile, index_col=False)
+    tab_data_df = pd.read_csv(datafile, index_col=False)
 
     # Retrieve input features to compute 
-    tab_feats_df    = tabular_features() 
+    tab_feats_df, labels = tabular_features(process_df   = tab_data_df, 
+                                            names        = contfeats  + target + catfeats, 
+                                            return_names = True) 
 
+    logger.info(f"Features retrieved")
+    logger.info(f"  - Continuos features   : {contfeats}")
+    logger.info(f"  - Categorical features : {catfeats}")
+    logger.info(f"  - Target               : {target}")
+    
+    # Plot full tabular feats:
+    plot_generator._create_features_analysis(feats      = tab_feats_df[contfeats+target],
+                                             names      = labels[0: len(labels)-len(cat_feats)], 
+                                             dataset    = args.dataset, 
+                                             experiment = "full", 
+                                             out_figs   = out_figs)
 
+    # Plot tabular feats by envirioment
+    for channel_code, env_name in [(0, 'fast'), (1, 'slow'), (2, 'hybrid')]:
+        
+        mask = tab_feats_df[catfeats] == channel_code
+        
+        if not np.any(mask):
+            return
 
+        plot_generator._create_features_analysis(feats      = tab_feats_df[mask][contfeats+target],
+                                                 names      = labels[0: len(labels)-len(cat_feats)], 
+                                                 dataset    = args.dataset, 
+                                                 experiment = env_name, 
+                                                 out_figs   = out_figs)
     logger.success("Plotting completed")
 
 # Main Pipeline -----------------------------------------------------------------------------------------------------------#
@@ -676,14 +707,24 @@ def run_pipeline(args):
     
     # Run appropriate mode
     if args.mode == "study":
-        run_study_mode(path_manager.data_path, path_manager.out_figs, args.exp_type)
+        run_study_mode(data_path = path_manager.data_path, 
+                       out_figs  = path_manager.out_figs, 
+                       exp_type  = args.exp_type)
+    
     elif args.mode == "feats":
-        run_feats_mode(data_path=path_manager.data_path, out_path=path_manager.out_path, 
-                      exp_type=args.exp_type, folds=args.folds, 
-                      augment=args.aug, norm_target=False, log_target=False, 
-                      downsampled=args.down)  
+        run_feats_mode(data_path=path_manager.data_path, out_path=path_manager.out_path, exp_type=args.exp_type, 
+                       folds       = args.folds, 
+                       augment     = args.aug, 
+                       norm_target = False, 
+                       log_target  = False, 
+                       downsampled = args.down)  
+    
     elif args.mode == "plot":
-        run_plot_mode(path_manager.out_figs)
+        run_plot_mode(datafile  = f"{self.out_path}0_fold/train.csv"
+                      contfeats = ["log(t)", "log(t_coll/t_cc)" ,"M_tot/M_crit", "log(rho(R_h))", "log(R_h/R_core)"],
+                      catfeats  = ["type_sim"], 
+                      target    = ["M_MMO/M_tot"],
+                      outfigs   = path_manager.out_figs)
 
 # Run ---------------------------------------------------------------------------------------------------------------------#
 if __name__ == "__main__":
