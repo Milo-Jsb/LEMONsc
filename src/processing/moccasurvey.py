@@ -18,18 +18,18 @@ from src.processing.format     import time_preparation, target_preparation, __ge
 
 # Default configuration of the experiments --------------------------------------------------------------------------------#
 DEFAULT_CONFIG = {
-    "point_mass": {                               # Experiment name
-        "feature_names": [                        # - Features names to retrieve (IN ORDER)
-            "t", "t_coll", "t_relax", "t_cc",     #     - Time-relared 
-            "M_tot", "M_mean", "M_max", "M_crit", #     - Mass-related 
-            "rho(R_h)",                           #     - Density
-            "R_h", "R_core",                      #     - Radii
-            "type_sim"],                          #     - Categorical envirioment of the simulation                 
+    "point_mass": {                                       # Experiment name
+        "feature_names": [                                # - Features names to retrieve (IN ORDER)
+            "t", "t_coll", "t_relax", "t_cc",             #     - Time-relared 
+            "M_tot", "M_mean", "M_max", "M_crit",         #     - Mass-related 
+            "rho(R_h)",                                   #     - Density
+            "R_h", "R_core",                              #     - Radii
+            "type_sim"],                                  #     - Categorical envirioment of the simulation                 
         
-        "base_target":                            # - Target name of the experiment
+        "base_target":                                    # - Target name of the experiment
             "M_MMO",
         
-        "requires_time_diff": False               # - Flag to difference between steptimes
+        "requires_time_diff": False                       # - Flag to difference between steptimes
     },
     
     "delta_mass": {

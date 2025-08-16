@@ -16,7 +16,7 @@ from sklearn.model_selection import KFold
 from sklearn.metrics         import get_scorer
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
-from src.models.mltrees .regressor import MLTreeRegressor
+from src.models.mltrees.regressor  import MLTreeRegressor
 from src.optim.grid                import RandomForestGrid, LightGBMGrid, XGBoostGrid, DARTBoostGrid
 
 # Object tipe to return ---------------------------------------------------------------------------------------------------#
