@@ -2,18 +2,22 @@
 import os
 import sys
 import argparse
+import yaml
 
-from loguru      import logger
-from dataclasses import dataclass
-
+import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from loguru      import logger
-from typing      import Dict, List, Tuple, Optional, Union
+from loguru          import logger
+from dataclasses     import dataclass
+from typing          import Dict, List, Tuple, Optional, Union
+from datetime        import datetime
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.processing.format        import tabular_features
-from src.optim.optimizer          import SpaceSearch
+from src.optim.optimizer          import SpaceSearch, SpaceSearchConfig
+from src.utils.resources          import ResourceConfig
+from src.utils.directory          import load_yaml_dict
 from src.models.mltrees.regressor import MLTreeRegressor
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
@@ -34,13 +38,14 @@ logger.add("./logs/mltrees_execution.log",
 @dataclass
 class TrainingConfig:
     """Configuration class for the execution of mltrees_training() script."""
-    n_trials  : int = 100
-    n_jobs    : int = 1
-    device    : str = "cpu"
-    seed      : int = 42
-    direction : str = "minimize"
-    metric    : str = "neg_mean_absolute_error"
-    patience  : int = 20
+    n_folds    : int = 3
+    n_trials   : int = 100
+    n_jobs     : int = 1
+    device     : str = "gpu" if (os.getenv("CUDA_VISIBLE_DEVICES") is not None) else "cpu"
+    seed       : int = 42
+    direction  : str = "minimize"
+    metric     : str = "neg_mean_absolute_error"
+    patience   : int = 20
 
 CONFIG = TrainingConfig()
 
@@ -67,82 +72,369 @@ def get_args():
                         help    = "Specific dataset to implement.")
     parser.add_argument("--exp_name", type=str, default="pof",
                         help = "Tag to name the dataset and output related elements.")
-    parser.add_argument("--folds", type=int, default=1,
-                        help="Number of folds to use for kfold cross-validation with trained params.")
     
-    # Target specifics
-    parser.add_argument("--exp_type", type=str, default="point_mass", 
-                        choices = ["point_mass", "delta_mass", "mass_rate"], 
-                        help    = "Specific target expected of the dataset, also affect the possible features selected.")
-        
+    # Model specifics
+    parser.add_argument("--model", type=str, default="lightgbm",
+                       choices=["lightgbm", "xgboost", "random_forest", "dartboost"],
+                       help="Type of model to use")
+
     return parser.parse_args()
 
 # Path Management ---------------------------------------------------------------------------------------------------------#
 class PathManager:
     """Centralized path management for the pipeline."""
     
-    def __init__(self, root_dir: str, dataset: str, exp_name: str, model:str, out_dir: str, fig_dir: str):
-        self.data_path = f"{root_dir}{dataset}
-        self.out_path  = f"{out_dir}{exp_name}/{dataset}/{model}/"
-        self.out_figs  = f"{fig_dir}{exp_name}/{dataset}/{model}/"
+    def __init__(self, root_dir: str, dataset: str, exp_name: str, model: str, out_dir: str, fig_dir: str):
+        # Data paths
+        self.data_path = Path(root_dir) / dataset
+        
+        # Output structure
+        self.base_out   = Path(out_dir) / exp_name / dataset / model
+        self.optim_path = self.base_out / "optim"
+        self.model_path = self.base_out
+        self.fig_path   = Path(fig_dir) / exp_name / dataset / model
         
         # Create directories
-        os.makedirs(self.out_path, exist_ok=True)
-        os.makedirs(self.out_figs, exist_ok=True)
+        self.optim_path.mkdir(parents=True, exist_ok=True)
+        self.model_path.mkdir(parents=True, exist_ok=True)
+        self.fig_path.mkdir(parents=True, exist_ok=True)
     
 
 # Pipeline Modes -----------------------------------------------------------------------------------------------------------#
-def run_optimization(train_feats_path:str, val_feats_path:str, contfeats:list, catfeats:list, target:list, out_path:str):
-    
+def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: list,  out_path: str, n_folds: int = 3):
     """Run the the optimization mode pipeline."""
     
     logger.info(110*"_")
-    logger.info(f"Space search of the hyperparameters for the MLTree {args.model} regressor")
+    logger.info(f"Space search of the hyperparameters for the MLTree {args.model} regressor using {n_folds}-fold cross-validation")")
     logger.info(110*"_")
 
-    # Load files
-    tab_data_df = pd.read_csv(datafile, index_col=False)
+    # Load and prepare data partitions
+    logger.info("Loading and preparing data partitions...")
+    partitions = []
 
-    # Retrieve input features to compute 
-    tab_feats_df, labels = tabular_features(process_df   = tab_data_df, 
-                                            names        = contfeats  + target + catfeats, 
-                                            return_names = True) 
+    for fold in range(n_folds):
+        fold_path  = feats_path / f"{fold}_fold"
+        train_path = fold_path / "train.csv"
+        val_path   = fold_path / "val.csv"
 
-    logger.info(f"Features retrieved")
-    logger.info(f"  - Continuos features   : {contfeats}")
+        # Load fold data
+        train_df = pd.read_csv(train_path, index_col=False)
+        val_df   = pd.read_csv(val_path, index_col=False)
+
+        # Extract features and target
+        feature_names = contfeats + catfeats
+        X_train, _ = tabular_features(train_df, names=feature_names, return_names=True)
+        y_train    = train_df[target]  
+        
+        X_val, _ = tabular_features(val_df, names=feature_names, return_names=True)
+        y_val    = val_df[target]
+
+        # Create partition dictionary with optional scaler
+        partition = {
+                    'X_train': X_train, 'y_train': y_train,
+                    'X_val'  : X_val,   'y_val': y_val,
+                    'scaler' : val_df["M_tot"] if "M_tot" in val_df.columns else None
+                    }
+        partitions.append(partition)
+        
+        logger.info(f"Fold {fold + 1}/{n_folds} loaded:")
+        logger.info(f"  - Training samples: {len(X_train)}")
+        logger.info(f"  - Validation samples: {len(X_val)}")
+
+    # Log feature information
+    logger.info("\nFeatures configuration:")
+    logger.info(f"  - Continuous features  : {contfeats}")
     logger.info(f"  - Categorical features : {catfeats}")
     logger.info(f"  - Target               : {target}")
 
-    results = optimizer.run_study(X_train=X_train, y_train=y_train, X_val=X_val,y_val=y_val, 
-                                  study_name = "optuna_trial",
-                                  output_dir = "./outputs/massive_set/FULL/lightgbm/",
-                                  direction  = "minimize", 
-                                  metric     = "neg_mean_absolute_error",
-                                  save_study = True,
-                                  patience   = 20,
-                                  scaler     = val_df["M_tot"])
-def run_training():
+    # Setup resource configuration
+    resource_config = ResourceConfig(max_parallel_trials = CONFIG.n_jobs,
+                                    prefer_gpu           = (CONFIG.device == "cuda"),
+                                    n_jobs_per_trial     = 4 if CONFIG.device == "cpu" else 1,
+                                    gpu_memory_limit     = 0.9,
+                                    cpu_memory_limit     = 0.8)
 
+    # Initialize optimizer with configuration
+    config    = SpaceSearchConfig(model_type = args.model, 
+                                  n_jobs     = CONFIG.n_jobs, 
+                                  n_trials   = CONFIG.n_trials, 
+                                  device     = CONFIG.device, 
+                                  seed       = CONFIG.seed)
+    optimizer = SpaceSearch(config)
+    
+    # Log resource configuration
+    logger.info("\nResource Configuration:")
+    logger.info(f"  - Device: {CONFIG.device}")
+    logger.info(f"  - Max parallel trials: {resource_config.max_parallel_trials}")
+    logger.info(f"  - Jobs per trial: {resource_config.n_jobs_per_trial}")
+    
+    # Create study name with timestamp
+    timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
+    study_name = f"cv_study_{n_folds}fold_{timestamp}"
+    
+    # Run optimization with cross-validation
+    logger.info(f"\nStarting optimization study: {study_name}")
+    logger.info(f"  - Number of trials : {CONFIG.n_trials}")
+    logger.info(f"  - Direction        : {CONFIG.direction}")
+    logger.info(f"  - Metric           : {CONFIG.metric}")
+    
+    try:
+        # Update output path to use optim subdirectory
+        study_path = Path(out_path) / "optim" / f"cv_study_{n_folds}fold_{timestamp}"
+        
+        results = optimizer.run_cv_study(partitions     = partitions,
+                                         study_name     = study_name,
+                                         direction      = CONFIG.direction,
+                                         metric         = CONFIG.metric,
+                                         output_dir     = str(study_path),
+                                         save_study     = True,
+                                         patience       = CONFIG.patience,
+                                         lambda_penalty = args.lambda_penalty)
+        
+        # Log results
+        logger.info(110*"_")
+        logger.info("Optimization completed successfully!")
+        logger.info(f"Best score: {results.best_score:.6f}")
+        logger.info("\nBest parameters:")
+        for param, value in results.best_params.items():
+            logger.info(f"  - {param}: {value}")
+        
+        # Save detailed results
+        results_path = Path(out_path) / study_name
+        
+        # Save optimization summary
+        summary_path = results_path / "optimization_summary.yaml"
+        with open(summary_path, "w") as f:
+            yaml.dump({
+                'study_name'  : study_name,
+                'n_folds'     : n_folds,
+                'n_trials'    : results.n_trials,
+                'best_score'  : float(results.best_score),
+                'best_params' : results.best_params,
+                'features': {
+                    'continuous'  : contfeats,
+                    'categorical' : catfeats,
+                    'target'      : target[0]},
+                'config': {
+                    'direction'      : CONFIG.direction,
+                    'metric'         : CONFIG.metric,
+                    'lambda_penalty' : args.lambda_penalty,
+                    'device'         : CONFIG.device,
+                    'n_jobs'         : CONFIG.n_jobs
+                },
+                'resource_config': {
+                    'max_parallel_trials' : resource_config.max_parallel_trials,
+                    'jobs_per_trial'      : resource_config.n_jobs_per_trial,
+                    'prefer_gpu'          : resource_config.prefer_gpu,
+                    'gpu_memory_limit'    : resource_config.gpu_memory_limit,
+                    'cpu_memory_limit'    : resource_config.cpu_memory_limit
+                }
+            }, f, default_flow_style=False)
+        
+        logger.info(f"\nResults saved to: {results_path}")
+        
+    except Exception as e:
+        logger.error(f"Optimization failed: {str(e)}")
+        raise
+        
+    return results
+
+def run_training(feats_path: str, contfeats: list, catfeats: list, target: list, out_path: str, n_folds: int = 3):
+    """Run the the training mode pipeline."""
+    
+    try:
+        # Find latest optimization study
+        optimization_path = Path(out_path)  / "optim"
+        study_dirs        = [d for d in optimization_path.glob("cv_study_*fold_*") if d.is_dir()]
+        
+        if study_dirs:
+            latest_study = max(study_dirs, key=lambda x: x.stat().st_mtime)
+            opt_summary  = load_yaml_dict(latest_study / "optimization_summary.yaml")
+            model_params = opt_summary['best_params']
+            logger.info(f"Using optimized parameters from: {latest_study.name}")
+        else:
+            # Load default parameters
+            default_params_path = Path(f"./src/models/mltrees/model_params/{args.model}.yaml")
+            model_params        = load_yaml_dict(default_params_path)
+            logger.info("Using default model parameters")
+            
+    except Exception as e:
+        logger.warning(f"Error loading parameters: {e}")
+        logger.warning("Falling back to default parameters")
+        default_params_path = Path(f"./src/models/mltrees/model_params/{args.model}.yaml")
+        model_params        = load_yaml_dict(default_params_path)
+    
+    logger.info(110*"_")
+    logger.info(f"MLTree {args.model} regressor traning and evaluation using {n_folds}-fold cross-validation")")
+    logger.info(110*"_")
+
+    # Load and prepare data partitions
+    logger.info("Loading and preparing data partitions...")
+    partitions = []
+
+    # Load test set (outside the folds, same for all)
+    test_path  = feats_path / "test.csv"
+    test_df    = pd.read_csv(test_path, index_col=False)
+    
+    # Get test features and target
+    feature_names = contfeats + catfeats
+    X_test, _     = tabular_features(test_df, names=feature_names, return_names=True)
+    y_test        = test_df[target]
+    scaler_test   = test_df["M_tot"] if "M_tot" in test_df.columns else None
+    
+    results        = []
+    predictions    = []
+    trained_models = []
+
+    for fold in range(n_folds):
+        logger.info(f"\nProcessing fold {fold + 1}/{n_folds}")
+
+        fold_path  = feats_path / f"{fold}_fold"
+        train_path = fold_path / "train.csv"
+        val_path   = fold_path / "val.csv"
+
+        # Load fold data
+        train_df = pd.read_csv(train_path, index_col=False)
+        val_df   = pd.read_csv(val_path, index_col=False)
+
+        # Concatenate train and val for this fold (optimization has been done for this point)
+        trainval_df = pd.concat([train_df, val_df], ignore_index=True)
+
+        # Extract features and target for train+val
+        X_trainval, _ = tabular_features(trainval_df, names=feature_names, return_names=True)
+        y_trainval    = trainval_df[target]
+
+        # Initialize and train model
+        model = MLTreeRegressor(model_type   = args.model, 
+                                model_params = model_params, 
+                                device       = CONFIG.device, 
+                                n_jobs       = CONFIG.n_jobs)
+
+        logger.info(f"Training model on {len(X_trainval)} samples...")
+        model.fit(X_trainval, y_trainval)
+        trained_models.append(model)
+
+        # Generate predictions
+        y_pred = model.predict(X_test)
+        
+        # Scale predictions if necessary
+        if scaler_test is not None:
+            y_pred_scaled = y_pred * scaler_test
+            y_test_scaled = y_test * scaler_test
+        else:
+            y_pred_scaled = y_pred
+            y_test_scaled = y_test
+        
+        # Calculate metrics
+        fold_metrics = {
+                    'fold' : fold,
+                    'r2'   : r2_score(y_test_scaled, y_pred_scaled),
+                    'mae'  : mean_absolute_error(y_test_scaled, y_pred_scaled),
+                    'mse'  : mean_squared_error(y_test_scaled, y_pred_scaled),
+                    'rmse' : mean_squared_error(y_test_scaled, y_pred_scaled, squared=False)
+                       }
+        results.append(fold_metrics)
+        predictions.append({'fold': fold, 'y_pred': y_pred_scaled, 'y_true': y_test_scaled})
+        
+        logger.info(f"Fold {fold + 1} metrics:")
+        for metric, value in fold_metrics.items():
+            if metric != 'fold':
+                logger.info(f"  - {metric}: {value:.5f}")
+    # 4. Calculate aggregate metrics
+    metrics_df = pd.DataFrame(results)
+    aggregate_metrics = {
+        'mean_r2': metrics_df['r2'].mean(),
+        'std_r2': metrics_df['r2'].std(),
+        'mean_mae': metrics_df['mae'].mean(),
+        'std_mae': metrics_df['mae'].std(),
+        'mean_rmse': metrics_df['rmse'].mean(),
+        'std_rmse': metrics_df['rmse'].std()
+    }
+
+    # 5. Save results
+    timestamp    = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_path = Path(out_path) / f"training_results_{timestamp}"
+    results_path.mkdir(parents=True, exist_ok=True)
+
+    # Save predictions
+    predictions_df = pd.DataFrame({'y_true': y_test_scaled.flatten()})
+    
+    for fold, pred_dict in enumerate(predictions):
+        predictions_df[f'y_pred_fold_{fold}'] = pred_dict['y_pred'].flatten()
+    
+    predictions_df.to_csv(results_path / "predictions.csv", index=False)
+
+    # Save metrics
+    metrics_df.to_csv(results_path / "fold_metrics.csv", index=False)
+
+    # Save training summary
+    summary = {
+        'timestamp'   : timestamp,
+        'n_folds'     : n_folds,
+        'model_type'  : args.model,
+        'model_params': model_params,
+        'features': {
+            'continuous' : contfeats,
+            'categorical': catfeats,
+            'target'     : target
+            },
+        'dataset_info': {
+            'train_size'     : len(X_trainval),
+            'test_size'      : len(X_test),
+            'scaling_applied': scaler_test is not None
+        },
+        'metrics': {
+            'per_fold' : results,
+            'aggregate': aggregate_metrics
+        }
+    }
+
+    with open(results_path / "training_summary.yaml", 'w') as f:
+        yaml.dump(summary, f, default_flow_style=False)
+
+    # Save trained models
+    for fold, model in enumerate(trained_models):
+        model.save_model(str(results_path / f"model_fold_{fold}.joblib"))
+
+    logger.info("\nTraining completed successfully!")
+    logger.info("\nAggregate metrics:")
+    for metric, value in aggregate_metrics.items():
+        logger.info(f"  - {metric}: {value:.6f}")
+    logger.info(f"\nResults saved to: {results_path}")
+
+    return trained_models, summary
+    
 def run_prediction():
-
+    print("Prediction mode not yet implemented.")
 
 # Main Pipeline -----------------------------------------------------------------------------------------------------------#
 def run_pipeline(args):
     """Main pipeline orchestrator."""
     # Setup path manager
-    path_manager = PathManager(args.root_dir, args.dataset, args.exp_name, args.out_dir, args.fig_dir)
+    path_manager = PathManager(root_dir = args.root_dir,
+                               dataset  = args.dataset,
+                               exp_name = args.exp_name,
+                               model    = args.model,
+                               out_dir  = args.out_dir,
+                               fig_dir  = args.fig_dir)
     
     # Run appropriate mode
     if args.mode == "optim":
-
-        run_optimization(train_feats  = f"{path_manager.data_path}0_fold/train.csv",
-                         contfeats = ["log(t)", "log(t_coll/t_cc)" ,"M_tot/M_crit", "log(rho(R_h))", "log(R_h/R_core)"],
-                         catfeats  = ["type_sim"], 
-                         target    = ["M_MMO/M_tot"],
-                         outfigs   = path_manager.out_figs)
+        
+        run_optimization(feats_path = path_manager.data_path,
+                         contfeats  = ["log(t)", "log(t_coll/t_cc)" ,"M_tot/M_crit", "log(rho(R_h))", "log(R_h/R_core)"],
+                         catfeats   = ["type_sim"], 
+                         target     = ["M_MMO/M_tot"],
+                         out_path   = path_manager.base_out
+                         n_folds    = CONFIG.n_folds)
     
     elif args.mode == "train":
-        run_training()  
+        run_training(feats_path = path_manager.data_path,
+                     contfeats  = ["log(t)", "log(t_coll/t_cc)", "M_tot/M_crit", "log(rho(R_h))", "log(R_h/R_core)"],
+                     catfeats   = ["type_sim"],
+                     target     = ["M_MMO/M_tot"],
+                     out_path   = path_manager.base_out,  
+                     n_folds    = CONFIG.n_folds
     
     elif args.mode == "predict":
         run_prediction()
