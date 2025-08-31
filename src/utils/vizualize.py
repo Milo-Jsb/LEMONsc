@@ -13,7 +13,7 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from matplotlib                            import cm
 from matplotlib.colors                     import Normalize, LogNorm, Colormap
 from matplotlib.cm                         import ScalarMappable    
-from sklearn.metrics                       import mean_squared_error
+from sklearn.metrics                       import r2_score
 from scipy.stats                           import gaussian_kde
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
@@ -38,7 +38,7 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
                     show  : bool = True):
     """
     _______________________________________________________________________________________________________________________
-    Generate a correlation plot between predictions and true values, with density coloring and RMSE annotation.
+    Generate a correlation plot between predictions and true values, with density coloring and R²-Score annotation.
     _______________________________________________________________________________________________________________________
     Parameters:
         predictions (array-like) : Predicted values from the model. Mandatory.
@@ -51,7 +51,7 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
         None. The function saves the plot as a .jpg file and displays it.
     _______________________________________________________________________________________________________________________
     Notes:
-        - Calculates RMSE between predictions and true values.
+        - Calculates R²-Score between predictions and true values.
         - Colors points by density using gaussian_kde.
         - Saves the plot to the specified path with the given file name.
         - Handles input validation and file saving errors.
@@ -78,7 +78,7 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
 
     # Compute RMSE -------------------------------------------------------------------------------------------------------#
     try:
-        rmse = math.sqrt(mean_squared_error(y_true=true_values, y_pred=predictions))
+        r2 = r2_score(y_true=true_values, y_pred=predictions))
     except Exception as e:
         raise ValueError(f"Error computing RMSE: {e}")
 
@@ -92,15 +92,18 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
 
     # Density coloring 
     try:
-        xy = np.vstack([true_values, predictions])
-        z = gaussian_kde(xy)(xy)
-        idx = z.argsort()
+        xy      = np.vstack([true_values, predictions])
+        kde     = gaussian_kde(xy)
+        z       = kde(xy)
+        # Normalize density values to [0,1]
+        z       = (z - z.min()) / (z.max() - z.min())
+        idx     = z.argsort()
         x, y, z = true_values[idx], predictions[idx], z[idx]
     except Exception as e:
         raise ValueError(f"Error computing density for scatter plot: {e}")
 
     # Points
-    sc = ax.scatter(x, y, marker=".", s=2.5, c=z, cmap=cmap, label=r"$f_{*}(t)$")
+    sc = ax.scatter(x, y, marker=".", s=2.5, c=z, cmap=cmap, label=r"$f_{*}(t)$", vmin=0, vmax=1)
 
     # Colormap 
     cbar = plt.colorbar(sc)
@@ -108,10 +111,10 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
     cbar.ax.tick_params(labelsize=12)
 
     # Labels and annotation
-    ax.set_ylabel("Model's predictions", size=14)
-    ax.set_xlabel("True simulated values", size=14)
+    ax.set_ylabel(r"Model's predictions [$M_{\odot}$]", size=14)
+    ax.set_xlabel(r"True simulated values [$M_{\odot}$]", size=14)
     ax.tick_params(labelsize=12)
-    ax.text(0.05, 0.95, f"{model_name}\nRMSE: {rmse:.4f}",
+    ax.text(0.05, 0.95, f"{model_name}\n$R^2$-Score: {r2:.4f}",
             transform=ax.transAxes,
             fontsize=12,
             verticalalignment='top',
@@ -123,6 +126,109 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
 
     # Save and show plot -------------------------------------------------------------------------------------------------#
     file_path = os.path.join(path_save, f"corr_plot_{name_file}.jpg")
+    try:
+        os.makedirs(path_save, exist_ok=True)  
+        plt.savefig(file_path, bbox_inches="tight", dpi=900)
+    except Exception as e:
+        raise OSError(f"Could not save plot to {file_path}: {e}")
+    
+    if show: plt.show()
+    plt.close(fig)
+
+# Custom Residual plot with density color map ---------------------------------------------------------------------------#
+def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: str, name_file: str, model_name: str,
+                  cmap  : Union[str, Colormap]="magma",
+                  scale : Optional[str] = None,
+                  show  : bool = True):
+    """
+    _______________________________________________________________________________________________________________________
+    Generate a residual plot (residuals vs predicted values) with density coloring and RMSE annotation.
+    _______________________________________________________________________________________________________________________
+    Parameters:
+        predictions (array-like) : Predicted values from the model. Mandatory.
+        true_values (array-like) : Ground truth values. Mandatory.
+        path_save   (str)        : Directory path to save the plot. Mandatory.
+        name_file   (str)        : Name for the saved plot file (without extension). Mandatory.
+        model_name  (str)        : Name of the model for annotation. Mandatory.
+    _______________________________________________________________________________________________________________________
+    Returns:
+        None. The function saves the plot as a .jpg file and displays it.
+    _______________________________________________________________________________________________________________________
+    Notes:
+        - Calculates residuals as (true - predicted) values
+        - Colors points by density using gaussian_kde
+        - Shows RMSE and mean absolute error
+        - Includes a horizontal line at y=0 for reference
+    _______________________________________________________________________________________________________________________
+    Raises:
+        ValueError, TypeError, OSError
+    _______________________________________________________________________________________________________________________
+    """
+    # Input validation ----------------------------------------------------------------------------------------------------#
+    if predictions is None or true_values is None:
+        raise ValueError("predictions and true_values must not be None.")
+    try:
+        predictions = np.asarray(predictions)
+        true_values = np.asarray(true_values)
+    except Exception as e:
+        raise TypeError(f"Could not convert inputs to numpy arrays: {e}")
+
+    if predictions.shape != true_values.shape:
+        raise ValueError(f"Shape mismatch: predictions {predictions.shape}, true_values {true_values.shape}")
+    if predictions.ndim != 1:
+        raise ValueError("predictions and true_values must be 1D arrays.")
+    if not isinstance(path_save, str) or not isinstance(name_file, str) or not isinstance(model_name, str):
+        raise TypeError("path_save, name_file, and model_name must be strings.")
+
+    # Compute metrics ---------------------------------------------------------------------------------------------------#
+    try:
+        residuals = true_values - predictions
+        rmse = np.sqrt(mean_squared_error(true_values, predictions))
+        mae = mean_absolute_error(true_values, predictions)
+    except Exception as e:
+        raise ValueError(f"Error computing metrics: {e}")
+
+    # Residual Plot ----------------------------------------------------------------------------------------------------#
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    # Reference line at y=0
+    ax.axhline(y=0, color="black", linewidth=0.7, linestyle="dashed")
+
+    # Density coloring 
+    try:
+        xy = np.vstack([predictions, residuals])
+        kde = gaussian_kde(xy)
+        z = kde(xy)
+        # Normalize density values to [0,1]
+        z = (z - z.min()) / (z.max() - z.min())
+        idx = z.argsort()
+        x, y, z = predictions[idx], residuals[idx], z[idx]
+    except Exception as e:
+        raise ValueError(f"Error computing density for scatter plot: {e}")
+
+    # Points
+    sc = ax.scatter(x, y, marker=".", s=2.5, c=z, cmap=cmap, label=r"$f_{*}(t)$", vmin=0, vmax=1)
+
+    # Colormap 
+    cbar = plt.colorbar(sc)
+    cbar.ax.set_ylabel("Density", size=14)
+    cbar.ax.tick_params(labelsize=12)
+
+    # Labels and annotation
+    ax.set_xlabel(r"Predicted values [$M_{\odot}$]", size=14)
+    ax.set_ylabel(r"Residuals [$M_{\odot}$]", size=14)
+    ax.tick_params(labelsize=12)
+    ax.text(0.05, 0.95, f"{model_name}\nRMSE: {rmse:.4f}\nMAE: {mae:.4f}",
+            transform=ax.transAxes,
+            fontsize=12,
+            verticalalignment='top',
+            bbox=dict(facecolor='white', alpha=0.5))
+    
+    if scale is not None:
+        ax.set_xscale(scale)
+
+    # Save and show plot -------------------------------------------------------------------------------------------------#
+    file_path = os.path.join(path_save, f"resid_plot_{name_file}.jpg")
     try:
         os.makedirs(path_save, exist_ok=True)  
         plt.savefig(file_path, bbox_inches="tight", dpi=900)

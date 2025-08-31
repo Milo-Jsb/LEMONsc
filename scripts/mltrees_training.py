@@ -18,6 +18,7 @@ from src.processing.format        import tabular_features
 from src.optim.optimizer          import SpaceSearch, SpaceSearchConfig
 from src.utils.resources          import ResourceConfig
 from src.utils.directory          import load_yaml_dict
+from src.utils.visualization      import correlation_plot, residual_plot
 from src.models.mltrees.regressor import MLTreeRegressor
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
@@ -340,18 +341,19 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         for metric, value in fold_metrics.items():
             if metric != 'fold':
                 logger.info(f"  - {metric}: {value:.5f}")
-    # 4. Calculate aggregate metrics
+    
+    # Calculate aggregate metrics
     metrics_df = pd.DataFrame(results)
     aggregate_metrics = {
-        'mean_r2': metrics_df['r2'].mean(),
-        'std_r2': metrics_df['r2'].std(),
-        'mean_mae': metrics_df['mae'].mean(),
-        'std_mae': metrics_df['mae'].std(),
+        'mean_r2'  : metrics_df['r2'].mean(),
+        'std_r2'   : metrics_df['r2'].std(),
+        'mean_mae ': metrics_df['mae'].mean(),
+        'std_mae'  : metrics_df['mae'].std(),
         'mean_rmse': metrics_df['rmse'].mean(),
-        'std_rmse': metrics_df['rmse'].std()
+        'std_rmse' : metrics_df['rmse'].std()
     }
 
-    # 5. Save results
+    # Save results
     timestamp    = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_path = Path(out_path) / f"training_results_{timestamp}"
     results_path.mkdir(parents=True, exist_ok=True)
@@ -402,6 +404,33 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         logger.info(f"  - {metric}: {value:.6f}")
     logger.info(f"\nResults saved to: {results_path}")
 
+    # Calculate mean predictions across folds
+    mean_predictions = np.mean([pred['y_pred'] for pred in predictions], axis=0)
+
+    # Create visualization directory
+    viz_path = results_path / "figures"
+    viz_path.mkdir(parents=True, exist_ok=True)
+
+    # Generate correlation plot
+    correlation_plot(predictions = mean_predictions,
+                     true_values = y_test_scaled.flatten(),
+                     path_save   = str(viz_path),
+                     name_file   = f"{args.model}_mean_preds",
+                     model_name  = f"{args.model.upper()} (Mean {n_folds}-fold)",
+                     cmap        = "magma",
+                     scale       = "log" if scaler_test is not None else None,
+                     show        = False)
+
+    # Generate residual plot
+    residual_plot(predictions = mean_predictions,
+                  true_values = y_test_scaled.flatten(),
+                  path_save   = str(viz_path),
+                  name_file   = f"{args.model}_mean_preds",
+                  model_name  = f"{args.model.upper()} (Mean {n_folds}-fold)",
+                  cmap        = "magma",
+                  scale       = "log" if scaler_test is not None else None,
+                  show        = False)
+                  
     return trained_models, summary
     
 def run_prediction():
