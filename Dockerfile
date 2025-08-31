@@ -1,7 +1,7 @@
 # Use multi-stage build for a smaller final image
-FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime as builder
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime AS builder
 
-# Set environment variables in one layer. Set CUDA environment variables
+# Environment variables for smoother builds & CUDA support
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -39,6 +39,7 @@ class QuantileNormalizer(nn.Module):
         self.register_buffer("quantiles", quantiles)  
         self.register_buffer("q_values", q_values)    
 
+    @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         ____________________________________________________________________________________________________________________
@@ -57,10 +58,10 @@ class QuantileNormalizer(nn.Module):
         x = x.to(self.q_values.device, dtype=self.q_values.dtype)
 
         # Vectorized search for quantile interval (1, batch, n_features)
-        x_exp  = x.unsqueeze(0)  
-        q_vals = self.q_values.unsqueeze(1)  
-        mask   = (x_exp >= q_vals).float()
-        rank   = mask.sum(dim=0) - 1  
+        x_exp  = x.unsqueeze(0)                                           # (1,B,P)
+        q_vals = self.q_values.unsqueeze(1)                               # (Q,1,P)
+        mask   = (x_exp >= q_vals).float()                                # (Q,B,P)
+        rank   = mask.sum(dim=0) - 1                                      # (B,P)
         rank   = rank.clamp(0, self.q_values.shape[0] - 2).long()
 
         # Gather lower and upper quantile values (batch, n_features)
@@ -81,12 +82,12 @@ class QuantileNormalizer(nn.Module):
 class QuantileFeatureTokenizer(nn.Module):
     """
     ________________________________________________________________________________________________________________________
-    Quantile Feature Tokenizer (QFT) for tabular data.
+    QFT: Quantile Feature Tokenizer for tabular data.
     ________________________________________________________________________________________________________________________
     Parameters:
-        -> X_train      (array-like, shape (n_samples, n_features)) : Training data for quantile normalization.
-        -> embedding_dim (int, default=32)                          : Size of the embedding vector for each feature.
-        -> n_quantiles   (int, default=1000)                        : Number of quantiles for normalization.
+        -> X_train       (array-like, shape (n_samples, n_features)) : Training data for quantile normalization.
+        -> embedding_dim (int, default=32)                           : Size of the embedding vector for each feature.
+        -> n_quantiles   (int, default=1000)                         : Number of quantiles for normalization.
     ________________________________________________________________________________________________________________________
     Returns:
         -> QuantileFeatureTokenizer instance : Quantile feature tokenizer module
@@ -130,8 +131,8 @@ class QuantileFeatureTokenizer(nn.Module):
         # Move to the same device and dtype as the weights
         x = x.to(self.W.device, dtype=self.W.dtype)
 
-        # Normalize the features
-        x_q = self.normalizer(x)  # (batch, n_features) in [0, 1]
+        # Normalize the features (batch, n_features) in [0, 1]
+        x_q = self.normalizer(x)  
 
         # Tokenize the features (batch, n_features, embedding_dim)
         tokens = x_q.unsqueeze(-1) * self.W.unsqueeze(0) + self.b.unsqueeze(0)
@@ -142,7 +143,7 @@ class QuantileFeatureTokenizer(nn.Module):
 class QuantileCategoricalEmbedding(nn.Module):
     """
     ________________________________________________________________________________________________________________________
-    Quantile-based categorical embedding module for tabular data.
+    QCE: Quantile-based categorical embedding module for tabular data.
     ________________________________________________________________________________________________________________________
     Parameters:
         -> categories    (Dict[str, List[str]]) : Dictionary mapping variable names to possible category values.
@@ -154,9 +155,9 @@ class QuantileCategoricalEmbedding(nn.Module):
     ________________________________________________________________________________________________________________________
     Example:
         >>> categories = {'color': ['red', 'green', 'blue'], 'type': ['A', 'B']}
-        >>> module = QuantileCategoricalEmbedding(categories, embedding_dim=8)
+        >>> module    = QuantileCategoricalEmbedding(categories, embedding_dim=8)
         >>> module.fit({'color': ['red', 'blue'], 'type': ['A', 'B']}, y=[1.0, 2.0])
-        >>> X = {'color': torch.tensor([0, 2]), 'type': torch.tensor([1, 0])}
+        >>> X   = {'color': torch.tensor([0, 2]), 'type': torch.tensor([1, 0])}
         >>> out = module(X)
     ________________________________________________________________________________________________________________________
     Notes:
@@ -174,36 +175,30 @@ class QuantileCategoricalEmbedding(nn.Module):
         
         # Dicts to store relevant info
         self.cat2idx: Dict[str, Dict[str, int]] = {}
-        self.embeddings                         = nn.ModuleDict()
+        self.embeddings = nn.ModuleDict()
         
         # Build mapping and embedding for each categorical variable
         for var, cats in categories.items():
             self.cat2idx[var]    = {cat: i for i, cat in enumerate(cats)}
             self.embeddings[var] = nn.Embedding(len(cats), embedding_dim)
         
-        # Quantile statistics will be stored as a dict of tensors after fit()
-        self.quantile_stats: Dict[str, torch.Tensor] = {}
+        # We save the parameters as ModuleDict
+        self.quantile_params = nn.ModuleDict()
 
-    def fit(self, X: Dict[str, List[Any]], y: Any) -> None:
+    @torch.no_grad()
+    def fit(self, X: Dict[str, List[Any]], y: Any, device:torch.device) -> None:
         """
         ____________________________________________________________________________________________________________________
         Compute quantile statistics for each category in each variable using torch only.
         ____________________________________________________________________________________________________________________
         Parameters:
-            -> X (Dict[str, List[Any] or torch.Tensor]) : Dictionary of variable to list/tensor of category values (length = n_samples).
-            -> y (list or torch.Tensor)                : Target values (length = n_samples).
+            -> X (Dict[str, List[Any] or torch.Tensor]) : Dictionary of variable to list/tensor of category values 
+            -> y (list or torch.Tensor)                 : Target values (length = n_samples).
         ____________________________________________________________________________________________________________________
         Returns:
             None. Updates internal quantile_stats buffer.
         ____________________________________________________________________________________________________________________
         """
-        # Convert y to torch tensor if is not already
-        if not isinstance(y, torch.Tensor):
-            y = torch.tensor(y, dtype=torch.float32)
-        else:
-            y = y.float()
-        # Bring tensor to device
-        device = y.device
 
         # iterate around categories
         for var, cats in self.cat2idx.items():
@@ -231,8 +226,8 @@ class QuantileCategoricalEmbedding(nn.Module):
                 else:
                     mat[idx] = torch.zeros(n_q, dtype=torch.float32, device=device)
             
-            # Retrieve the quantile_stats
-            self.quantile_stats[var] = mat
+            # Initial quantiles are trainable params
+            self.quantile_params[var] = nn.Parameter(mat, requires_grad=True)
 
     def forward(self, X: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -247,16 +242,12 @@ class QuantileCategoricalEmbedding(nn.Module):
         ____________________________________________________________________________________________________________________
         """
         outputs = []
+        
+        # Get embedding for each category index and quantile statistics for each category index
         for var, idxs in X.items():
-            # Get embedding for each category index and quantile statistics for each category index
-            emb       = self.embeddings[var](idxs) 
-            quant_mat = self.quantile_stats[var].to(idxs.device)
-            quant     = quant_mat[idxs]  
-            outputs.append(torch.cat([emb, quant], dim=-1))
+            emb   = self.embeddings[var](idxs) 
+            q_mat = self.quantile_params[var][idxs]
+            outputs.append(torch.cat([emb, q_mat], dim=-1))
         
-        # Concatenate all variables along the feature dimension (batch_size, embbeding_dim)
-        tokens = torch.cat(outputs, dim=-1)
-        
-        return tokens
-
+        return torch.stack(outputs, dim=1) 
 # ----------------------------------------------------------------------------------------------------------------------#

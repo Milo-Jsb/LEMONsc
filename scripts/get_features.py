@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from src.utils.directory        import list_all_directories
 
 # Data processing
-from src.processing.format      import filter_and_downsample_hist2d
+from src.processing.format      import filter_and_downsample_hist2d, tabular_features
 
 # Specifics to moccasurvey
 from src.processing.moccasurvey import DEFAULT_CONFIG, load_moccasurvey_imbh_history, moccasurvey_dataset
@@ -35,7 +35,7 @@ logger.remove()
 logger.add(sink=sys.stdout, level="INFO", format="<level>{level}: {message}</level>")
 
 # Add outputs to the file
-logger.add("./logs/experimental_dataset_preparation.log",
+logger.add("./logs/get_features_execution.log",
            level     = "INFO",
            format    = "{time:YYYY-MM-DD HH:mm:ss} - {level}: {message}",
            rotation  = "10 MB",    
@@ -351,7 +351,9 @@ class DataProcessor:
         hybrid_count = stats['environment'].count("HYBRID")
         slow_count = stats['environment'].count("SLOW")
         
+        logger.info(110*"_")
         logger.info(f"Simulation processing completed:")
+        logger.info(110*"_")
         logger.info(f"  - Total simulations processed   : {total_sims}")
         logger.info(f"  - Simulations used              : {stats['used_sims']}")
         logger.info(f"  - Simulations ignored           : {stats['ignored_sims']}")
@@ -359,6 +361,7 @@ class DataProcessor:
         logger.info(f"  - HYBRID formation channel sims : {hybrid_count}")
         logger.info(f"  - SLOW formation channel sims   : {slow_count}")
         logger.info(f"  - Average points per simulation : {avg_points:.1f} ± {std_points:.1f}")
+        logger.info(110*"_")
 
 # Perfom Downsampling in a full dataset if needed -------------------------------------------------------------------------#
 class DownsamplingProcessor:
@@ -532,8 +535,11 @@ def save_dataset_to_csv(data: np.ndarray, columns: List[str], target_data: np.nd
 # Pipeline Modes ---------------------------------------------------------------------------------------------------------#
 def run_study_mode(data_path: str, out_figs: str, exp_type: str, config: ProcessingFeaturesConfig = DEFAULT_PARAMS):
     """Optimized study mode pipeline."""
+
+    logger.info(110*"_")
     logger.info(f"Study of simulations available for moccasurvey dataset")
-    
+    logger.info(110*"_")
+
     # Initialize processors
     processor              = SimulationProcessor(config)
     data_processor         = DataProcessor(config)
@@ -580,13 +586,17 @@ def run_study_mode(data_path: str, out_figs: str, exp_type: str, config: Process
                                           out_figs)
     
     logger.success("Study mode completed")
+    logger.info(110*"_")
 
 def run_feats_mode(data_path: str, out_path: str, exp_type: str, folds: int, 
                   augment: bool, norm_target: bool, log_target: bool, 
                   downsampled: bool = False, config: ProcessingFeaturesConfig = DEFAULT_PARAMS):
     """Optimized features generation mode pipeline."""
-    logger.info(f"Generating tabular features from moccasurvey simulations")
     
+    logger.info(110*"_")
+    logger.info(f"Generating tabular features from moccasurvey simulations")
+    logger.info(110*"_")
+
     # Initialize processors
     processor    = SimulationProcessor(config)
     partitioner  = DataPartitioner(config)
@@ -655,12 +665,16 @@ def run_feats_mode(data_path: str, out_path: str, exp_type: str, folds: int,
                         additional_columns)
     
     logger.success("Features generation completed")
+    logger.info(110*"_")
 
 def run_plot_mode(datafile:str, contfeats:list, catfeats:list, target:list, out_figs: str, 
                   config: ProcessingFeaturesConfig = DEFAULT_PARAMS):
     """Run the plotting mode pipeline."""
-    logger.info(f"Plotting information for tabular training dataset")
     
+    logger.info(110*"_")
+    logger.info(f"Plotting information for tabular training dataset")
+    logger.info(110*"_")
+
     # Initialize plot generator
     plot_generator         = PlotGenerator(config)
 
@@ -679,7 +693,7 @@ def run_plot_mode(datafile:str, contfeats:list, catfeats:list, target:list, out_
     
     # Plot full tabular feats:
     plot_generator._create_features_analysis(feats      = tab_feats_df[contfeats+target],
-                                             names      = labels[0: len(labels)-len(cat_feats)], 
+                                             names      = labels[0: len(labels)-len(catfeats)], 
                                              dataset    = args.dataset, 
                                              experiment = "full", 
                                              out_figs   = out_figs)
@@ -693,11 +707,12 @@ def run_plot_mode(datafile:str, contfeats:list, catfeats:list, target:list, out_
             return
 
         plot_generator._create_features_analysis(feats      = tab_feats_df[mask][contfeats+target],
-                                                 names      = labels[0: len(labels)-len(cat_feats)], 
+                                                 names      = labels[0: len(labels)-len(catfeats)], 
                                                  dataset    = args.dataset, 
                                                  experiment = env_name, 
                                                  out_figs   = out_figs)
     logger.success("Plotting completed")
+    logger.info(110*"_")
 
 # Main Pipeline -----------------------------------------------------------------------------------------------------------#
 def run_pipeline(args):
@@ -720,7 +735,7 @@ def run_pipeline(args):
                        downsampled = args.down)  
     
     elif args.mode == "plot":
-        run_plot_mode(datafile  = f"{self.out_path}0_fold/train.csv"
+        run_plot_mode(datafile  = f"{path_manager.out_path}0_fold/train.csv",
                       contfeats = ["log(t)", "log(t_coll/t_cc)" ,"M_tot/M_crit", "log(rho(R_h))", "log(R_h/R_core)"],
                       catfeats  = ["type_sim"], 
                       target    = ["M_MMO/M_tot"],
