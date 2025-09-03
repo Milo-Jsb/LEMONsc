@@ -65,6 +65,7 @@ docker run \
     --name lemonsc \
     --gpus all \
     --ipc=host \
+    --user appuser \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
     -v $(pwd):/workspace \

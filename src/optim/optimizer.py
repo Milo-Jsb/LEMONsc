@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from abc                     import ABC, abstractmethod
 from dataclasses             import dataclass
 from pathlib                 import Path
-from typing                  import Dict, List, Optional, Union, Callable, Any, Sequence, TypeVar
+from typing                  import Dict, List, Optional, Union, Callable, Any, Sequence, TypeVar, Literal
 from sklearn.model_selection import KFold
 from sklearn.metrics         import get_scorer
 
@@ -547,50 +547,50 @@ class SpaceSearch:
                 # Always release resources
                 self.resource_manager.release_resources(trial.number)
     
-    # Set up callbacks
-    study_callbacks = callbacks or []
-    if patience:
-        study_callbacks.append(self.__early_stopping_callback)
-    
-    # Get optimal number of parallel trials based on resources and partitions
-    n_jobs = self.resource_manager.get_suggested_parallel_trials()
-    
-    # Adjust n_jobs based on number of partitions
-    n_jobs = max(1, n_jobs // len(partitions))
-    
-    # Optimize
-    self.study.optimize(objective, n_trials=self.config.n_trials, timeout=timeout, catch=catch,
-                        callbacks = study_callbacks if study_callbacks else None,
-                        n_jobs    = n_jobs)
-    
-    # Store results
-    self.best_params    = self.study.best_params
-    self.best_score     = self.study.best_value
-    self.trials_history = self.study.trials
-    
-    # Generate visualization and save results
-    if save_study:
-        self.__save_cv_results(output_path)
-        StudyPersistence.save_study(self.study, output_path)
-        self.__plot_cv_distributions(pd.DataFrame([
-                {
-                    'trial'           : t.number,
-                    'mean_score'      : t.user_attrs.get('score_mean', None),
-                    'std_score'       : t.user_attrs.get('score_std', None),
-                    'partition_scores': t.user_attrs.get('partition_scores', [])
-                }
-                for t in self.study.trials
-                if t.state == optuna.trial.TrialState.COMPLETE
-            ]),
-            output_path
-        )
-    
-    return SpaceSearchResult(best_params          = self.best_params,
-                             best_score           = self.best_score,
-                             study                = self.study,
-                             n_trials             = len(self.study.trials),
-                             output_dir           = str(output_path),
-                             optimization_summary = self.get_optimization_summary())
+        # Set up callbacks
+        study_callbacks = callbacks or []
+        if patience:
+            study_callbacks.append(self.__early_stopping_callback)
+        
+        # Get optimal number of parallel trials based on resources and partitions
+        n_jobs = self.resource_manager.get_suggested_parallel_trials()
+        
+        # Adjust n_jobs based on number of partitions
+        n_jobs = max(1, n_jobs // len(partitions))
+        
+        # Optimize
+        self.study.optimize(objective, n_trials=self.config.n_trials, timeout=timeout, catch=catch,
+                            callbacks = study_callbacks if study_callbacks else None,
+                            n_jobs    = n_jobs)
+        
+        # Store results
+        self.best_params    = self.study.best_params
+        self.best_score     = self.study.best_value
+        self.trials_history = self.study.trials
+        
+        # Generate visualization and save results
+        if save_study:
+            self.__save_cv_results(output_path)
+            StudyPersistence.save_study(self.study, output_path)
+            self.__plot_cv_distributions(pd.DataFrame([
+                    {
+                        'trial'           : t.number,
+                        'mean_score'      : t.user_attrs.get('score_mean', None),
+                        'std_score'       : t.user_attrs.get('score_std', None),
+                        'partition_scores': t.user_attrs.get('partition_scores', [])
+                    }
+                    for t in self.study.trials
+                    if t.state == optuna.trial.TrialState.COMPLETE
+                ]),
+                output_path
+            )
+        
+        return SpaceSearchResult(best_params          = self.best_params,
+                                best_score           = self.best_score,
+                                study                = self.study,
+                                n_trials             = len(self.study.trials),
+                                output_dir           = str(output_path),
+                                optimization_summary = self.get_optimization_summary())
 
     def __validate_partitions(self, partitions: List[Dict]) -> None:
         """Validate format and consistency of partitions"""

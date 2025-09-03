@@ -25,8 +25,8 @@ from src.processing.moccasurvey import DEFAULT_CONFIG, load_moccasurvey_imbh_his
 from src.processing.moccasurvey import process_single_simulation, compute_cluster_features, determine_formation_channel
 
 # Vizualization
-from src.utils.vizualize        import plot_simulation_example, dataset_2Dhist_comparison, truncate_colormap
-from src.utils.vizualize        import boxplot_features_with_points, classic_correlogram
+from src.utils.visualize        import plot_simulation_example, dataset_2Dhist_comparison, truncate_colormap
+from src.utils.visualize        import boxplot_features_with_points, classic_correlogram
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
@@ -434,7 +434,7 @@ class PlotGenerator:
     
     def __init__(self, config: ProcessingFeaturesConfig, cmap:Optional[str] = None):
         self.config     = config
-        self.cmap_trunc = truncate_colormap("CMRmap_r" if cmap is None else cmap)
+        self.cmap_trunc = truncate_colormap("gist_stern_r" if cmap is None else cmap)
     
     def create_comparison_plots(self, t_base: List, m_base: List, phy_base: List,
                                t_augm: List, m_augm: List, phy_augm: List,
@@ -500,7 +500,7 @@ class PlotGenerator:
         
         self._create_single_plot(t_base_env, m_base_env, t_augm_env, m_augm_env,
                                 t_down_env, m_down_env, env_name, out_figs)
-    
+    @staticmethod
     def _create_features_analysis(feats, names, dataset, experiment, out_figs):
 
         # Boxplot of the features selected        
@@ -509,7 +509,7 @@ class PlotGenerator:
                                      name_file     = experiment,
                                      dataset_name  = dataset,
                                      point_color   = "wheat",
-                                     figsize       = (len(feats)*4,6))
+                                     figsize       = (len(names)*4,6))
         
         # Correlation plot of the features selected (Spearman coefficient)        
         classic_correlogram(df= feats, method= "spearman", path_save=out_figs,
@@ -557,10 +557,10 @@ def run_study_mode(data_path: str, out_figs: str, exp_type: str, config: Process
     
     # Plot single simulation example
     plot_simulation_example(imbh_df, target_types=["point_mass", "delta_mass", "mass_rate"], 
-                           save_path=out_figs,
-                           t_cc=ifeats["tcc"], t_coll=ifeats["tcoll"], 
-                           t_relax=ifeats["trelax"], M_crit=ifeats["mcrit"],
-                           rho_half=ifeats["rho_half"])
+                           save_path = out_figs,
+                           t_cc      = ifeats["tcc"], t_coll=ifeats["tcoll"], 
+                           t_relax   = ifeats["trelax"], M_crit=ifeats["mcrit"],
+                           rho_half  = ifeats["rho_half"])
     
     # Classify and save simulations by environment type
     simulations_by_type = processor.classify_simulations_by_environment(simulations, exp_type)
@@ -690,7 +690,7 @@ def run_plot_mode(datafile:str, contfeats:list, catfeats:list, target:list, out_
     logger.info(f"  - Continuos features   : {contfeats}")
     logger.info(f"  - Categorical features : {catfeats}")
     logger.info(f"  - Target               : {target}")
-    
+
     # Plot full tabular feats:
     plot_generator._create_features_analysis(feats      = tab_feats_df[contfeats+target],
                                              names      = labels[0: len(labels)-len(catfeats)], 
@@ -699,13 +699,13 @@ def run_plot_mode(datafile:str, contfeats:list, catfeats:list, target:list, out_
                                              out_figs   = out_figs)
 
     # Plot tabular feats by envirioment
-    for channel_code, env_name in [(0, 'fast'), (1, 'slow'), (2, 'hybrid')]:
+    for channel_code, env_name in [(0., 'fast'), (1., 'slow'), (2., 'hybrid')]:
         
-        mask = tab_feats_df[catfeats] == channel_code
+        mask = tab_feats_df[catfeats[0]] == channel_code
         
         if not np.any(mask):
             return
-
+        
         plot_generator._create_features_analysis(feats      = tab_feats_df[mask][contfeats+target],
                                                  names      = labels[0: len(labels)-len(catfeats)], 
                                                  dataset    = args.dataset, 
@@ -739,7 +739,7 @@ def run_pipeline(args):
                       contfeats = ["log(t)", "log(t_coll/t_cc)" ,"M_tot/M_crit", "log(rho(R_h))", "log(R_h/R_core)"],
                       catfeats  = ["type_sim"], 
                       target    = ["M_MMO/M_tot"],
-                      outfigs   = path_manager.out_figs)
+                      out_figs  = path_manager.out_figs)
 
 # Run ---------------------------------------------------------------------------------------------------------------------#
 if __name__ == "__main__":

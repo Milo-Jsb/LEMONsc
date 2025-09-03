@@ -4,10 +4,12 @@ import sys
 import argparse
 import yaml
 
+import numpy  as np
 import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from loguru          import logger
+from pathlib         import Path
 from dataclasses     import dataclass
 from typing          import Dict, List, Tuple, Optional, Union
 from datetime        import datetime
@@ -18,7 +20,7 @@ from src.processing.format        import tabular_features
 from src.optim.optimizer          import SpaceSearch, SpaceSearchConfig
 from src.utils.resources          import ResourceConfig
 from src.utils.directory          import load_yaml_dict
-from src.utils.visualization      import correlation_plot, residual_plot
+from src.utils.visualize          import correlation_plot, residual_plot
 from src.models.mltrees.regressor import MLTreeRegressor
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
@@ -39,14 +41,16 @@ logger.add("./logs/mltrees_execution.log",
 @dataclass
 class TrainingConfig:
     """Configuration class for the execution of mltrees_training() script."""
-    n_folds    : int = 3
-    n_trials   : int = 100
-    n_jobs     : int = 1
-    device     : str = "gpu" if (os.getenv("CUDA_VISIBLE_DEVICES") is not None) else "cpu"
-    seed       : int = 42
-    direction  : str = "minimize"
-    metric     : str = "neg_mean_absolute_error"
-    patience   : int = 20
+    n_folds        : int = 3
+    n_trials       : int = 10
+    n_jobs         : int = 2
+    #device         : str = "gpu" if (os.getenv("CUDA_VISIBLE_DEVICES") is not None) else "cpu"
+    device         : str = "cpu"
+    seed           : int = 42
+    direction      : str = "minimize"
+    metric         : str = "neg_mean_absolute_error"
+    patience       : int = 2
+    lambda_penalty : float = 0.0
 
 CONFIG = TrainingConfig()
 
@@ -87,7 +91,7 @@ class PathManager:
     
     def __init__(self, root_dir: str, dataset: str, exp_name: str, model: str, out_dir: str, fig_dir: str):
         # Data paths
-        self.data_path = Path(root_dir) / dataset
+        self.data_path = Path(root_dir) / exp_name / dataset
         
         # Output structure
         self.base_out   = Path(out_dir) / exp_name / dataset / model
@@ -106,7 +110,7 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     """Run the the optimization mode pipeline."""
     
     logger.info(110*"_")
-    logger.info(f"Space search of the hyperparameters for the MLTree {args.model} regressor using {n_folds}-fold cross-validation")")
+    logger.info(f"Space search of the hyperparameters for the MLTree {args.model} regressor using {n_folds}-fold cross-validation")
     logger.info(110*"_")
 
     # Load and prepare data partitions
@@ -123,12 +127,17 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         val_df   = pd.read_csv(val_path, index_col=False)
 
         # Extract features and target
-        feature_names = contfeats + catfeats
-        X_train, _ = tabular_features(train_df, names=feature_names, return_names=True)
-        y_train    = train_df[target]  
+        feature_names  = contfeats + catfeats + target
         
-        X_val, _ = tabular_features(val_df, names=feature_names, return_names=True)
-        y_val    = val_df[target]
+        # Training
+        feats_train, _ = tabular_features(train_df, names=feature_names, return_names=True)
+        X_train    = feats_train[contfeats+catfeats].astype(np.float32)
+        y_train    = feats_train[target].astype(np.float32)  
+        
+        # Validation
+        feats_val, _ = tabular_features(val_df, names=feature_names, return_names=True)
+        X_val    = feats_val[contfeats+catfeats].astype(np.float32)
+        y_val    = feats_val[target].astype(np.float32)  
 
         # Create partition dictionary with optional scaler
         partition = {
@@ -139,8 +148,8 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         partitions.append(partition)
         
         logger.info(f"Fold {fold + 1}/{n_folds} loaded:")
-        logger.info(f"  - Training samples: {len(X_train)}")
-        logger.info(f"  - Validation samples: {len(X_val)}")
+        logger.info(f"  - Training samples   : {len(X_train)}")
+        logger.info(f"  - Validation samples : {len(X_val)}")
 
     # Log feature information
     logger.info("\nFeatures configuration:")
@@ -149,9 +158,9 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     logger.info(f"  - Target               : {target}")
 
     # Setup resource configuration
-    resource_config = ResourceConfig(max_parallel_trials = CONFIG.n_jobs,
+    resource_config = ResourceConfig(max_parallel_trials = 1,
                                     prefer_gpu           = (CONFIG.device == "cuda"),
-                                    n_jobs_per_trial     = 4 if CONFIG.device == "cpu" else 1,
+                                    n_jobs_per_trial     = 2 if CONFIG.device == "cpu" else 1,
                                     gpu_memory_limit     = 0.9,
                                     cpu_memory_limit     = 0.8)
 
@@ -190,7 +199,7 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
                                          output_dir     = str(study_path),
                                          save_study     = True,
                                          patience       = CONFIG.patience,
-                                         lambda_penalty = args.lambda_penalty)
+                                         lambda_penalty = CONFIG.lambda_penalty)
         
         # Log results
         logger.info(110*"_")
@@ -262,11 +271,11 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     except Exception as e:
         logger.warning(f"Error loading parameters: {e}")
         logger.warning("Falling back to default parameters")
-        default_params_path = Path(f"./src/models/mltrees/model_params/{args.model}.yaml")
+        default_params_path = f"./src/models/mltrees/model_params/{args.model}.yaml"
         model_params        = load_yaml_dict(default_params_path)
     
     logger.info(110*"_")
-    logger.info(f"MLTree {args.model} regressor traning and evaluation using {n_folds}-fold cross-validation")")
+    logger.info(f"MLTree {args.model} regressor traning and evaluation using {n_folds}-fold cross-validation")
     logger.info(110*"_")
 
     # Load and prepare data partitions
@@ -278,10 +287,11 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     test_df    = pd.read_csv(test_path, index_col=False)
     
     # Get test features and target
-    feature_names = contfeats + catfeats
-    X_test, _     = tabular_features(test_df, names=feature_names, return_names=True)
-    y_test        = test_df[target]
-    scaler_test   = test_df["M_tot"] if "M_tot" in test_df.columns else None
+    feature_names = contfeats + catfeats + target
+    feats_test, _     = tabular_features(test_df, names=feature_names, return_names=True)
+    X_test        = feats_test[contfeats+catfeats].astype(np.float32)
+    y_test        = feats_test[target].astype(np.float32)
+    scaler_test   = test_df["M_tot"].astype(np.float32) if "M_tot" in test_df.columns else None
     
     results        = []
     predictions    = []
@@ -302,8 +312,10 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         trainval_df = pd.concat([train_df, val_df], ignore_index=True)
 
         # Extract features and target for train+val
-        X_trainval, _ = tabular_features(trainval_df, names=feature_names, return_names=True)
-        y_trainval    = trainval_df[target]
+        feats_trainval, _ = tabular_features(trainval_df, names=feature_names, return_names=True)
+        
+        X_trainval    = feats_trainval[contfeats+catfeats].astype(np.float32)
+        y_trainval    = feats_trainval[target].astype(np.float32)
 
         # Initialize and train model
         model = MLTreeRegressor(model_type   = args.model, 
@@ -454,7 +466,7 @@ def run_pipeline(args):
                          contfeats  = ["log(t)", "log(t_coll/t_cc)" ,"M_tot/M_crit", "log(rho(R_h))", "log(R_h/R_core)"],
                          catfeats   = ["type_sim"], 
                          target     = ["M_MMO/M_tot"],
-                         out_path   = path_manager.base_out
+                         out_path   = path_manager.base_out,
                          n_folds    = CONFIG.n_folds)
     
     elif args.mode == "train":
@@ -463,7 +475,7 @@ def run_pipeline(args):
                      catfeats   = ["type_sim"],
                      target     = ["M_MMO/M_tot"],
                      out_path   = path_manager.base_out,  
-                     n_folds    = CONFIG.n_folds
+                     n_folds    = CONFIG.n_folds)
     
     elif args.mode == "predict":
         run_prediction()

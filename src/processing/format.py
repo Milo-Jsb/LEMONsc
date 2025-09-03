@@ -254,9 +254,9 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names=True):
             "label"     : r"$M_{\rm tot}/M_{\rm crit}$",
             "operation" : lambda df: df['M_tot'] / df['M_crit']
         },
-        "R_h/R_core" :{
-            "label"     : r"$R_{h}/R_{\rm{core}}$",
-            "operation" : lambda df: df['R_h'] / df['R_core']
+        "log(R_h/R_core)" :{
+            "label"     : r"$\log(R_{h}/R_{\rm{core}})$",
+            "operation" : lambda df: np.log10((df['R_h'] / df['R_core']) + 1)
         },
         "type_sim" :{
             "label"     : r"environment",

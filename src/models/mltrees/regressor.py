@@ -101,7 +101,7 @@ class MLTreeRegressor:
         if self.model_type == "random_forest":
             
             # Retrieve default parameters and update the dictionary
-            default_params = load_yaml_dict(path= "./src/models/mltrees/model_params/rf.yaml")
+            default_params = load_yaml_dict(path= "./src/models/mltrees/model_params/random_forest.yaml")
             default_params.update(params)
             
             # Set type of computation

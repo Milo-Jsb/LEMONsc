@@ -1,5 +1,5 @@
 # Use multi-stage build for a smaller final image
-FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime AS builder
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel AS builder
 
 # Environment variables for smoother builds & CUDA support
 ENV DEBIAN_FRONTEND=noninteractive \

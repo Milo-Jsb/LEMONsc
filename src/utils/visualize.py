@@ -19,10 +19,6 @@ from scipy.stats                           import gaussian_kde
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.processing.format import time_preparation, target_preparation
 
-# Matplotlib latex and font configuration ---------------------------------------------------------------------------------#
-
-### NOTE: ADD FROM GRACE PROGRAMS WHEN YOU CAN
-
 # Helpers -----------------------------------------------------------------------------------------------------------------#
 def truncate_colormap(cmap, minval=0.05, maxval=1.0, n=256):
     """Helper to truncate a color mat from a min to a max val"""
@@ -78,9 +74,9 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
 
     # Compute RMSE -------------------------------------------------------------------------------------------------------#
     try:
-        r2 = r2_score(y_true=true_values, y_pred=predictions))
+        r2 = r2_score(y_true=true_values, y_pred=predictions)
     except Exception as e:
-        raise ValueError(f"Error computing RMSE: {e}")
+        raise ValueError(f"Error computing R2-Score: {e}")
 
     # Correlation Plot ---------------------------------------------------------------------------------------------------#
     fig, ax = plt.subplots(figsize=(8, 5))
