@@ -2,6 +2,7 @@ datasets/
 figures/
 logs/
 notebooks/.ipynb_checkpoints/
+output/
 outputs/
 rawdata/moccasurvey/simulations/
 rawdata/moccasurvey/fast_simulations.txt
