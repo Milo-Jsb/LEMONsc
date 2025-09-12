@@ -1,0 +1,56 @@
+dataset_info:
+  scaling_applied: true
+  test_size: 340052
+  train_size: 2335194
+features:
+  categorical:
+  - type_sim_0.0
+  - type_sim_1.0
+  - type_sim_2.0
+  continuous:
+  - log(t)
+  - log(t_coll/t_cc)
+  - M_tot/M_crit
+  - log(rho(R_h))
+  - log(R_h/R_core)
+  target:
+  - M_MMO/M_tot
+metrics:
+  aggregate:
+    mean_mae: 4135.698485986341
+    mean_r2: 0.16672647442641955
+    mean_rmse: 5270.152450381295
+    std_mae: 78.76172795870018
+    std_r2: 0.02022504402705832
+    std_rmse: 64.18599572635469
+  per_fold:
+  - fold: 0
+    mae: 4171.140787075251
+    mse: 28208568.89979309
+    r2: 0.15378769419014204
+    rmse: 5311.1739662520085
+  - fold: 1
+    mae: 4045.4425695624645
+    mse: 27000323.924603708
+    r2: 0.19003312621011526
+    rmse: 5196.18359227267
+  - fold: 2
+    mae: 4190.512101321309
+    mse: 28122867.410477873
+    r2: 0.15635860287900138
+    rmse: 5303.099792619207
+model_params:
+  bagging_fraction: 0.6901318132260275
+  bagging_freq: 1
+  feature_fraction: 0.92096723025075
+  lambda_l1: 4.481810814839289
+  lambda_l2: 4.128632577540346
+  learning_rate: 0.01892385563713782
+  max_depth: 5
+  min_child_samples: 26
+  n_estimators: 400
+  num_leaves: 112
+  tweedie_variance_power: 1.1997030004621398
+model_type: lightgbm
+n_folds: 3
+timestamp: '20250909_211845'

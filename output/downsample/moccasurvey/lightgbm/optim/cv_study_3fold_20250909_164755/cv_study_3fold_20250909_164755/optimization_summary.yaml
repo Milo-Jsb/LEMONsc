@@ -1,0 +1,32 @@
+best_params:
+  bagging_fraction: 0.49359671220172163
+  bagging_freq: 1
+  feature_fraction: 0.4936111842654619
+  lambda_l1: 3.540362888980227
+  lambda_l2: 0.10292247147901223
+  learning_rate: 0.22648248189516848
+  max_depth: 10
+  min_child_samples: 62
+  n_estimators: 900
+  num_leaves: 192
+  tweedie_variance_power: 1.39963209507789
+best_score: 3161.1403438036846
+config:
+  device: cpu
+  direction: minimize
+  lambda_penalty: 0.0
+  metric: neg_mean_absolute_error
+  n_jobs: 20
+features:
+  categorical:
+  - type_sim
+  continuous:
+  - log(t)
+  - log(t_coll/t_cc)
+  - M_tot/M_crit
+  - log(rho(R_h))
+  - log(R_h/R_core)
+  target: M_MMO/M_tot
+n_folds: 3
+n_trials: 3
+study_name: cv_study_3fold_20250909_164755

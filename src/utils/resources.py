@@ -52,13 +52,13 @@ class DeviceManager:
     def get_device(self, trial_id: int) -> str:
         """Get appropriate device for a trial"""
         if not self._available_gpus or not self.config.prefer_gpu:
-            return "cpu"
+            return "cpu", None
         
         # Round-robin GPU assignment
         gpu_id = self._available_gpus[trial_id % len(self._available_gpus)]
         self._gpu_allocations[trial_id] = gpu_id
 
-        return f"cuda:{gpu_id}"
+        return f"cuda", gpu_id
     
     def cleanup_trial(self, trial_id: int):
         """Cleanup GPU resources after trial completion"""
@@ -122,9 +122,9 @@ class ResourceManager:
         available_memory = 1 - (psutil.virtual_memory().percent / 100)
         gpu_count = len(self.device_manager._available_gpus)
         
-        cpu_based = max(1, self.cpu_manager.total_cores // self.config.n_jobs_per_trial)
+        cpu_based    = max(1, self.cpu_manager.total_cores // self.config.n_jobs_per_trial)
         memory_based = max(1, int(available_memory * self.config.max_parallel_trials))
-        gpu_based = max(1, gpu_count) if self.config.prefer_gpu else cpu_based
+        gpu_based    = max(1, gpu_count) if self.config.prefer_gpu else cpu_based
         
         return min(cpu_based, memory_based, gpu_based, self.config.max_parallel_trials)
 

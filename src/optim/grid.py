@@ -17,7 +17,8 @@ def RandomForestGrid(trial):
 def XGBoostGrid(trial):
 
     param_grid = {
-        "objective"              : "reg:squarederror",
+        "objective"              : "reg:tweedie",
+        "tweedie_variance_power" : trial.suggest_float("tweedie_variance_power", 1.1, 1.9),
         "learning_rate"          : trial.suggest_float("learning_rate", 1e-3, 0.3, log=True),
         "num_leaves"             : trial.suggest_int("num_leaves", 16, 256, step=16),
         "min_child_samples"      : trial.suggest_int("min_child_samples", 5, 100),

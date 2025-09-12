@@ -4,6 +4,7 @@ import optuna
 import joblib
 import warnings
 import logging
+import torch
 
 import numpy             as np
 import pandas            as pd
@@ -20,7 +21,6 @@ from sklearn.metrics         import get_scorer
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.models.mltrees.regressor  import MLTreeRegressor
 from src.optim.grid                import RandomForestGrid, LightGBMGrid, XGBoostGrid, DARTBoostGrid
-from src.utils.resources           import ResourceConfig, ResourceManager
 
 # Type definitions --------------------------------------------------------------------------------------------------------#
 T         = TypeVar('T')
@@ -31,14 +31,14 @@ ModelType = Literal["random_forest", "lightgbm", "xgboost", "dartboost"]
 class SpaceSearchConfig:
     """Configuration settings for SpaceSearch optimization"""
     model_type : ModelType
-    n_jobs         : int = 10                                       # Core numbers for parallel processing
-    n_trials       : int = 100                                      # Number of trials for optimization
-    device         : str = "cpu"                                    # Device to use ('cpu' or 'cuda')
-    verbose        : bool = True                                    # Verbosity flag
-    seed           : int = 42                                       # Fixed seed for reproducibility
-    sampler        : Optional[optuna.samplers.BaseSampler] = None   # Custom sampler, defaults to TPESampler
-    storage        : Optional[str] = None                           # Storage URL for study persistence
-    load_if_exists : bool = False                                   # Checkpoint loading flag
+    n_jobs         : int = 10                                               # Core numbers for parallel processing
+    n_trials       : int = 100                                              # Number of trials for optimization
+    device         : str = "cuda" if torch.cuda.is_available() else "cpu"   # Device to use ('cpu' or 'cuda')
+    verbose        : bool = True                                            # Verbosity flag
+    seed           : int = 42                                               # Fixed seed for reproducibility
+    sampler        : Optional[optuna.samplers.BaseSampler] = None           # Custom sampler, defaults to TPESampler
+    storage        : Optional[str] = None                                   # Storage URL for study persistence
+    load_if_exists : bool = False                                           # Checkpoint loading flag
 
 @dataclass
 class SpaceSearchResult:
@@ -48,16 +48,14 @@ class SpaceSearchResult:
     study                : optuna.study.Study
     n_trials             : int
     output_dir           : str
-    optimization_summary : Dict[str, Any]
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert results to dictionary format"""
         output_dict = {
                     'best_params': self.best_params, 
                     'best_score' : self.best_score, 
-                    'n_trials'   : self.n_trials, 
-                    'summary'    : self.optimization_summary
-                      }
+                    'n_trials'   : self.n_trials,
+                    'ouput_dir'  : self.ouput_dir}
 
         return output_dict
 
@@ -92,14 +90,15 @@ class ModelBuilder(BaseModelBuilder):
                         "dartboost"     : DARTBoostGrid
                               }
     
-    def create_model(self, trial: optuna.trial.Trial, device: str = "cpu", n_jobs: int = 1) -> MLTreeRegressor:
+    def create_model(self, trial: optuna.trial.Trial, features_names:list, device: str = "cpu", n_jobs: int = 1) -> MLTreeRegressor:
         """Create a model instance with parameters from trial and resource constraints"""
         if self.model_type not in self.param_grid_map:
             raise ValueError(f"Unknown model_type: {self.model_type}")
-            
+        
         param_grid = self.param_grid_map[self.model_type](trial)
         model      = MLTreeRegressor(model_type   = self.model_type, 
                                      model_params = param_grid, 
+                                     feat_names   = features_names,
                                      device       = device, 
                                      n_jobs       = n_jobs)
         
@@ -116,7 +115,7 @@ class MetricResolver(BaseMetricResolver):
         for m in metric:
             if isinstance(m, str):
                 scorer = get_scorer(m)
-                resolved.append(scorer)
+                resolved.append(scorer._score_func)
             elif callable(m):
                 resolved.append(m)
             else:
@@ -199,7 +198,9 @@ class SpaceSearch:
         self.logger = self.__setup_logging()
         
         # Initialize components (Model, Metrics, Sampler)
-        self.model_builder   = ModelBuilder(model_type=config.model_type, device=config.device, n_jobs=config.n_jobs)
+        self.model_builder   = ModelBuilder(model_type = self.config.model_type, 
+                                            device     = self.config.device, 
+                                            n_jobs     = self.config.n_jobs)
         self.metric_resolver = MetricResolver()
         self.sampler         = config.sampler or optuna.samplers.TPESampler(seed=config.seed, multivariate=True)
         
@@ -221,12 +222,6 @@ class SpaceSearch:
                 f"SpaceSearch initialized for {self.config.model_type} "
                 f"model (device={self.config.device})"
                 )
-
-        # Add resource management
-        self.resource_config  = ResourceConfig(max_parallel_trials = min(config.n_jobs, 4),  
-                                               prefer_gpu          = (config.device == "cuda"),
-                                               n_jobs_per_trial    = 4 if config.device == "cpu" else 1)
-        self.resource_manager = ResourceManager(self.resource_config)
 
     
     def __setup_logging(self) -> logging.Logger:
@@ -262,11 +257,9 @@ class SpaceSearch:
         
         def objective(trial: optuna.trial.Trial) -> float:
             try:
-                # Acquire resources for this trial
-                resources = self.resource_manager.acquire_resources(trial.number)
-
+                
                 # Create and train model
-                model = self.model_builder.create_model(trial, device=resources['device'], n_jobs=resources['n_jobs'])
+                model = self.model_builder.create_model(trial, device=self.config.device, n_jobs=self.config.n_jobs)
                 model.fit(X_train, y_train)
                 
                 # Make predictions
@@ -289,9 +282,6 @@ class SpaceSearch:
                 self.logger.warning(f"Trial failed: {e}")
                 return -float('inf') if direction == "maximize" else float('inf')
             
-            finally:
-                self.resource_manager.release_resources(trial.number)
-        
         return objective
     
     def __early_stopping_callback(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
@@ -379,9 +369,6 @@ class SpaceSearch:
         # Prepare metric
         scorer = self.metric_resolver.resolve(metric)[0]
         
-        # Set up suggested number of jobs to use
-        n_jobs = self.resource_manager.get_suggested_parallel_trials()
-
         # Create or load study
         self.study = optuna.create_study(direction      = direction,
                                          study_name     = study_name,
@@ -406,7 +393,7 @@ class SpaceSearch:
         # Optimize
         self.study.optimize(objective, n_trials=self.config.n_trials, timeout=timeout, catch=catch,
                             callbacks = study_callbacks if study_callbacks else None,
-                            n_jobs    = n_jobs)  
+                            n_jobs    = 1)  
 
         # Store results
         self.best_params    = self.study.best_params
@@ -422,8 +409,7 @@ class SpaceSearch:
                                  best_score           = self.best_score, 
                                  study                = self.study, 
                                  n_trials             = len(self.study.trials),
-                                 output_dir           = str(output_path),
-                                 optimization_summary = self.get_optimization_summary())
+                                 output_dir           = str(output_path))
 
     def run_cv_study(self, partitions: List[Dict[str, Union[np.ndarray, pd.DataFrame]]], 
                      study_name     : str = "optuna_cv_study",
@@ -492,34 +478,29 @@ class SpaceSearch:
         def objective(trial: optuna.trial.Trial) -> float:
             try:
                 # Get initial resources for this trial
-                resources        = self.resource_manager.acquire_resources(trial.number)
                 partition_scores = []
             
                 # Calculate resources per partition
                 n_partitions = len(partitions)
-                resources_per_partition = {'n_jobs': max(1, resources['n_jobs'] // n_partitions),
-                                           'device': resources['device']}
-            
-                # Train and evaluate on each partition with allocated resources
+
+                # Train and evaluate on each partition
                 for idx, partition in enumerate(partitions):
                     try:
                         # Create model with partition-specific resources
-                        model = self.model_builder.create_model(trial=trial,
-                                                                device=resources_per_partition['device'],
-                                                                n_jobs=resources_per_partition['n_jobs'])
+                        model = self.model_builder.create_model(trial          = trial,
+                                                                device         = self.config.device,
+                                                                features_names = partition["feats"],
+                                                                n_jobs         = self.config.n_jobs)
                         
                         # Train and evaluate
                         score = self.__evaluate_partition(model=model, partition=partition, 
-                                                          scorer    = scorer, 
-                                                          direction = direction)
+                                                          scorer      = scorer, 
+                                                          direction   = direction)
                         partition_scores.append(score)
                         
                         # Report intermediate values
                         trial.set_user_attr(f'partition_{idx}_score', score)
                         
-                        # Optional: Release GPU memory between partitions
-                        if 'cuda' in resources_per_partition['device']:
-                            torch.cuda.empty_cache()
                             
                     except Exception as e:
                         self.logger.warning(f"Trial {trial.number}, Partition {idx} failed: {e}")
@@ -543,25 +524,15 @@ class SpaceSearch:
                 self.logger.warning(f"Trial {trial.number} failed completely: {e}")
                 return -float('inf') if direction == "maximize" else float('inf')
                 
-            finally:
-                # Always release resources
-                self.resource_manager.release_resources(trial.number)
-    
         # Set up callbacks
         study_callbacks = callbacks or []
         if patience:
             study_callbacks.append(self.__early_stopping_callback)
         
-        # Get optimal number of parallel trials based on resources and partitions
-        n_jobs = self.resource_manager.get_suggested_parallel_trials()
-        
-        # Adjust n_jobs based on number of partitions
-        n_jobs = max(1, n_jobs // len(partitions))
-        
         # Optimize
         self.study.optimize(objective, n_trials=self.config.n_trials, timeout=timeout, catch=catch,
                             callbacks = study_callbacks if study_callbacks else None,
-                            n_jobs    = n_jobs)
+                            n_jobs    = 1)
         
         # Store results
         self.best_params    = self.study.best_params
@@ -589,8 +560,7 @@ class SpaceSearch:
                                 best_score           = self.best_score,
                                 study                = self.study,
                                 n_trials             = len(self.study.trials),
-                                output_dir           = str(output_path),
-                                optimization_summary = self.get_optimization_summary())
+                                output_dir           = str(output_path))
 
     def __validate_partitions(self, partitions: List[Dict]) -> None:
         """Validate format and consistency of partitions"""
@@ -620,9 +590,9 @@ class SpaceSearch:
         if scaler is not None:
             y_pred       = y_pred * scaler
             y_val_scaled = y_val * scaler
-            score = float(scorer(y_val_scaled, y_pred))
+            score = float(scorer(y_true=y_val_scaled, y_pred=y_pred))
         else:
-            score = float(scorer(y_val, y_pred))
+            score = float(scorer(y_true=y_val, y_pred=y_pred))
         
         return score
 

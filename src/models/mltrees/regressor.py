@@ -129,7 +129,7 @@ class MLTreeRegressor:
         elif self.model_type == "xgboost":
 
             # Retrieve default parameters and update the dictionary
-            default_params = load_yaml_dict(path= "./src/models/mltrees/model_params/xgb.yaml")
+            default_params = load_yaml_dict(path= "./src/models/mltrees/model_params/xgboost.yaml")
             default_params.update(params)
 
             # Set type of computation
@@ -188,11 +188,11 @@ class MLTreeRegressor:
         if hasattr(X_train, 'columns') and (self.feature_names is None):
             self.feature_names = list(X_train.columns)
         
-        if self.verbose: print(f"Fitting {self.model_type} model with {len(X_train)} samples...")
-        
+        if self.verbose: print(f"Fitting {self.model_type} model with {np.shape(X_train)} samples...")
+
         try:
             # Prepare fit parameters
-            fit_params = {}
+            fit_params = dict_params if dict_params is not None else {}
             
             # Fit the model
             self.model.fit(X_train, y_train, **fit_params)

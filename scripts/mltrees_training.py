@@ -3,6 +3,7 @@ import os
 import sys
 import argparse
 import yaml
+import torch 
 
 import numpy  as np
 import pandas as pd
@@ -18,10 +19,13 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.processing.format        import tabular_features
 from src.optim.optimizer          import SpaceSearch, SpaceSearchConfig
-from src.utils.resources          import ResourceConfig
 from src.utils.directory          import load_yaml_dict
 from src.utils.visualize          import correlation_plot, residual_plot
 from src.models.mltrees.regressor import MLTreeRegressor
+
+# Warnings managment ------------------------------------------------------------------------------------------------------#
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
@@ -41,15 +45,15 @@ logger.add("./logs/mltrees_execution.log",
 @dataclass
 class TrainingConfig:
     """Configuration class for the execution of mltrees_training() script."""
-    n_folds        : int = 3
-    n_trials       : int = 10
-    n_jobs         : int = 2
-    #device         : str = "gpu" if (os.getenv("CUDA_VISIBLE_DEVICES") is not None) else "cpu"
-    device         : str = "cpu"
-    seed           : int = 42
-    direction      : str = "minimize"
-    metric         : str = "neg_mean_absolute_error"
-    patience       : int = 2
+    n_folds        : int   = 3
+    n_trials       : int   = 100
+    n_jobs         : int   = 20
+    device         : str   = "cuda" if torch.cuda.is_available() else "cpu"
+    #device         : str   = "cpu"
+    seed           : int   = 42
+    direction      : str   = "minimize"
+    metric         : str   = "neg_mean_absolute_error"
+    patience       : int   = 20
     lambda_penalty : float = 0.0
 
 CONFIG = TrainingConfig()
@@ -104,7 +108,6 @@ class PathManager:
         self.model_path.mkdir(parents=True, exist_ok=True)
         self.fig_path.mkdir(parents=True, exist_ok=True)
     
-
 # Pipeline Modes -----------------------------------------------------------------------------------------------------------#
 def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: list,  out_path: str, n_folds: int = 3):
     """Run the the optimization mode pipeline."""
@@ -130,39 +133,44 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         feature_names  = contfeats + catfeats + target
         
         # Training
-        feats_train, _ = tabular_features(train_df, names=feature_names, return_names=True)
-        X_train    = feats_train[contfeats+catfeats].astype(np.float32)
-        y_train    = feats_train[target].astype(np.float32)  
+        feats_train, feats_names = tabular_features(train_df, names=feature_names, return_names=True)
+
+        # Identify continuous and categorical and target columns   
+        cont_columns   = [col for col in feats_train.columns if col in contfeats]
+        cat_columns    = [col for col in feats_train.columns if any(col.startswith(cf+"_") for cf in catfeats)]
+        target_columns = [col for col in feats_train.columns if col in target]
+        
+        # Extract numpy arrays
+        X_train    = feats_train[cont_columns+cat_columns].astype(np.float32).to_numpy()
+        y_train    = feats_train[target_columns].astype(np.float32).to_numpy().flatten()  
         
         # Validation
         feats_val, _ = tabular_features(val_df, names=feature_names, return_names=True)
-        X_val    = feats_val[contfeats+catfeats].astype(np.float32)
-        y_val    = feats_val[target].astype(np.float32)  
 
-        # Create partition dictionary with optional scaler
+        X_val    = feats_val[cont_columns+cat_columns].astype(np.float32).to_numpy()
+        y_val    = feats_val[target_columns].astype(np.float32).to_numpy().flatten()  
+
+        # Create partition dictionary with optional scaler, exclude target from features names
         partition = {
                     'X_train': X_train, 'y_train': y_train,
                     'X_val'  : X_val,   'y_val': y_val,
-                    'scaler' : val_df["M_tot"] if "M_tot" in val_df.columns else None
+                    'scaler' : val_df["M_tot"].astype(np.float32).to_numpy().flatten() if "M_tot" in val_df.columns else None,
+                    'feats'  : cont_columns + cat_columns,
+                    'target' : target_columns 
                     }
         partitions.append(partition)
         
         logger.info(f"Fold {fold + 1}/{n_folds} loaded:")
-        logger.info(f"  - Training samples   : {len(X_train)}")
-        logger.info(f"  - Validation samples : {len(X_val)}")
+        logger.info(f"  - Training features (Xtrain type={type(X_train)}): {len(X_train)} [{np.shape(X_train)}]")
+        logger.info(f"  - Training targets  (ytrain type={type(y_train)}): {len(y_train)} [{np.shape(y_train)}]")
+        logger.info(f"  - Validation features (Xval type={type(X_val)}): {len(X_val)} [{np.shape(X_val)}]")
+        logger.info(f"  - Validation targets  (yval type={type(y_val)}): {len(y_val)} [{np.shape(y_val)}]")
 
     # Log feature information
-    logger.info("\nFeatures configuration:")
+    logger.info("Features configuration:")
     logger.info(f"  - Continuous features  : {contfeats}")
-    logger.info(f"  - Categorical features : {catfeats}")
+    logger.info(f"  - Categorical features : {catfeats} -> {cat_columns}")
     logger.info(f"  - Target               : {target}")
-
-    # Setup resource configuration
-    resource_config = ResourceConfig(max_parallel_trials = 1,
-                                    prefer_gpu           = (CONFIG.device == "cuda"),
-                                    n_jobs_per_trial     = 2 if CONFIG.device == "cpu" else 1,
-                                    gpu_memory_limit     = 0.9,
-                                    cpu_memory_limit     = 0.8)
 
     # Initialize optimizer with configuration
     config    = SpaceSearchConfig(model_type = args.model, 
@@ -172,25 +180,20 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
                                   seed       = CONFIG.seed)
     optimizer = SpaceSearch(config)
     
-    # Log resource configuration
-    logger.info("\nResource Configuration:")
-    logger.info(f"  - Device: {CONFIG.device}")
-    logger.info(f"  - Max parallel trials: {resource_config.max_parallel_trials}")
-    logger.info(f"  - Jobs per trial: {resource_config.n_jobs_per_trial}")
-    
     # Create study name with timestamp
     timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
     study_name = f"cv_study_{n_folds}fold_{timestamp}"
     
     # Run optimization with cross-validation
-    logger.info(f"\nStarting optimization study: {study_name}")
+    logger.info(f"Starting optimization study: {study_name}")
+    logger.info(f"  - Device           : {CONFIG.device}")
     logger.info(f"  - Number of trials : {CONFIG.n_trials}")
     logger.info(f"  - Direction        : {CONFIG.direction}")
     logger.info(f"  - Metric           : {CONFIG.metric}")
     
     try:
         # Update output path to use optim subdirectory
-        study_path = Path(out_path) / "optim" / f"cv_study_{n_folds}fold_{timestamp}"
+        study_path = Path(out_path) / "optim" 
         
         results = optimizer.run_cv_study(partitions     = partitions,
                                          study_name     = study_name,
@@ -205,15 +208,12 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         logger.info(110*"_")
         logger.info("Optimization completed successfully!")
         logger.info(f"Best score: {results.best_score:.6f}")
-        logger.info("\nBest parameters:")
+        logger.info("Best parameters:")
         for param, value in results.best_params.items():
             logger.info(f"  - {param}: {value}")
         
-        # Save detailed results
-        results_path = Path(out_path) / study_name
-        
         # Save optimization summary
-        summary_path = results_path / "optimization_summary.yaml"
+        summary_path = study_path / study_name / "optimization_summary.yaml"
         with open(summary_path, "w") as f:
             yaml.dump({
                 'study_name'  : study_name,
@@ -222,26 +222,19 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
                 'best_score'  : float(results.best_score),
                 'best_params' : results.best_params,
                 'features': {
-                    'continuous'  : contfeats,
-                    'categorical' : catfeats,
-                    'target'      : target[0]},
+                    'continuous'  : cont_columns,
+                    'categorical' : cat_columns,
+                    'target'      : target_columns[0]},
                 'config': {
                     'direction'      : CONFIG.direction,
                     'metric'         : CONFIG.metric,
-                    'lambda_penalty' : args.lambda_penalty,
+                    'lambda_penalty' : CONFIG.lambda_penalty,
                     'device'         : CONFIG.device,
                     'n_jobs'         : CONFIG.n_jobs
-                },
-                'resource_config': {
-                    'max_parallel_trials' : resource_config.max_parallel_trials,
-                    'jobs_per_trial'      : resource_config.n_jobs_per_trial,
-                    'prefer_gpu'          : resource_config.prefer_gpu,
-                    'gpu_memory_limit'    : resource_config.gpu_memory_limit,
-                    'cpu_memory_limit'    : resource_config.cpu_memory_limit
                 }
             }, f, default_flow_style=False)
         
-        logger.info(f"\nResults saved to: {results_path}")
+        logger.info(f"Results saved to: {summary_path}")
         
     except Exception as e:
         logger.error(f"Optimization failed: {str(e)}")
@@ -259,7 +252,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         
         if study_dirs:
             latest_study = max(study_dirs, key=lambda x: x.stat().st_mtime)
-            opt_summary  = load_yaml_dict(latest_study / "optimization_summary.yaml")
+            opt_summary  = load_yaml_dict(f"{latest_study}/optimization_summary.yaml")
             model_params = opt_summary['best_params']
             logger.info(f"Using optimized parameters from: {latest_study.name}")
         else:
@@ -288,17 +281,26 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     
     # Get test features and target
     feature_names = contfeats + catfeats + target
-    feats_test, _     = tabular_features(test_df, names=feature_names, return_names=True)
-    X_test        = feats_test[contfeats+catfeats].astype(np.float32)
-    y_test        = feats_test[target].astype(np.float32)
-    scaler_test   = test_df["M_tot"].astype(np.float32) if "M_tot" in test_df.columns else None
     
+    feats_test, feats_names = tabular_features(test_df, names=feature_names, return_names=True)
+
+    # Identify continuous and categorical and target columns   
+    cont_columns   = [col for col in feats_test.columns if col in contfeats]
+    cat_columns    = [col for col in feats_test.columns if any(col.startswith(cf+"_") for cf in catfeats)]
+    target_columns = [col for col in feats_test.columns if col in target]
+
+    # Extract numpy arrays
+    X_test      = feats_test[cont_columns+cat_columns].astype(np.float32).to_numpy()
+    y_test      = feats_test[target_columns].astype(np.float32).to_numpy().flatten()  
+    scaler_test = test_df[["M_tot"]].astype(np.float32).to_numpy().flatten() if "M_tot" in test_df.columns else None
+    
+    # Initialize lists to store results
     results        = []
     predictions    = []
     trained_models = []
 
     for fold in range(n_folds):
-        logger.info(f"\nProcessing fold {fold + 1}/{n_folds}")
+        logger.info(f"Processing fold {fold + 1}/{n_folds}")
 
         fold_path  = feats_path / f"{fold}_fold"
         train_path = fold_path / "train.csv"
@@ -314,13 +316,14 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         # Extract features and target for train+val
         feats_trainval, _ = tabular_features(trainval_df, names=feature_names, return_names=True)
         
-        X_trainval    = feats_trainval[contfeats+catfeats].astype(np.float32)
-        y_trainval    = feats_trainval[target].astype(np.float32)
+        X_trainval = feats_trainval[cont_columns+cat_columns].astype(np.float32).to_numpy()
+        y_trainval = feats_trainval[target].astype(np.float32).to_numpy().flatten()  
 
-        # Initialize and train model
+        # Initialize and train modelflatten
         model = MLTreeRegressor(model_type   = args.model, 
                                 model_params = model_params, 
                                 device       = CONFIG.device, 
+                                feat_names   = feats_names,
                                 n_jobs       = CONFIG.n_jobs)
 
         logger.info(f"Training model on {len(X_trainval)} samples...")
@@ -341,11 +344,12 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         # Calculate metrics
         fold_metrics = {
                     'fold' : fold,
-                    'r2'   : r2_score(y_test_scaled, y_pred_scaled),
-                    'mae'  : mean_absolute_error(y_test_scaled, y_pred_scaled),
-                    'mse'  : mean_squared_error(y_test_scaled, y_pred_scaled),
-                    'rmse' : mean_squared_error(y_test_scaled, y_pred_scaled, squared=False)
+                    'r2'   : float(r2_score(y_test_scaled, y_pred_scaled)),
+                    'mae'  : float(mean_absolute_error(y_test_scaled, y_pred_scaled)),
+                    'mse'  : float(mean_squared_error(y_test_scaled, y_pred_scaled)),
+                    'rmse' : float(np.sqrt(mean_squared_error(y_test_scaled, y_pred_scaled)))
                        }
+
         results.append(fold_metrics)
         predictions.append({'fold': fold, 'y_pred': y_pred_scaled, 'y_true': y_test_scaled})
         
@@ -357,12 +361,12 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     # Calculate aggregate metrics
     metrics_df = pd.DataFrame(results)
     aggregate_metrics = {
-        'mean_r2'  : metrics_df['r2'].mean(),
-        'std_r2'   : metrics_df['r2'].std(),
-        'mean_mae ': metrics_df['mae'].mean(),
-        'std_mae'  : metrics_df['mae'].std(),
-        'mean_rmse': metrics_df['rmse'].mean(),
-        'std_rmse' : metrics_df['rmse'].std()
+        'mean_r2'  : float(metrics_df['r2'].mean()),
+        'std_r2'   : float(metrics_df['r2'].std()),
+        'mean_mae' : float(metrics_df['mae'].mean()),
+        'std_mae'  : float(metrics_df['mae'].std()),
+        'mean_rmse': float(metrics_df['rmse'].mean()),
+        'std_rmse' : float(metrics_df['rmse'].std())
     }
 
     # Save results
@@ -388,14 +392,14 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         'model_type'  : args.model,
         'model_params': model_params,
         'features': {
-            'continuous' : contfeats,
-            'categorical': catfeats,
-            'target'     : target
+            'continuous' : cont_columns,
+            'categorical': cat_columns,
+            'target'     : target_columns
             },
         'dataset_info': {
             'train_size'     : len(X_trainval),
             'test_size'      : len(X_test),
-            'scaling_applied': scaler_test is not None
+            'scaling_applied': True if "M_tot" in test_df.columns else False,
         },
         'metrics': {
             'per_fold' : results,
@@ -410,37 +414,36 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     for fold, model in enumerate(trained_models):
         model.save_model(str(results_path / f"model_fold_{fold}.joblib"))
 
-    logger.info("\nTraining completed successfully!")
-    logger.info("\nAggregate metrics:")
+    logger.info("Training completed successfully!")
+    logger.info("Aggregate metrics:")
     for metric, value in aggregate_metrics.items():
         logger.info(f"  - {metric}: {value:.6f}")
-    logger.info(f"\nResults saved to: {results_path}")
-
-    # Calculate mean predictions across folds
-    mean_predictions = np.mean([pred['y_pred'] for pred in predictions], axis=0)
+    logger.info(f"Results saved to: {results_path}")
 
     # Create visualization directory
     viz_path = results_path / "figures"
     viz_path.mkdir(parents=True, exist_ok=True)
 
     # Generate correlation plot
-    correlation_plot(predictions = mean_predictions,
-                     true_values = y_test_scaled.flatten(),
+    predictions_df = predictions_df.sample(frac=0.3, random_state=CONFIG.seed).reset_index(drop=True)  
+    
+    correlation_plot(predictions = predictions_df[["y_pred_fold_0", "y_pred_fold_1", "y_pred_fold_2"]].mean(axis=1),
+                     true_values = predictions_df["y_true"],
                      path_save   = str(viz_path),
                      name_file   = f"{args.model}_mean_preds",
-                     model_name  = f"{args.model.upper()} (Mean {n_folds}-fold)",
-                     cmap        = "magma",
-                     scale       = "log" if scaler_test is not None else None,
+                     model_name  = f"{args.model} (Mean {n_folds}-fold)",
+                     cmap        = "magma_r",
+                     scale       = None,
                      show        = False)
 
     # Generate residual plot
-    residual_plot(predictions = mean_predictions,
-                  true_values = y_test_scaled.flatten(),
+    residual_plot(predictions = predictions_df[["y_pred_fold_0", "y_pred_fold_1", "y_pred_fold_2"]].mean(axis=1),
+                  true_values = predictions_df["y_true"],
                   path_save   = str(viz_path),
                   name_file   = f"{args.model}_mean_preds",
-                  model_name  = f"{args.model.upper()} (Mean {n_folds}-fold)",
-                  cmap        = "magma",
-                  scale       = "log" if scaler_test is not None else None,
+                  model_name  = f"{args.model} (Mean {n_folds}-fold)",
+                  cmap        = "magma_r",
+                  scale       = None,
                   show        = False)
                   
     return trained_models, summary

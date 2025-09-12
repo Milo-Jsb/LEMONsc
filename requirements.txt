@@ -13,8 +13,8 @@ aiohttp>=3.9.0
 loguru
 optuna
 plotly
+lightgbm --no-binary lightgbm --config-settings=cmake.define.USE_CUDA=ON
 xgboost
-lightgbm
 python-dotenv>=1.0.0
 python-magic>=0.4.27
 python-docx>=1.0.0

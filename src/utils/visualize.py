@@ -99,7 +99,7 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
         raise ValueError(f"Error computing density for scatter plot: {e}")
 
     # Points
-    sc = ax.scatter(x, y, marker=".", s=2.5, c=z, cmap=cmap, label=r"$f_{*}(t)$", vmin=0, vmax=1)
+    sc = ax.scatter(x, y, marker=".", s=2.5, c=z, cmap=cmap, alpha=0.6, label=r"$f_{*}(t)$", vmin=0, vmax=1)
 
     # Colormap 
     cbar = plt.colorbar(sc)
@@ -179,8 +179,8 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
     # Compute metrics ---------------------------------------------------------------------------------------------------#
     try:
         residuals = true_values - predictions
-        rmse = np.sqrt(mean_squared_error(true_values, predictions))
-        mae = mean_absolute_error(true_values, predictions)
+        r2  = r2_score(true_values, predictions)
+
     except Exception as e:
         raise ValueError(f"Error computing metrics: {e}")
 
@@ -203,7 +203,7 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
         raise ValueError(f"Error computing density for scatter plot: {e}")
 
     # Points
-    sc = ax.scatter(x, y, marker=".", s=2.5, c=z, cmap=cmap, label=r"$f_{*}(t)$", vmin=0, vmax=1)
+    sc = ax.scatter(x, y, marker=".", s=2.5, c=z, cmap=cmap, alpha=0.6, label=r"$f_{*}(t)$", vmin=0, vmax=1)
 
     # Colormap 
     cbar = plt.colorbar(sc)
@@ -214,7 +214,7 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
     ax.set_xlabel(r"Predicted values [$M_{\odot}$]", size=14)
     ax.set_ylabel(r"Residuals [$M_{\odot}$]", size=14)
     ax.tick_params(labelsize=12)
-    ax.text(0.05, 0.95, f"{model_name}\nRMSE: {rmse:.4f}\nMAE: {mae:.4f}",
+    ax.text(0.05, 0.95, f"{model_name}\nR$^2$-Score: {r2:.4f}",
             transform=ax.transAxes,
             fontsize=12,
             verticalalignment='top',

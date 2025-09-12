@@ -16,10 +16,16 @@ WORKDIR /workspace
 RUN echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid && \
     apt-get update --allow-releaseinfo-change && apt-get install -y --no-install-recommends \
     git \
+    cmake \
+    build-essential \
+    g++ \
+    libboost-dev \ 
+    libboost-system-dev \ 
+    libboost-filesystem-dev \ 
+    libboost-chrono-dev \
     curl \
     libgl1-mesa-glx \
     python3-pip \
-    nvidia-cuda-toolkit \
     texlive \
     ca-certificates \
     && apt-get clean \

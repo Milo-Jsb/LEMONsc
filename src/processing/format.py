@@ -260,46 +260,45 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names=True):
         },
         "type_sim" :{
             "label"     : r"environment",
-            "operation" : lambda df: df['type_sim'].astype("category")  
+            "operation" : lambda df: pd.get_dummies(df['type_sim'], prefix="type_sim")
         }}
 
-    # Function to apply operations and create new columns -----------------------------------------------------------------#
-    def apply_operations(df, feature_dict):
-        """Apply operations from the feature dictionary to create new columns"""
-        result_df = df.copy()
+    # Apply operations and create new columns -----------------------------------------------------------------------------#
+    result_df = process_df.copy()
+    feats_labels = {}  # dict: column_name -> label
+
+    for feature_name, feature_info in default_feats.items():
+        try:
+            new_feature = feature_info['operation'](process_df)
+
+            if isinstance(new_feature, pd.DataFrame):
+                # Expand dummy columns
+                for col in new_feature.columns:
+                    result_df[col] = new_feature[col]
+                    feats_labels[col] = f"{feature_info['label']} ({col})"
+            else:
+                result_df[feature_name] = new_feature
+                feats_labels[feature_name] = feature_info['label']
+
+        except KeyError as e:
+            print(f"Warning: Column {e} not found for feature {feature_name}")
+        except Exception as e:
+            print(f"Error processing feature {feature_name}: {e}")
         
-        for feature_name, feature_info in feature_dict.items():
-            if 'operation' in feature_info:
-                try:
-                    result_df[feature_name] = feature_info['operation'](df)
-                except KeyError as e:
-                    print(f"Warning: Column {e} not found for feature {feature_name}")
-                except Exception as e:
-                    print(f"Error processing feature {feature_name}: {e}")
-        
-        return result_df
 
     # Apply operations to create new features -----------------------------------------------------------------------------#
-    process_df = apply_operations(process_df, default_feats)
-    
-    # Filter columns based on names if provided
-    if names:
-        available_features = [name for name in names if name in default_feats]
-        if return_names:
-            # Return labels 
-            labels = [default_feats[name]['label'] for name in available_features]
-            return process_df[available_features], labels
-        else:
-            return process_df[available_features]
-    
-    # Return all features if no names specified
-    feature_columns = list(default_feats.keys())
+    if names is not None:
+        filtered_columns = []
+        for name in names:
+            # check for exact match or expanded dummy columns
+            matching = [col for col in result_df.columns if col == name or col.startswith(name)]
+            filtered_columns.extend(matching)
+        result_df = result_df[filtered_columns]
+
+    # Return DataFrame (compatible) + labels for logging
     if return_names:
-        
-        # Return labels
-        labels = [default_feats[name]['label'] for name in feature_columns]
-        return process_df[feature_columns], labels
+        return result_df, feats_labels
     else:
-        return process_df[feature_columns]
+        return result_df
 
 #--------------------------------------------------------------------------------------------------------------------------#
