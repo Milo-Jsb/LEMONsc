@@ -222,7 +222,7 @@ def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xe
     return selected_indices
        
 #--------------------------------------------------------------------------------------------------------------------------#
-def tabular_features(process_df: pd.DataFrame, names:list, return_names=True):
+def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=True, onehot:bool=True) -> pd.DataFrame:
 
     # Set possible features and possible names with nested operations -----------------------------------------------------#
     default_feats = {
@@ -260,7 +260,7 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names=True):
         },
         "type_sim" :{
             "label"     : r"environment",
-            "operation" : lambda df: pd.get_dummies(df['type_sim'], prefix="type_sim")
+            "operation" : lambda df: pd.get_dummies(df['type_sim'], prefix="type_sim") if onehot else df['type_sim'].astype('category')
         }}
 
     # Apply operations and create new columns -----------------------------------------------------------------------------#

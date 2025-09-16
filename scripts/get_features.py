@@ -8,6 +8,7 @@ import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from loguru      import logger
+from scipy.stats import ks_2samp, wasserstein_distance
 from tqdm        import tqdm
 from typing      import Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass
@@ -46,14 +47,14 @@ logger.add("./logs/get_features_execution.log",
 @dataclass
 class ProcessingFeaturesConfig:
     """Configuration class for the processing of get_features() parameters."""
-    points_per_sim: Union[int, float] = 0.85
-    n_virtual: int = 20
+    points_per_sim: Union[int, float] = 0.75
+    n_virtual: int = 10
     train_split: float = 0.7
     val_split: float = 0.2
     test_split: float = 0.1
     min_points_threshold: int = 1000
     histogram_bins: int = 200
-    downsample_min_count: int = 50
+    downsample_min_count: int = 10
     downsample_max_count: int = 150
 
 DEFAULT_PARAMS = ProcessingFeaturesConfig()
@@ -64,7 +65,7 @@ def get_args():
     
     # Main mode of the script
     parser.add_argument("--mode", type=str, default="train",
-                        choices=["study", "feats", "plot"],
+                        choices=["study", "feats", "plot", "dist"],
                         help="Pipeline stage to implement.")
 
     # Directories
@@ -229,6 +230,9 @@ class DataPartitioner:
         """Create stratified partitions based on environment type."""
         simulations_by_type = {}
         
+        # Mapping of env name to numeric label
+        env_to_label = {"FAST": 0, "SLOW": 1, "HYBRID": 2}
+        
         # Load simulation paths by environment type
         for env_type in ["fast", "slow", "hybrid"]:
             filepath = path_manager.get_stratified_file_path(env_type)
@@ -241,7 +245,8 @@ class DataPartitioner:
         
         # Create stratified partitions
         train_simulations, val_simulations, test_simulations = [], [], []
-        
+        train_labels, val_labels, test_labels = [], [], []
+
         for env_type, paths in simulations_by_type.items():
             if not paths:
                 continue
@@ -256,10 +261,16 @@ class DataPartitioner:
             train_idx = shuffled_idx[:n_train]
             val_idx   = shuffled_idx[n_train:n_train + n_val]
             test_idx  = shuffled_idx[n_train + n_val:]
+
+            label = env_to_label[env_type]
             
             train_simulations.extend([paths[i] for i in train_idx])
             val_simulations.extend([paths[i] for i in val_idx])
             test_simulations.extend([paths[i] for i in test_idx])
+
+            train_labels.extend([env_type] * len(train_idx))
+            val_labels.extend([env_type] * len(val_idx))
+            test_labels.extend([env_type] * len(test_idx))
             
             logger.info(f"{env_type} environment:")
             logger.info(f"  Training   : {len(train_idx)}")
@@ -271,7 +282,7 @@ class DataPartitioner:
         logger.info(f"Validation : {len(val_simulations)}")
         logger.info(f"Testing    : {len(test_simulations)}")
         
-        return train_simulations, val_simulations, test_simulations
+        return [train_simulations, train_labels], [val_simulations, val_labels], [test_simulations, test_labels]
 
 # Preprocess all simulations ----------------------------------------------------------------------------------------------#
 class DataProcessor:
@@ -280,7 +291,7 @@ class DataProcessor:
     def __init__(self, config: ProcessingFeaturesConfig):
         self.config = config
     
-    def process_simulations(self, simulations: List[str], exp_type: str, augmentation: bool= False, 
+    def process_simulations(self, simulations: List[str], labels:List[int], exp_type: str, augmentation: bool= False, 
                             apply_noise : bool          = False, 
                             n_virtual   : Optional[int] = None, 
                             verbose     : bool          = True
@@ -294,10 +305,11 @@ class DataProcessor:
 
         processor = SimulationProcessor(self.config)
         
-        for path in tqdm(simulations, desc="Processing simulations", unit="sim"):
+        for idx, path in enumerate(tqdm(simulations, desc="Processing simulations", unit="sim")):
             try:
                 imbh_df, system_df = processor.load_single_simulation(path)
-                
+                label              = labels[idx] if labels is not None else None
+
                 # Skip if insufficient points
                 if len(imbh_df) <= self.config.min_points_threshold:
                     stats['ignored_sims'] += 1
@@ -309,6 +321,7 @@ class DataProcessor:
                 # Process simulation
                 feats, masses, idxs = process_single_simulation(imbh_df=imbh_df, system_df=system_df, config=config,
                                                                 experiment_type  = exp_type, 
+                                                                environment      = label,
                                                                 points_per_sim   = self.config.points_per_sim, 
                                                                 augment          = augmentation, 
                                                                 apply_noise      = apply_noise,
@@ -382,7 +395,9 @@ class DownsamplingProcessor:
         
         # Process each formation channel
         for channel_code, channel_name in [(0, 'FAST'), (1, 'SLOW'), (2, 'HYBRID')]:
+
             mask = phy_array[:, 10] == channel_code
+
             if not np.any(mask):
                 continue
                 
@@ -564,17 +579,30 @@ def run_study_mode(data_path: str, out_figs: str, exp_type: str, config: Process
     
     # Classify and save simulations by environment type
     simulations_by_type = processor.classify_simulations_by_environment(simulations, exp_type)
+
+    
+    path_to_label = {path: env_type
+                    for env_type, paths in simulations_by_type.items()
+                    for path in paths
+                    }
+
+    labels = [path_to_label.get(path, np.nan) for path in simulations]
+
     processor.save_simulation_paths_by_type(simulations_by_type, f"{args.root_dir}{args.dataset}/")
     
     # Process simulations
-    t_base, m_base, phy_base = data_processor.process_simulations(
-        simulations, exp_type, augmentation=False, apply_noise=False, n_virtual=None, verbose=True
+    t_base, m_base, phy_base = data_processor.process_simulations(simulations, labels, exp_type, 
+                                                                  augmentation = False, 
+                                                                  apply_noise  = False, 
+                                                                  n_virtual    = None, 
+                                                                  verbose      = True
     )
     
-    t_augm, m_augm, phy_augm = data_processor.process_simulations(
-        simulations, exp_type, augmentation=True, apply_noise=True, 
-        n_virtual=config.n_virtual, verbose=False
-    )
+    t_augm, m_augm, phy_augm = data_processor.process_simulations(simulations, labels, exp_type, 
+                                                                  augmentation = True, 
+                                                                  apply_noise  = True, 
+                                                                  n_virtual    = config.n_virtual, 
+                                                                  verbose      = False)
     
     # Downsampling analysis
     t_down, m_down, phy_down = downsampling_processor.perform_downsampling(t_augm, m_augm, phy_augm)
@@ -609,10 +637,17 @@ def run_feats_mode(data_path: str, out_path: str, exp_type: str, folds: int,
     stratified_partitions = partitioner.create_stratified_partitions(path_manager)
     
     if stratified_partitions is not None:
-        train_simulations, val_simulations, test_simulations = stratified_partitions
+        train_data, val_data, test_data = stratified_partitions
+        
+        train_simulations, train_labels = train_data
+        val_simulations, val_labels     = val_data
+        test_simulations, test_labels   = test_data
+
         logger.info("Using stratified partitioning based on environment type")
     else:
         train_simulations, val_simulations, test_simulations = partitioner.create_random_partitions(simulations)
+        train_labels = val_labels = test_labels = None
+
         logger.info("Using random partitioning (stratified files not found)")
     
     # Generate folds
@@ -623,6 +658,7 @@ def run_feats_mode(data_path: str, out_path: str, exp_type: str, folds: int,
         # Training data
         xtrain_info, ytrain_info = moccasurvey_dataset(simulations_path = train_simulations, 
                                                        experiment_type  = exp_type,
+                                                       simulations_type = train_labels,
                                                        augmentation     = augment, 
                                                        norm_target      = norm_target, 
                                                        log10_target     = log_target,
@@ -637,15 +673,14 @@ def run_feats_mode(data_path: str, out_path: str, exp_type: str, folds: int,
         logger.info(f"Fold {fold} Train - Stored at {fold_path}")
         
         # Validation data
-        xval_info, yval_info = moccasurvey_dataset(simulations_path = val_simulations, 
-                                                   experiment_type  = exp_type,
-                                                   augmentation     = augment, 
-                                                   norm_target      = norm_target, 
-                                                   log10_target     = log_target,
-                                                   logger           = logger, 
-                                                   points_per_sim   = config.points_per_sim,
-                                                   n_virtual        = config.n_virtual, 
-                                                   downsampled      = downsampled)
+        xval_info, yval_info, _ = moccasurvey_dataset(simulations_path = val_simulations, 
+                                                      experiment_type  = exp_type,
+                                                      simulations_type = val_labels,
+                                                      norm_target      = norm_target, 
+                                                      log10_target     = log_target, 
+                                                      logger           = logger,
+                                                      test_partition   = True, 
+                                                      downsampled      = False)
         
         save_dataset_to_csv(xval_info[0], xval_info[1], yval_info[0], yval_info[1][0], f"{fold_path}val.csv")
         
@@ -655,6 +690,7 @@ def run_feats_mode(data_path: str, out_path: str, exp_type: str, folds: int,
     xtest_info, ytest_info, sim_paths = moccasurvey_dataset(simulations_path = test_simulations, 
                                                             experiment_type  = exp_type,
                                                             norm_target      = norm_target, 
+                                                            simulations_type = test_labels,
                                                             log10_target     = log_target, 
                                                             logger           = logger,
                                                             test_partition   = True, 
@@ -684,7 +720,9 @@ def run_plot_mode(datafile:str, contfeats:list, catfeats:list, target:list, out_
     # Retrieve input features to compute 
     tab_feats_df, labels = tabular_features(process_df   = tab_data_df, 
                                             names        = contfeats  + target + catfeats, 
-                                            return_names = True) 
+                                            return_names = True,
+                                            onehot       = False) 
+    labels_names = [labels[name] for name in contfeats + target]
 
     logger.info(f"Features retrieved")
     logger.info(f"  - Continuos features   : {contfeats}")
@@ -693,7 +731,7 @@ def run_plot_mode(datafile:str, contfeats:list, catfeats:list, target:list, out_
 
     # Plot full tabular feats:
     plot_generator._create_features_analysis(feats      = tab_feats_df[contfeats+target],
-                                             names      = labels[0: len(labels)-len(catfeats)], 
+                                             names      = labels_names, 
                                              dataset    = args.dataset, 
                                              experiment = "full", 
                                              out_figs   = out_figs)
@@ -707,11 +745,94 @@ def run_plot_mode(datafile:str, contfeats:list, catfeats:list, target:list, out_
             return
         
         plot_generator._create_features_analysis(feats      = tab_feats_df[mask][contfeats+target],
-                                                 names      = labels[0: len(labels)-len(catfeats)], 
+                                                 names      = labels_names, 
                                                  dataset    = args.dataset, 
                                                  experiment = env_name, 
                                                  out_figs   = out_figs)
     logger.success("Plotting completed")
+    logger.info(110*"_")
+
+def run_dist_analysis(data_path:str, aug_path:str, contfeats:list, catfeats:list, target:list,
+                      exp_type : str, 
+                      config   : ProcessingFeaturesConfig = DEFAULT_PARAMS):
+    """Run the plotting mode pipeline."""
+    
+    logger.info(110*"_")
+    logger.info(f"Checking conservation of distributions for tabular training augmented dataset agains raw dataset")
+    logger.info(110*"_")
+
+    # Initialize processors
+    processor      = SimulationProcessor(config)
+    data_processor = DataProcessor(config)
+
+    # Define features
+    feature_names  = contfeats + catfeats + target
+    
+    # Load raw simulations
+    simulations = processor.load_simulation_data(data_path)
+    
+    # Classify and save simulations by environment type
+    simulations_by_type = processor.classify_simulations_by_environment(simulations, exp_type)
+    path_to_label       = {path: env_type
+                           for env_type, paths in simulations_by_type.items()
+                           for path in paths
+                           }
+    labels              = [path_to_label.get(path, np.nan) for path in simulations]
+
+    logger.info(f"Loading raw features...")
+
+    # Load raw data
+    t_base, m_base, phy_base = data_processor.process_simulations(simulations, labels, exp_type, 
+                                                                  augmentation = False, 
+                                                                  apply_noise  = False, 
+                                                                  n_virtual    = None, 
+                                                                  verbose      = False)
+    
+    # Create dataframe in the same format as the processed one
+    columns = ["t", "t_coll", "t_relax", "t_cc", "M_tot", "M_mean", "M_max", "M_crit", "rho(R_h)", "R_h", "R_core", "type_sim", "M_MMO"]
+    raw_df  = pd.DataFrame(data= np.column_stack((t_base, phy_base, m_base)), columns= columns)
+    
+    # Retrieve input features to compute statistical test
+    feats_raw, raw_names = tabular_features(raw_df, names=feature_names, return_names=True, onehot=False)
+
+    # Load processed augmented features
+    logger.info(f"Loading trained augmented features...")
+
+    # Load augmented training data 
+    processed_df                 = pd.read_csv(aug_path, index_col=False)
+    feats_processed, feats_names = tabular_features(processed_df, names=feature_names, return_names=True, onehot=False)
+    
+    # Select continuous features inside the dataframes for comparison
+    cont_features = contfeats + target  
+
+    logger.info(110*"_")
+    logger.info(f"Distribution comparison results (KS test + Wasserstein distance):")
+    logger.info(110*"_")
+
+    for sim_type in feats_processed[catfeats[0]].unique():
+        
+        logger.info(f"Envirioment type: {sim_type}")
+        
+        raw  = feats_raw[feats_raw[catfeats[0]] == sim_type]
+        proc = feats_processed[feats_processed[catfeats[0]] == sim_type]
+
+        for feature in cont_features:
+            x = raw[feature].dropna().to_numpy()
+            y = proc[feature].dropna().to_numpy()
+
+            # KS test
+            ks_stat, ks_pval = ks_2samp(x, y)
+
+            # Wasserstein distance
+            w_dist = wasserstein_distance(x, y)
+
+            logger.info(f"{feature}")
+            logger.info(f"  - KS statistic={ks_stat:.3f}, p-value={ks_pval:.2e}")
+            logger.info(f"  - Wasserstein distance={w_dist:.3f}")
+    
+        logger.info(110*"-")
+    
+    logger.success("Distribution analysis completed")
     logger.info(110*"_")
 
 # Main Pipeline -----------------------------------------------------------------------------------------------------------#
@@ -740,6 +861,16 @@ def run_pipeline(args):
                       catfeats  = ["type_sim"], 
                       target    = ["M_MMO/M_tot"],
                       out_figs  = path_manager.out_figs)
+
+    elif args.mode == "dist":
+        run_dist_analysis(data_path = path_manager.data_path,
+                          aug_path = f"{path_manager.out_path}0_fold/train.csv",
+                          contfeats  = ["log(t)", "log(t_coll/t_cc)" ,"M_tot/M_crit", "log(rho(R_h))", "log(R_h/R_core)"],
+                          catfeats   = ["type_sim"], 
+                          target     = ["M_MMO/M_tot"],
+                          exp_type   = args.exp_type)
+    else:
+        logger.error(f"Unknown mode: {args.mode}. Please choose from 'study', 'feats', 'plot', or 'dist'.")
 
 # Run ---------------------------------------------------------------------------------------------------------------------#
 if __name__ == "__main__":

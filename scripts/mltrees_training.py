@@ -12,7 +12,6 @@ import pandas as pd
 from loguru          import logger
 from pathlib         import Path
 from dataclasses     import dataclass
-from typing          import Dict, List, Tuple, Optional, Union
 from datetime        import datetime
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
@@ -49,7 +48,6 @@ class TrainingConfig:
     n_trials       : int   = 100
     n_jobs         : int   = 20
     device         : str   = "cuda" if torch.cuda.is_available() else "cpu"
-    #device         : str   = "cpu"
     seed           : int   = 42
     direction      : str   = "minimize"
     metric         : str   = "neg_mean_absolute_error"

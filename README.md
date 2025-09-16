@@ -44,7 +44,7 @@ bash core-run-container.sh
 This script finds an available port to expose and open the container, feel free to update or change the instruction. After running the container from the terminal use the following instruction to run the interactive notebooks:
 
 ```
-jupyter notebook --ip 0.0.0.0 --port 8883 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
+jupyter notebook --ip 0.0.0.0 --port 8889 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
 ```
 
 Or you can recreate our experiments using the scripts provided in the `/scritps/` folder (check the respective README folder for more info). 

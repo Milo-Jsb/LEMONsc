@@ -6,3 +6,4 @@ random_state: 42
 verbosity: 0
 objective: reg:tweedie
 tweedie_variance_power: 1.5
+enable_categorical: True

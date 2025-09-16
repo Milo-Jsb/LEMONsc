@@ -249,9 +249,10 @@ class SpaceSearch:
         if isinstance(y_train, pd.Series) != isinstance(y_val, pd.Series):
             raise ValueError("y_train and y_val must be the same type")
     
-    def __create_objective(self, scorer: Callable, X_train: Any, y_train: Any, X_val: Any, y_val: Any,
-                            direction : str,
-                            scaler    : Optional[pd.Series] = None
+    def __create_objective(self, scorer : Callable, X_train: Any, y_train: Any, X_val: Any, y_val: Any,
+                            direction   : str,
+                            feats_names : List[str] = [],
+                            scaler      : Optional[pd.Series] = None
                         ) -> Callable[[optuna.trial.Trial], float]:
         """Create the objective function for optimization, if scaler is provided, it will be applied to predictions"""
         
@@ -259,7 +260,9 @@ class SpaceSearch:
             try:
                 
                 # Create and train model
-                model = self.model_builder.create_model(trial, device=self.config.device, n_jobs=self.config.n_jobs)
+                model = self.model_builder.create_model(trial, features_names=feats_names,
+                                                        device=self.config.device, 
+                                                        n_jobs=self.config.n_jobs)
                 model.fit(X_train, y_train)
                 
                 # Make predictions
@@ -313,17 +316,18 @@ class SpaceSearch:
     
     def run_study(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: Union[np.ndarray, pd.Series],
                         X_val: Union[np.ndarray, pd.DataFrame]  ,y_val: Union[np.ndarray, pd.Series],
-                  study_name : str = "optuna_study",
-                  direction  : str = "maximize",
-                  metric     : Union[str, Callable] = "r2",
-                  output_dir : str = "./optuna_output",
-                  save_study : bool = True,
-                  patience   : Optional[int] = None,
-                  pruner     : Optional[optuna.pruners.BasePruner] = None,
-                  timeout    : Optional[int] = None,
-                  catch      : Union[tuple, Sequence[Exception]] = (Exception,),
-                  callbacks  : Optional[List[Callable]] = None,
-                  scaler     : Optional[pd.Series] = None
+                  features_names: List[str],
+                  study_name    : str = "optuna_study",
+                  direction     : str = "maximize",
+                  metric        : Union[str, Callable] = "r2",
+                  output_dir    : str = "./optuna_output",
+                  save_study    : bool = True,
+                  patience      : Optional[int] = None,
+                  pruner        : Optional[optuna.pruners.BasePruner] = None,
+                  timeout       : Optional[int] = None,
+                  catch         : Union[tuple, Sequence[Exception]] = (Exception,),
+                  callbacks     : Optional[List[Callable]] = None,
+                  scaler        : Optional[pd.Series] = None
                 ) -> SpaceSearchResult:
         """
         ____________________________________________________________________________________________________________________

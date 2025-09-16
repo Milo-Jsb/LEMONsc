@@ -24,7 +24,7 @@ DEFAULT_CONFIG = {
             "M_tot", "M_mean", "M_max", "M_crit",         #     - Mass-related 
             "rho(R_h)",                                   #     - Density
             "R_h", "R_core",                              #     - Radii
-            "type_sim"],                                  #     - Categorical envirioment of the simulation                 
+            "type_sim"],                                  #     - Categorical environment of the simulation                 
         
         "base_target":                                    # - Target name of the experiment
             "M_MMO",
@@ -95,8 +95,9 @@ def __apply_noise(value: Union[float, np.ndarray, List[float]], sigma: float = 0
     return np.maximum(noised_array, 0)
 
 #--------------------------------------------------------------------------------------------------------------------------#
-def compute_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFrame, tau: float, apply_noise: bool = False
-                                ) -> Dict[str, Union[float, str]]:
+def compute_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFrame, tau: float, apply_noise: bool = False,
+                             sim_env: Optional[str] = None
+                            ) -> Dict[str, Union[float, str]]:
     """Helper function that creates the cluster of initial conditions and physical values required from moccasurvey"""
     
     def get_value(value, apply_noise):
@@ -111,9 +112,11 @@ def compute_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFrame, tau
     m_max  = get_value(system_df["smsm"].iloc[0], apply_noise)
     cr     = get_value(system_df["rc"].iloc[0], apply_noise)
 
-    # Type of the envirioment of the simulation
-    env, _ = determine_formation_channel(system_df, imbh_df, None)
-
+    # Type of the environment of the simulation (repeat if the simulation its already classified)
+    if (sim_env is not None):  env = sim_env
+    
+    # Determine the formation channel based on initial core density and time of IMBH formation if first seen
+    else: env, _ = determine_formation_channel(system_df, imbh_df, None)
 
     output = dict(rh=rh, v_disp=v_disp, m_tot=m_tot, n=n, m_mean=m_mean, m_max=m_max, cr=cr, type_sim=env,
             mcrit    = critical_mass(hm_radius=rh, mass_per_star=m_mean, cluster_age=tau, v_disp=v_disp).value,
@@ -122,7 +125,7 @@ def compute_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFrame, tau
             tcoll    = collision_time(hm_radius=rh, n_stars=n, mass_per_star=m_mean, v_disp=v_disp).value,
             rho_half = rho_at_rh(n_stars=n, hm_radius=rh).value
             )
-    
+        
     return output
 
 #--------------------------------------------------------------------------------------------------------------------------#
@@ -145,56 +148,56 @@ def determine_formation_channel(system_df, imbh_df, n_virtual: Optional[int]=Non
     mass_time = imbh_df[imbh_df['massNew[Msun](10)'] > 100].iloc[0]['time[Myr]']
     
     if (i_density >= 1e7) and (mass_time <= 50):
-        chform = "FAST" 
-        virsims = n_virtual * 2 if n_virtual else None
+        chform  = "FAST" 
+        virsims = n_virtual 
     
     elif (i_density <= 1e6) and (mass_time >= 500):
         chform = "SLOW" 
-        virsims = n_virtual // 2 if n_virtual else None
+        virsims = n_virtual 
     
     else:
         chform = "HYBRID"
-        virsims = n_virtual // 6 if n_virtual else None
+        virsims = n_virtual 
     
     return chform, virsims
 
 #--------------------------------------------------------------------------------------------------------------------------#
 def __safe_downsamapling_of_points(feats, mass, logger):
     # Safety check: ensure we have data to downsample
-        if len(feats) == 0:
-            if logger: logger.warning("No data available for downsampling")
+    if len(feats) == 0:
+        if logger: logger.warning("No data available for downsampling")
+    else:
+        time_feat = np.log10(feats[:,0] + 1)
+        mass_feat = mass 
+        
+        # Remove any inf/nan values that might have been created
+        valid_mask = np.isfinite(time_feat) & np.isfinite(mass_feat)
+        if not np.all(valid_mask):
+            if logger: logger.warning(f"Removing {np.sum(~valid_mask)} points with inf/nan values")
+            time_feat  = time_feat[valid_mask]
+            mass_feat  = mass_feat[valid_mask]
+            feats_temp = feats[valid_mask]
+            mass_temp  = mass[valid_mask]
         else:
-            time_feat = np.log10(feats[:,0] + 1)
-            mass_feat = mass 
-            
-            # Remove any inf/nan values that might have been created
-            valid_mask = np.isfinite(time_feat) & np.isfinite(mass_feat)
-            if not np.all(valid_mask):
-                if logger: logger.warning(f"Removing {np.sum(~valid_mask)} points with inf/nan values")
-                time_feat  = time_feat[valid_mask]
-                mass_feat  = mass_feat[valid_mask]
-                feats_temp = feats[valid_mask]
-                mass_temp  = mass[valid_mask]
-            else:
-                feats_temp = feats
-                mass_temp  = mass
-            
-            # Only proceed if we still have data
-            if len(time_feat) > 0:
+            feats_temp = feats
+            mass_temp  = mass
+        
+        # Only proceed if we still have data
+        if len(time_feat) > 0:
 
-                H1, xedges, yedges = np.histogram2d(time_feat, mass_feat, bins=[200, 200])
-                idxs = filter_and_downsample_hist2d(time_feat, mass_feat, H1, xedges, yedges, 
-                                                    min_count=20, 
-                                                    max_count=120,
-                                                    seed=42)  
-                
-                if len(idxs) > 0:
-                    return feats_temp[idxs], mass_temp[idxs]
-                
-                else:
-                    if logger: logger.error("Downsampling resulted in empty dataset")
+            H1, xedges, yedges = np.histogram2d(time_feat, mass_feat, bins=[200, 200])
+            idxs = filter_and_downsample_hist2d(time_feat, mass_feat, H1, xedges, yedges, 
+                                                min_count = 10, 
+                                                max_count = 150,
+                                                seed      = 42)   
+            
+            if len(idxs) > 0:
+                return feats_temp[idxs], mass_temp[idxs]
+            
             else:
-                if logger: logger.error("No valid data points remaining after filtering inf/nan values")
+                if logger: logger.error("Downsampling resulted in empty dataset")
+        else:
+            if logger: logger.error("No valid data points remaining after filtering inf/nan values")
 
 
 #--------------------------------------------------------------------------------------------------------------------------#
@@ -203,27 +206,31 @@ def process_single_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, co
                                log10_target     : bool,
                                time_norm_factor : Optional[float], 
                                points_per_sim   : Union[int, float], 
-                               augment          : bool,
-                               apply_noise      : bool, 
-                               n_virtual        : int):
+                               environment      : Optional[str] = None,
+                               augment          : bool = False,
+                               apply_noise      : bool = False, 
+                               n_virtual        : int  = 1):
     """Helper function to preprocess one simulation elements from moccasurvey dataset"""
 
     # Validate the number of input points and determine sampling size
     n_points = len(imbh_df)
     
-    # Determine sampling size based on points_per_sim type
+    # If points_per_sim is an interger, should be greater than the number of points in the simulation
     if isinstance(points_per_sim, int):
         # Fixed number of points
         sample_size = points_per_sim
         if n_points < sample_size:
             raise ValueError(f"Simulation has {n_points} points, requires at least {sample_size}")
+    
+    # If points_per_sim is a float, should be between 0 and 1 as a proportional sampling
     elif isinstance(points_per_sim, float):
-        # Proportional sampling (between 0 and 1)
         if not (0 < points_per_sim <= 1):
             raise ValueError(f"points_per_sim must be between 0 and 1 when float, got {points_per_sim}")
         sample_size = int(n_points * points_per_sim)
         if sample_size < 1:
             raise ValueError(f"Proportional sampling resulted in 0 points (n_points={n_points}, ratio={points_per_sim})")
+    
+    # Otherwise, raise error
     else:
         raise TypeError(f"points_per_sim must be int or float, got {type(points_per_sim)}")
     
@@ -232,26 +239,32 @@ def process_single_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, co
     system_df = system_df.sort_values("tphys").reset_index(drop=True)
 
     # This creates a sampled of points from a given number of elements
-    def sample_window():
-        sidx           = np.sort(np.random.choice(n_points, size=sample_size, replace=False))
+    def sample_window(max_start_frac: float = 0.2) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
+
+        # restrict start index to the early portion of the sequence
+        max_start = int(n_points * max_start_frac)
+        start     = np.random.randint(0, max_start)
+
+        # choose an end point randomly within the allowed window
+        end = np.random.randint(sample_size , n_points)
+ 
+        # Create index array
+        sidx = np.arange(start, end)
+
+        # Sample the dataframes
         df_sampled     = imbh_df.iloc[sidx].copy()
         system_sampled = system_df.iloc[sidx].copy()
-        t0             = df_sampled["time[Myr]"].iloc[0]
-        
-        # Reset initial time
-        #df_sampled["time[Myr]"] -= t0
-        #system_sampled["time[Myr]"]  -=t0
         
         return df_sampled, system_sampled, sidx
 
     # Create the output of the simulation in point-to-point format 
-    def make_features(df_sampled, system_sampled, apply_noise):
+    def make_features(df_sampled, system_sampled, apply_noise, environment):
         # Separate numeric and categorical features
         numeric_feats_names   = ["tcoll", "trelax", "tcc", "m_tot", "m_mean", "m_max", "mcrit", "rho_half", "rh", "cr"]
         categorical_feat_name = "type_sim"
 
         tau  = df_sampled["time[Myr]"].max() - df_sampled["time[Myr]"].min()
-        cluster_feats = compute_cluster_features(system_sampled, df_sampled, tau, apply_noise)
+        cluster_feats = compute_cluster_features(system_sampled, df_sampled, tau, apply_noise, sim_env=environment)
         
         # Get temporal values
         time_evol, t_diff = __prepare_timeseries_inputs(time_series = df_sampled["time[Myr]"], 
@@ -268,9 +281,8 @@ def process_single_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, co
         m = __apply_noise(m_evol) if apply_noise else m_evol
 
         # Convert categorical variable to numeric codes
-        fchannel_codes = {"FAST": 0, "SLOW": 1, "HYBRID": 2} 
+        fchannel_codes = {"FAST": 0, "SLOW": 1, "HYBRID": 2}
         type_sim_code  = fchannel_codes.get(cluster_feats[categorical_feat_name], np.nan)
-
         if t_diff is not None:
             sim_features = np.column_stack([
                 t,
@@ -292,7 +304,7 @@ def process_single_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, co
     iterations = n_virtual if augment else 1
     for _ in range(iterations):
         df_sampled, system_sampled, sidx = sample_window() if augment else (imbh_df.copy(), system_df.copy(), np.arange(n_points))
-        feats, targs = make_features(df_sampled, system_sampled, apply_noise)
+        feats, targs = make_features(df_sampled, system_sampled, apply_noise, environment)
         feats_all.append(feats)
         targs_all.append(targs)
         idxs_all.append(sidx)
@@ -390,6 +402,7 @@ def load_moccasurvey_imbh_history(file_path: str, init_conds_sim: bool= False, c
 
 # Retrieve a partition of input / target values for a ML-Experiment -------------------------------------------------------#
 def moccasurvey_dataset(simulations_path: List[str], experiment_type: str, experiment_config: Dict = DEFAULT_CONFIG,
+                         simulations_type : Optional[List[str]] = None,
                          augmentation     : bool = False, 
                          norm_target      : bool = False, 
                          log10_target     : bool = False,
@@ -439,38 +452,42 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_type: str, exper
     ignored, processed = 0, 0
 
     # Run elements per simulation
-    for path in simulations_path:
+    for idx, path in enumerate(simulations_path):
+
         try:
             imbh, system = load_moccasurvey_imbh_history(f"{path}/", init_conds_sim=False, init_conds_evo=True)
             imbh_df   = imbh[0].drop_duplicates("time[Myr]").sort_values("time[Myr]")
             system_df = system[0].sort_values("tphys")
+            env_type  = simulations_type[idx] if simulations_type else None
 
             # Use merge_asof to align system_df to imbh_df times
             matched_system_df = pd.merge_asof(imbh_df[["time[Myr]"]], system_df,
                                               left_on   = "time[Myr]",
                                               right_on  = "tphys",
                                               direction = "nearest")
-
-            # Ignore shor simulations and raise warning
+            
+            # Ignore short simulations and raise warning
             if len(imbh_df) <= 1000:
                 ignored += 1
-                if logger: logger.warning(f"Ignored {path} (too few points)")
+                if logger: logger.warning(f"Ignored {path} (too few points: {len(imbh_df)})")
                 continue
 
             processed += 1
 
-             # Define categorical envirioment of the simulation
+             # Define categorical environment of the simulation
             _, virsims = determine_formation_channel(matched_system_df, imbh_df, n_virtual)
 
             # Retrieve single simulation data
-            feats, targs, idxs = process_single_simulation(imbh_df, matched_system_df, config, experiment_type,
-                                                            norm_target, 
-                                                            log10_target, 
-                                                            time_norm_factor,
-                                                            points_per_sim, 
-                                                            augment     = augmentation and not test_partition,
-                                                            apply_noise = apply_noise and not test_partition,
-                                                            n_virtual   = virsims
+            feats, targs, idxs = process_single_simulation(imbh_df=imbh_df, system_df=matched_system_df, config=config, 
+                                                            experiment_type  = experiment_type,
+                                                            norm_target      = norm_target, 
+                                                            log10_target     = log10_target, 
+                                                            time_norm_factor = time_norm_factor,
+                                                            points_per_sim   = points_per_sim, 
+                                                            environment      = env_type,
+                                                            augment          = augmentation and not test_partition,
+                                                            apply_noise      = apply_noise and not test_partition,
+                                                            n_virtual        = virsims
                                                             )
 
             features.append(feats)
