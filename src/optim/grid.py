@@ -2,8 +2,9 @@
 def RandomForestGrid(trial):
     
     param_grid = {
-        "objective"              : "mae",
-        "n_estimators"           : trial.suggest_int("n_estimators", 50, 500, step=50),
+        "objective"              : "huber",
+        "alpha"                  : trial.suggest_float("alpha", 0.2, 0.3, step=0.1),
+        "n_estimators"           : trial.suggest_int("n_estimators", 50, 5000, step=50),
         "max_depth"              : trial.suggest_int("max_depth", 3, 20),
         "min_samples_split"      : trial.suggest_int("min_samples_split", 2, 20),
         "min_samples_leaf"       : trial.suggest_int("min_samples_leaf", 1, 10),
@@ -17,15 +18,15 @@ def RandomForestGrid(trial):
 def XGBoostGrid(trial):
 
     param_grid = {
-        "objective"              : "reg:tweedie",
-        "tweedie_variance_power" : trial.suggest_float("tweedie_variance_power", 1.1, 1.9),
-        "learning_rate"          : trial.suggest_float("learning_rate", 1e-3, 0.3, log=True),
+        "objective"              : "reg:pseudohubererror",
+        "huber_slope"            : trial.suggest_float("huber_slope", 0.2, 3.0, step=0.1),
+        "learning_rate"          : trial.suggest_float("learning_rate", 1e-4, 0.3, log=True),
         "num_leaves"             : trial.suggest_int("num_leaves", 16, 256, step=16),
         "min_child_samples"      : trial.suggest_int("min_child_samples", 5, 100),
         "feature_fraction"       : trial.suggest_float("feature_fraction", 0.4, 1.0),
         "bagging_fraction"       : trial.suggest_float("bagging_fraction", 0.4, 1.0),
         "bagging_freq"           : trial.suggest_int("bagging_freq", 1, 10),
-        "n_estimators"           : trial.suggest_int("n_estimators", 100, 1000, step=100),
+        "n_estimators"           : trial.suggest_int("n_estimators", 100, 2000, step=100),
         "max_depth"              : trial.suggest_int("max_depth", 3, 15),
         "lambda_l1"              : trial.suggest_float("lambda_l1", 0.0, 5.0),
         "lambda_l2"              : trial.suggest_float("lambda_l2", 0.0, 5.0),
@@ -36,8 +37,7 @@ def XGBoostGrid(trial):
 # DARTBoost parameter grid to optimze search ------------------------------------------------------------------------------#
 def DARTBoostGrid(trial):
     param_grid = {
-        "objective"              : "reg:tweedie",
-        "tweedie_variance_power" : trial.suggest_float("tweedie_variance_power", 1.1, 1.9),
+        "objective"              : "reg:pseudohubererror",
         "learning_rate"          : trial.suggest_float("learning_rate", 1e-3, 0.3, log=True),
         "max_depth"              : trial.suggest_int("max_depth", 3, 15),
         "n_estimators"           : trial.suggest_int("n_estimators", 100, 1000, step=100),
@@ -57,15 +57,15 @@ def DARTBoostGrid(trial):
 def LightGBMGrid(trial):
     
     param_grid = {
-        "objective"              : "tweedie",
-        "tweedie_variance_power" : trial.suggest_float("tweedie_variance_power", 1.1, 1.9),
+        "objective"              : "huber",
+        "alpha"                  : trial.suggest_float("alpha", 0.2, 0.3, step=0.1),
         "learning_rate"          : trial.suggest_float("learning_rate", 1e-3, 0.3, log=True),
         "num_leaves"             : trial.suggest_int("num_leaves", 16, 256, step=16),
         "min_child_samples"      : trial.suggest_int("min_child_samples", 5, 100),
         "feature_fraction"       : trial.suggest_float("feature_fraction", 0.4, 1.0),
         "bagging_fraction"       : trial.suggest_float("bagging_fraction", 0.4, 1.0),
         "bagging_freq"           : trial.suggest_int("bagging_freq", 1, 10),
-        "n_estimators"           : trial.suggest_int("n_estimators", 100, 1000, step=100),
+        "n_estimators"           : trial.suggest_int("n_estimators", 100, 2000, step=100),
         "max_depth"              : trial.suggest_int("max_depth", 3, 15),
         "lambda_l1"              : trial.suggest_float("lambda_l1", 0.0, 5.0),
         "lambda_l2"              : trial.suggest_float("lambda_l2", 0.0, 5.0),
