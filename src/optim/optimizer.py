@@ -54,7 +54,7 @@ class SpaceSearchResult:
                     'best_params': self.best_params, 
                     'best_score' : self.best_score, 
                     'n_trials'   : self.n_trials,
-                    'output_dir'  : self.output_dir}
+                    'output_dir' : self.output_dir}
 
         return output_dict
 
