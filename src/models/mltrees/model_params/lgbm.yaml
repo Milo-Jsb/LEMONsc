@@ -11,3 +11,4 @@ reg_lambda: 0.0
 random_state: 42
 verbosity: -1
 force_col_wise: true 
+objective: huber

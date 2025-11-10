@@ -10,4 +10,8 @@ verbosity: 0
 sample_type: uniform       
 normalize_type: tree       
 rate_drop: 0.1             
-skip_drop: 0.0             
+skip_drop: 0.0            
+
+# Objective 
+objective: reg:pseudohubererror
+

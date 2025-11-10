@@ -10,7 +10,7 @@ from pathlib                 import Path
 from typing                  import Optional, Dict, List, Tuple, Union, Any
 from lightgbm                import LGBMRegressor
 from xgboost                 import XGBRegressor
-from sklearn.metrics         import mean_squared_error, mean_absolute_error, root_mean_squared_error, r2_score
+from sklearn.metrics         import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.exceptions      import NotFittedError
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
@@ -258,9 +258,6 @@ class MLTreeRegressor:
         ____________________________________________________________________________________________________________________
         Get feature importance scores from the fitted model.
         ____________________________________________________________________________________________________________________
-        Parameters:
-            - print_info (bool) : Optional. If True, prints available importance types and current selection.
-        ____________________________________________________________________________________________________________________
         Returns:
             - dict : Dictionary mapping feature names to importance scores
         ____________________________________________________________________________________________________________________
@@ -356,7 +353,7 @@ class MLTreeRegressor:
             # Compute metrics and store in dictionary
             for metric in metrics:
                 if   (metric.lower() == "mse")  : results["mse"]  = mean_squared_error(y, y_pred)
-                elif (metric.lower() == "rmse") : results["rmse"] = root_mean_squared_error(y, y_pred)
+                elif (metric.lower() == "rmse") : results["rmse"] = mean_squared_error(y, y_pred, squared=False)
                 elif (metric.lower() == "mae")  : results["mae"]  = mean_absolute_error(y, y_pred)
                 elif (metric.lower() == "r2")   : results["r2"]   = r2_score(y, y_pred)
                 
