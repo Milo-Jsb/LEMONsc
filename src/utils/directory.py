@@ -21,7 +21,7 @@ def list_all_directories(directory: str):
     return all_dirs
 
 # Safe Load of JSONfiles --------------------------------------------------------------------------------------------------#
-def __load_json_file(json_path: str, description: str, verbose: bool= False):
+def load_json_file(json_path: str, description: str, verbose: bool= False):
     """
     ________________________________________________________________________________________________________________________
     Helper function: Load a JSON existing file from a given path.

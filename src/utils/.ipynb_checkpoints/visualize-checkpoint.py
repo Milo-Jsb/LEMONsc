@@ -515,9 +515,9 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
         
         # Set title
         title_map = {
-            "pearson" : "Pearson Correlogram",
-            "spearman": "Spearman Correlogram",
-            "kendall" : "Kendall Correlogram"
+            "pearson" : "Pearson Correlation Matrix",
+            "spearman": "Spearman Correlation Matrix",
+            "kendall" : "Kendall Correlation Matrix"
         }
         
         title = title_map[method]
@@ -542,7 +542,7 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
         file_path = os.path.join(path_save, f"correlogram_{method}_{name_file}.jpg")
         try:
             os.makedirs(path_save, exist_ok=True)
-            plt.savefig(file_path, bbox_inches="tight", dpi=600)
+            plt.savefig(file_path, bbox_inches="tight", dpi=300)
         except Exception as e:
             raise OSError(f"Could not save plot to {file_path}: {e}")
     
@@ -550,83 +550,85 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
     plt.close(fig)
 
 # Single simulation plot --------------------------------------------------------------------------------------------------#
-def plot_simulation_example(df: pd.DataFrame, y_var: str = "massNew[Msun](10)",
-                            x_var       : str = "time[Myr]",
-                            y_label     : str = r'$M[\rm M_\odot]$',
-                            x_label     : str = r'Time $[Myr]$',
+def plot_simulation_example(df: pd.DataFrame, target_types:list, mass_column:str= "massNew[Msun](10)",
+                            time_column : str= "time[Myr]",
+                            log10_scale : bool = False,
                             norm_factor : Optional[float] = None,
-                            save_path   : str = "./figures/",
+                            save_path   : str ="./figures/",
                             t_cc        : Optional[float] = None, 
                             t_coll      : Optional[float] = None, 
                             t_relax     : Optional[float] = None, 
                             M_crit      : Optional[float] = None,
                             rho_half    : Optional[float] = None,
-                            show        : bool = False):
+                            show        : bool= False):
     """
-    _______________________________________________________________________________________________________________________
-    Plots a single simulation example with optional metadata displayed in a text box.
-    _______________________________________________________________________________________________________________________
-    Parameters:
-        df          (pd.DataFrame)    : DataFrame containing simulation data. Mandatory.
-        y_var       (str)             : Column name for y-axis variable. Default is "massNew[Msun](10)".
-        x_var       (str)             : Column name for x-axis variable. Default is "time[Myr]".
-        y_label     (str)             : Label for y-axis. Default is mass in solar masses.
-        x_label     (str)             : Label for x-axis. Default is time in Myr.
-        norm_factor (Optional[float]) : Normalization factor for x-axis values. Optional.
-        save_path   (str)             : Path to save the plot. Default is "./figures/".
-        t_cc        (Optional[float]) : Core collapse time for metadata display. Optional.
-        t_coll      (Optional[float]) : Collision time for metadata display. Optional.
-        t_relax     (Optional[float]) : Relaxation time for metadata display. Optional.
-        M_crit      (Optional[float]) : Critical mass for metadata display. Optional.
-        rho_half    (Optional[float]) : Half-mass density for metadata display. Optional.
-        show        (bool)            : Whether to display the plot. Default is False.
-    _______________________________________________________________________________________________________________________
+    Plots selected mass evolution targets for a simulation example.
     """
+    # Axis and some definitions -------------------------------------------------------------------------------------------#
+    TARGETS = {
+        "point_mass": {
+            "label": r'$M[\rm M_\odot]$',
+            "yscale": "linear"
+        },
+        "delta_mass": {
+            "label": r'$\Delta M[\rm M_\odot]$',
+            "yscale": "linear"
+        },
+        "mass_rate": {
+            "label": r'$\Delta M /\Delta t[\rm M_\odot/Myr]$',
+            "yscale": "linear"
+        },
+    }
+
     # Input validation ----------------------------------------------------------------------------------------------------#
-    for col in [y_var, x_var]:
+    for col in [mass_column, time_column]:
         if col not in df.columns:
             raise ValueError(f"Column '{col}' not found in DataFrame.")
 
-    # Retrieve x and y values ---------------------------------------------------------------------------------------------#
+    for t in target_types:
+        if t not in TARGETS:
+            raise ValueError(f"Unknown target_type '{t}'. Valid types: {list(TARGETS.keys())}")
+
+    # Retrieve temporal values --------------------------------------------------------------------------------------------#
     try:
-        if norm_factor is not None:
-            x_vals = df[x_var].values / norm_factor
-        else:
-            x_vals = df[x_var].values
-        y_vals = df[y_var].values
+        time_evol = time_preparation(df[time_column], norm_factor=norm_factor)
     except Exception as e:
-        raise RuntimeError(f"Error preparing data: {e}")
+        raise RuntimeError(f"Error preparing time: {e}")
 
-    # Create plot ---------------------------------------------------------------------------------------------------------#
-    fig, ax = plt.subplots(figsize=(8, 6))
-    
-    ax.plot(x_vals, y_vals, lw=0.75, color="darkblue", marker=".", label='MMO')
-    ax.set_ylabel(y_label, size=14)
-    ax.set_xlabel(x_label, size=14)
-    ax.set_title("Simulation example", size=16, loc="left", pad=10)
-    ax.legend()
+    # Plot elements -------------------------------------------------------------------------------------------------------#
+    fig, axes = plt.subplots(1, len(target_types), figsize=(6 * len(target_types), 5), squeeze=False)
+    axes = axes[0]
 
-    # Add metadata text box if parameters are provided -------------------------------------------------------------------#
-    if any(x is not None for x in [t_cc, t_coll, t_relax, M_crit, rho_half]):
-        text_lines = []
-        if t_cc is not None:
-            text_lines.append(f"$t_{{\\rm{{cc}}}}={t_cc:.3f}$ Myr")
-        if t_coll is not None:
-            text_lines.append(f"$t_{{\\rm{{coll}}}}={t_coll:.3f}$ Myr")
-        if t_relax is not None:
-            text_lines.append(f"$t_{{\\rm{{relax}}}}={t_relax:.3f}$ Myr")
-        if M_crit is not None:
-            text_lines.append(f"$M_{{\\rm{{crit}}}}={M_crit:.2e}$ M$_\\odot$")
-        if rho_half is not None:
-            text_lines.append(f"$\\rho(R_h)={rho_half:.2e}$ pc$^{{-3}}$")
-        
-        text_content = "\n".join(text_lines)
-        ax.text(0.98, 0.98, text_content,
-                transform=ax.transAxes,
-                fontsize=11,
-                verticalalignment='top',
-                horizontalalignment='right',
-                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
+    for i, target_type in enumerate(target_types):
+        props = TARGETS[target_type]
+
+        try:
+            target_vals = target_preparation(mass_evolution= df[mass_column], time_evolution= df[time_column],
+                                            norm_factor = norm_factor,
+                                            target_type = target_type,
+                                            log10_scale = log10_scale)
+
+        except Exception as e:
+            raise RuntimeError(f"Error computing target '{target_type}': {e}")
+
+        ax = axes[i]
+        ax.plot(time_evol, target_vals, lw=0.75, label='MMO', color="darkblue", marker=".")
+        ax.set_ylabel(props["label"], size=14)
+        ax.set_xlabel('Time $[Myr]$', size=14)
+        ax.set_yscale(props.get("yscale", "linear"))
+        ax.legend()
+
+    # Title if metadata ----------------------------------------------------------------------------------------------------#
+    if all(x is not None for x in [t_cc, t_coll, t_relax, M_crit, rho_half]):
+        title = (
+            f"Simulation example: "
+            f"$t_{{\\rm{{cc}}}}={t_cc:.3f}$[Myr]; "
+            f"$t_{{\\rm{{coll}}}}={t_coll:.3f}$[Myr]; "
+            f"$t_{{\\rm{{relax}}}}={t_relax:.3f}$[Myr]; "
+            f"$M_{{\\rm{{crit}}}}={M_crit:.2e}$[M$_\\odot$]; "
+            f"$\\rho(R_h)={rho_half:.2e}$[pc$^{{-3}}$]"
+        )
+        fig.suptitle(title, size=16)
 
     # Save file -----------------------------------------------------------------------------------------------------------#
     save_dir = os.path.dirname(save_path)
@@ -819,13 +821,13 @@ def plot_feature_distributions(feats_raw: pd.DataFrame, feats_processed: pd.Data
             proc_sample = proc_sample.sample(sample_size, random_state=42)
 
         # Histogram
-        fig, ax = plt.subplots(figsize=(6, 5))
+        fig, ax = plt.subplots(figsize=(8, 5))
 
         # Original dataset
-        counts_raw, bin_edges_raw, _ = ax.hist(raw_sample, bins=bins, color='teal', alpha=0.4, density=True, label='Original dataset')
+        counts_raw, bin_edges_raw, _ = ax.hist(raw_sample, bins=bins, color='teal', alpha=0.4, density=True, label='Raw-data')
 
         # Augmented dataset
-        counts_proc, bin_edges_proc, _ = ax.hist(proc_sample, bins=bins, color='gold', alpha=0.4, density=True, label='Training sample')
+        counts_proc, bin_edges_proc, _ = ax.hist(proc_sample, bins=bins, color='gold', alpha=0.4, density=True, label='Proc-data')
 
         # KDE
         kde_raw  = gaussian_kde(raw_sample)
@@ -848,5 +850,3 @@ def plot_feature_distributions(feats_raw: pd.DataFrame, feats_processed: pd.Data
         fig.tight_layout()
         fig.savefig(save_path, dpi=600, bbox_inches="tight")
         plt.close(fig)
-
-#--------------------------------------------------------------------------------------------------------------------------#
