@@ -31,7 +31,8 @@ class MoccaSurveyExperimentConfig:
         "type_sim"]
     target_name        : str  = "M_MMO"                # - Target name (mass evolution of the IMBH)
     requires_temp_evol : bool = True                   # - Flag to use temporal evolution of cluster features
-
+    min_sim_points     : int  = 1000                   # - Minimum number of points per simulation to be used
+ 
 def_config = MoccaSurveyExperimentConfig()
 
 # Helper functions --------------------------------------------------------------------------------------------------------#
@@ -55,13 +56,14 @@ def __parse_moccasurvey_imbh_history_init_conds(file_path: str):
 
 #--------------------------------------------------------------------------------------------------------------------------#
 def __load_moccasurvey_system_data(system_path:str, verbose:bool =False):
-    """Helper function that load the evolution of the initial conditions of the sistem from a single MOCCA-Survey 
+    """Helper function that load the evolution of the initial conditions of the system from a single MOCCA-Survey 
     simulation, load column description into a dictionary"""
     
     if not os.path.exists(system_path):
         print(f"Warning: System file not found: {system_path}")
         return None, None
 
+    # Load column mapping dictionary, assuming correct placement or files
     with open('./rawdata/moccasurvey/mapping_dicts/system_columns.json', 'r') as f:
         system_dict = json.load(f)
 
@@ -133,13 +135,6 @@ def process_single_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, me
     # Create the output of the simulation in point-to-point format 
     def make_features(df_sampled, system_sampled, iconds_dict, noise, environment, config):
 
-        # Separate numeric and categorical features
-        numeric_feats_names = ["tcoll", "trelax", "tcc", "m_tot", "m_mean", "m_max", "mcrit", 
-                               "rho_half", "rh", "cr"]
-
-        # Name of the categorical features
-        categorical_feat_name = "type_sim"
-
         # Compute cluster features
         cluster_feats = compute_cluster_features(system_sampled, df_sampled, iconds_dict, noise, 
                                                  sim_env        = environment,
@@ -155,14 +150,17 @@ def process_single_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, me
 
         # Convert categorical variable to numeric codes
         fchannel_codes = {"FAST": 0, "SLOW": 1, "STEADY": 2}
-        type_sim_code  = fchannel_codes.get(cluster_feats[categorical_feat_name], np.nan)
+        type_sim_code  = fchannel_codes.get(cluster_feats["type_sim"], np.nan)
        
          # Build features array
         feature_columns = [t]
        
+        # Define numeric features names in the expected order
+        expected_order = ["tcoll", "trelax", "tcc", "tcross", "m_tot", "m_mean", "m_max", "mcrit", "rho_half", "rh", "cr",
+                          "z", "fracbin"]
         # Handle temporal vs static features
-        for k in numeric_feats_names:
-            feat_val = cluster_feats[k]
+        for k in expected_order:
+            feat_val = cluster_feats.get(k, np.nan)
             if config.requires_temp_evol and isinstance(feat_val, np.ndarray):
                 # Use time-evolving values
                 feature_columns.append(feat_val)
@@ -253,7 +251,7 @@ def load_moccasurvey_imbh_history(file_path: str, init_conds_sim: bool= False, c
     if verbose: print(f"Loading IMBH history from: {imbh_path}")
     
     try:
-        # Load optional JSON mapping files --------------------------------------------------------------------------------#
+        # Load optional JSON mapping files (assuming correct placement of files) ------------------------------------------#
         if col_description: col_dict = __load_json_file( "./rawdata/moccasurvey/mapping_dicts/imbh_history.json", 
                                                         "description for imbh-history.dat")
         if stellar_map: stellar_dict = __load_json_file( "./rawdata/moccasurvey/mapping_dicts/stellar_types.json",
@@ -312,7 +310,7 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
                                                proportional sampling (size = len(imbh_df) * points_per_sim).
         n_virtual        (int)              : Number of virtual simulations to sample per real simulation if augmentation is 
                                               enabled.
-        downsampled      (bool)             : If performa a downsampled of the dataset by accumulation points in a 2D 
+        downsampled      (bool)             : If perform a downsampled of the dataset by accumulation points in a 2D 
                                               histogram
     ________________________________________________________________________________________________________________________
     Returns:
@@ -341,7 +339,7 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
                                               direction = "nearest")
             
             # Ignore short simulations and raise warning
-            if len(imbh_df) <= 1000:
+            if len(imbh_df) <= def_config.min_sim_points:
                 ignored += 1
                 if logger: logger.warning(f"Ignored {path} (too few points: {len(imbh_df)})")
                 continue
@@ -378,7 +376,7 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
         X_parts, y_parts = [], []
         
         # Process each category with safety checks
-        for channel_code, channel_name in [(0, 'FAST'), (1, 'SLOW'), (2, 'HYBRID')]:
+        for channel_code, channel_name in [(0, 'FAST'), (1, 'SLOW'), (2, 'STEADY')]:
             mask = X[:, -1] == channel_code
             if np.any(mask):
                 X_channel, y_channel = safe_downsampling_of_points(X[mask], y[mask], logger)
