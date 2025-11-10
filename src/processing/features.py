@@ -7,6 +7,7 @@ from typing                import Optional, Union, List, Dict, Any
 from src.utils.phyfactors  import relaxation_time, core_collapse_time, collision_time, crossing_time
 from src.utils.phyfactors  import rho_at_rh, critical_mass
 from src.processing.format import apply_noise
+
 # Define relevant operations for desired tabular features -----------------------------------------------------------------#
 def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=True, onehot:bool=True) -> pd.DataFrame:
     """
@@ -190,7 +191,7 @@ def compute_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFrame, ico
     if (sim_env is not None):  env = sim_env
     
     # Determine the formation channel based on initial core density and time of IMBH formation if first seen
-    else: env, _ = determine_formation_channel(system_df, imbh_df, None)
+    else: env = determine_formation_channel(system_df, imbh_df, None)
 
    
     return {**base_values, **derived_values, 'type_sim': env}
