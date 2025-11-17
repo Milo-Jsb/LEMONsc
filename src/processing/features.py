@@ -5,7 +5,7 @@ import pandas as pd
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from typing                import Optional, Union, List, Dict, Any
 from src.utils.phyfactors  import relaxation_time, core_collapse_time, collision_time, crossing_time
-from src.utils.phyfactors  import rho_at_rh, critical_mass
+from src.utils.phyfactors  import rho_at_rh, critical_mass, safronov_num, mean_stellar_radius
 from src.processing.format import apply_noise
 
 # Define relevant operations for desired tabular features -----------------------------------------------------------------#
@@ -27,16 +27,16 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
     # Set possible features and possible names with nested operations -----------------------------------------------------#
     default_feats = {
         "M_MMO/M_tot" :{
-            "label"     : r"$M_{\rm{MMO}}/M_{\rm{tot}}^{10\%}$",
-            "operation" : lambda df: df['M_MMO'] / (0.1* df['M_tot'])
+            "label"     : r"$M_{\rm{MMO}}/M_{\rm{tot}}$",
+            "operation" : lambda df: df['M'] / df['M_tot']
              },
         "t/t_cc" :{
             "label"     : r"$\log(t/t_{\rm{cc}})$",
             "operation" : lambda df: np.log10(df['t'] / df['t_cc']+1)
         },
-        "log(t_coll/t_relax)" :{
-            "label"     : r"$\log(t_{\rm coll}/t_{\rm relax})$",
-            "operation" : lambda df: np.log10((df['t_coll']/df['t_relax']) + 1)
+        "log(t_relax/t_cross)" :{
+            "label"     : r"$\log(t_{\rm relax}/t_{\rm cross})$",
+            "operation" : lambda df: np.log10((df['t_relax']/df['t_cross']) + 1)
         },
         "log(t)" :{
             "label"     : r"$\log(t)$",
@@ -47,8 +47,8 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
             "operation" : lambda df: np.log10(df['rho(R_h)'] + 1)
         },
         "M_tot/M_crit" :{
-            "label"     : r"$M_{\rm tot}/M_{\rm crit}$",
-            "operation" : lambda df: df['M_tot'] / df['M_crit']
+            "label"     : r"$\log(M_{\rm tot}/M_{\rm crit})$",
+            "operation" : lambda df: np.log10(df['M_tot'] / df['M_crit'] + 1)
         },
         "log(R_h/R_core)" :{
             "label"     : r"$\log(R_{h}/R_{\rm{core}})$",
@@ -178,14 +178,13 @@ def compute_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFrame, ico
 
     # Compute derived features using physical formulas -------------------------------------------------------------------#
     derived_values = compute_physical_parameters(
-                        time_values    = base_values["tau"],
-                        rh_values      = base_values['rh'],
-                        v_disp_values  = base_values['v_disp'],
-                        m_tot_values   = base_values['m_tot'],
-                        n_values       = base_values['n'],
-                        m_mean_values  = base_values['m_mean'],
-                        m_max_values   = base_values['m_max'],
-                        stellar_radius = 1.0)
+                        time_values      = base_values["tau"],
+                        rh_values        = base_values['rh'],
+                        v_disp_values    = base_values['v_disp'],
+                        n_values         = base_values['n'],
+                        m_mean_values    = base_values['m_mean'],
+                        m_max_values     = base_values['m_max'],
+                        comp_stellar_val = temp_evol)
             
     # Type of the environment of the simulation (repeat if the simulation its already classified)
     if (sim_env is not None):  env = sim_env
@@ -241,11 +240,11 @@ def determine_formation_channel(system_df: pd.DataFrame, imbh_df: pd.DataFrame, 
 
 # Compute physical parameters derived of quantities from the simulations --------------------------------------------------#
 def compute_physical_parameters(time_values : np.ndarray, rh_values: Union[float, np.ndarray], 
-                                v_disp_values  : Union[float, np.ndarray],
-                                n_values       : Union[int, np.ndarray],
-                                m_mean_values  : Union[float, np.ndarray],
-                                m_max_values   : Union[float, np.ndarray],
-                                stellar_radius : float = 1.0,
+                                v_disp_values    : Union[float, np.ndarray],
+                                n_values         : Union[int, np.ndarray],
+                                m_mean_values    : Union[float, np.ndarray],
+                                m_max_values     : Union[float, np.ndarray],
+                                comp_stellar_val : bool = False,
                                 ) -> dict:
     """
     ________________________________________________________________________________________________________________________
@@ -255,22 +254,21 @@ def compute_physical_parameters(time_values : np.ndarray, rh_values: Union[float
         time_values    (np.ndarray)         [Myr]  : Array of time values
         rh_values      (float | np.ndarray) [pc]   : Array of half-mass radius values
         v_disp_values  (float | np.ndarray) [km/s] : Array of velocity dispersion values
-        m_tot_values   (float | np.ndarray) [Msun] : Array of total mass values (not used directly)
         n_values       (int | np.ndarray)   [#]    : Array of number of stars values
         m_mean_values  (float | np.ndarray) [Msun] : Array of mean stellar mass values
         m_max_values   (float | np.ndarray) [Msun] : Array of maximum stellar mass values
-        stellar_radius (float)              [Rsun] : Stellar radius (default 1.0)
-        return_units   (bool)                      : Whether to return results as astropy Quantities with units.
-                                                     Default is False.
+        comp_stellar_val (bool)                    : Whether to compute stellar radius (default False)
     ________________________________________________________________________________________________________________________
     Returns:
         Dictionary with all computed features as arrays:
-            - 'mcrit'    : Critical mass values      [Msun]
-            - 'trelax'   : Relaxation time values    [Myr]
-            - 'tcc'      : Core collapse time values [Myr]
-            - 'tcoll'    : Collision time values     [Myr]
-            - 'tcross'   : Crossing time values      [Myr]
-            - 'rho_half' : Number density values     [pc^-3]
+            - 'stellar_radius' : Mean stellar radius values [Rsun] if comp_stellar_val is True, else default to 1.0 Rsun
+            - 'mcrit'          : Critical mass values       [Msun]
+            - 'safnum'         : Safronov number values     [#]
+            - 'trelax'         : Relaxation time values     [Myr]
+            - 'tcc'            : Core collapse time values  [Myr]
+            - 'tcoll'          : Collision time values      [Myr]
+            - 'tcross'         : Crossing time values       [Myr]
+            - 'rho_half'       : Number density values      [pc^-3]
     ________________________________________________________________________________________________________________________
     Notes:
     ________________________________________________________________________________________________________________________
@@ -278,14 +276,22 @@ def compute_physical_parameters(time_values : np.ndarray, rh_values: Union[float
     # Ensure all inputs are arrays with positive time values
     time_values = np.maximum(np.asarray(time_values), 1e-6)
     
+    # Retrieve or set default stellar radius
+    if comp_stellar_val:
+        stellar_radius = mean_stellar_radius(m_mean_values)[0]
+    else:
+        stellar_radius = 1.0  # Default value in Rsun
+    
     # Compute all features using vectorized functions
     results = {
-        'mcrit'    : critical_mass(rh_values, m_mean_values, time_values, v_disp_values, stellar_radius)[0],
-        'trelax'   : relaxation_time(n_values, rh_values, v_disp_values)[0],
-        'tcc'      : core_collapse_time(m_mean_values, m_max_values, n_values, rh_values, v_disp_values)[0],
-        'tcoll'    : collision_time(rh_values, n_values, m_mean_values, v_disp_values, stellar_radius)[0],
-        'tcross'   : crossing_time(rh_values, v_disp_values)[0],
-        'rho_half' : rho_at_rh(n_values, rh_values)[0]
+        'stellar_radius' : stellar_radius,
+        'mcrit'          : critical_mass(rh_values, m_mean_values, time_values, v_disp_values, stellar_radius)[0],
+        'safnum'         : safronov_num(m_mean_values, v_disp_values, stellar_radius)[0],
+        'trelax'         : relaxation_time(n_values, rh_values, v_disp_values)[0],
+        'tcc'            : core_collapse_time(m_mean_values, m_max_values, n_values, rh_values, v_disp_values)[0],
+        'tcoll'          : collision_time(rh_values, n_values, m_mean_values, v_disp_values, stellar_radius)[0],
+        'tcross'         : crossing_time(rh_values, v_disp_values)[0],
+        'rho_half'       : rho_at_rh(n_values, rh_values)[0]
     }
     
     return results

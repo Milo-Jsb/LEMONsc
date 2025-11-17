@@ -10,25 +10,28 @@ import pandas as pd
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from typing         import Tuple, Optional, List, Dict, Union, Any
 from loguru._logger import Logger
-from dataclasses    import dataclass
+from dataclasses    import dataclass, field
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
-from src.utils.directory       import __load_json_file
+from src.utils.directory       import load_json_file
 from src.processing.format     import time_preparation, target_preparation, apply_noise
 from src.processing.features   import compute_cluster_features
 from src.processing.filters    import safe_downsampling_of_points
 
 # Default configuration of the experiments --------------------------------------------------------------------------------#
-@dataclass
-class MoccaSurveyExperimentConfig:
-    feature_names : List[str] = [                     # - Features names to retrieve (IN ORDER)
+DEFAULT_FEATURE_NAMES = [                             # - Features names to retrieve (IN ORDER)
         "t", "t_coll", "t_relax", "t_cc", "t_cross",  #     - Time-relared 
         "M_tot", "M_mean", "M_max", "M_crit",         #     - Mass-related 
+        "safnum",                                     #     - Safranov Number 
         "rho(R_h)",                                   #     - Density
-        "R_h", "R_core",                              #     - Radii
+        "R_*", "R_h", "R_core",                       #     - Radii
         "z",                                          #     - Metallicity
         "fracbin",                                    #     - Fraction of binaries of the model
-        "type_sim"]
+        "type_sim"]                                   #     - Categorical feature: type of simulation (FAST, SLOW, STEADY)
+
+@dataclass
+class MoccaSurveyExperimentConfig:
+    feature_names      : List[str] = field(default_factory=lambda: DEFAULT_FEATURE_NAMES.copy())
     target_name        : str  = "M_MMO"                # - Target name (mass evolution of the IMBH)
     requires_temp_evol : bool = True                   # - Flag to use temporal evolution of cluster features
     min_sim_points     : int  = 1000                   # - Minimum number of points per simulation to be used
@@ -114,6 +117,34 @@ def process_single_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, me
     # Sort input dataframes and calculate the total evolution time 
     imbh_df   = imbh_df.sort_values("time[Myr]").reset_index(drop=True)
     system_df = system_df.sort_values("tphys").reset_index(drop=True)
+    
+    # Ensure both dataframes have the same length by dropping rows with NaN in either
+    # This maintains temporal alignment between IMBH history and system evolution
+    if len(imbh_df) != len(system_df):
+        min_len = min(len(imbh_df), len(system_df))
+        imbh_df = imbh_df.iloc[:min_len]
+        system_df = system_df.iloc[:min_len]
+    
+    # Drop rows where either dataframe has NaN to maintain alignment
+    valid_mask = ~(imbh_df.isna().any(axis=1) | system_df.isna().any(axis=1))
+    imbh_df = imbh_df[valid_mask].reset_index(drop=True)
+    system_df = system_df[valid_mask].reset_index(drop=True)
+    
+    # Update n_points after cleaning
+    n_points = len(imbh_df)
+    
+    # Validate after cleaning
+    if n_points == 0:
+        raise ValueError("No valid data points after removing NaN values")
+    
+    # Re-validate and adjust sample_size if augmentation is enabled
+    if augment and sample_size is not None:
+        if n_points < sample_size:
+            raise ValueError(
+                f"After cleaning NaN values, simulation has {n_points} valid points, "
+                f"but requires at least {sample_size} for sampling. "
+                f"This simulation has insufficient clean data for augmentation."
+            )
 
     # This creates a sampled of points from a given number of elements (only used when augment=True)
     def sample_window() -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
@@ -126,9 +157,9 @@ def process_single_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, me
         # Create index array
         sidx = np.arange(0, end)
 
-        # Sample the dataframes
-        df_sampled     = imbh_df.iloc[sidx].copy().dropna()
-        system_sampled = system_df.iloc[sidx].copy().dropna()
+        # Sample the dataframes (no need for dropna since already cleaned)
+        df_sampled     = imbh_df.iloc[sidx].copy()
+        system_sampled = system_df.iloc[sidx].copy()
         
         return df_sampled, system_sampled, sidx
 
@@ -156,7 +187,8 @@ def process_single_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, me
         feature_columns = [t]
        
         # Define numeric features names in the expected order
-        expected_order = ["tcoll", "trelax", "tcc", "tcross", "m_tot", "m_mean", "m_max", "mcrit", "rho_half", "rh", "cr",
+        expected_order = ["tcoll", "trelax", "tcc", "tcross", "m_tot", "m_mean", "m_max", "mcrit", "safnum",
+                          "rho_half", "stellar_radius", "rh", "cr",
                           "z", "fracbin"]
         # Handle temporal vs static features
         for k in expected_order:
@@ -252,9 +284,9 @@ def load_moccasurvey_imbh_history(file_path: str, init_conds_sim: bool= False, c
     
     try:
         # Load optional JSON mapping files (assuming correct placement of files) ------------------------------------------#
-        if col_description: col_dict = __load_json_file( "./rawdata/moccasurvey/mapping_dicts/imbh_history.json", 
+        if col_description: col_dict = load_json_file( "./rawdata/moccasurvey/mapping_dicts/imbh_history.json", 
                                                         "description for imbh-history.dat")
-        if stellar_map: stellar_dict = __load_json_file( "./rawdata/moccasurvey/mapping_dicts/stellar_types.json",
+        if stellar_map: stellar_dict = load_json_file( "./rawdata/moccasurvey/mapping_dicts/stellar_types.json",
                                                         "stellar type mapping dictionary")
             
         # Parse initial conditions and columns for the dataframe ----------------------------------------------------------#
