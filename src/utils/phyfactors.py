@@ -283,7 +283,7 @@ def safronov_num(mass_per_star: Union[float, np.ndarray], v_disp: Union[float, n
     theta_unit = theta_unit.decompose()
     
     # Assert that the result is dimensionless
-    assert theta_unit.unit.is_unity(), f"Safronov number must be dimensionless, got {theta_unit.unit}"
+    assert theta_unit.is_unity(), f"Safronov number must be dimensionless, got {theta_unit}"
     
     # Validate that result is reasonable (should be positive)
     if np.any(theta <= 0):
@@ -450,12 +450,137 @@ def critical_mass(hm_radius: Union[float, np.ndarray], mass_per_star: Union[floa
     factor = (4 * np.pi * mass_per_star) / (3 * Sigma_0 * cluster_age * np.sqrt(G_value))
 
     # Compute critical mass: m_crit = R_h^(7/3) * factor^(2/3)
-    m_crit, mass_unit = hm_radius**(7/3) * factor**(2/3)
+    m_crit = hm_radius**(7/3) * factor**(2/3)
 
     # Validate that the result is positive
     if np.any(m_crit <= 0):
         raise ValueError("Critical mass calculation resulted in a non-positive value")
 
     return m_crit, mass_unit
+
+# Aproximation of the stellar radius --------------------------------------------------------------------------------------#
+def mean_stellar_radius(stellar_mass : Union[float, np.ndarray]) -> Tuple[np.ndarray, u.Unit]:
+    """
+    ________________________________________________________________________________________________________________________
+    Calculate the mean stellar radius based on the mean stellar mass using a mass-radius relation. 
+    (Unit conversion is handled by Astropy)
+    ________________________________________________________________________________________________________________________
+    Parameters:
+        stellar_mass (Union[float, np.ndarray]) [Msun] : Stellar mass. Mandatory.
+    ________________________________________________________________________________________________________________________
+    Returns:
+        stellar_radius, radius_unit (Tuple[np.ndarray, u.Unit]) [Rsun]: Mean stellar radius corresponding to the given 
+                                                                       stellar mass. Returns array with values and astropy 
+                                                                       length unit.
+    ________________________________________________________________________________________________________________________
+    Notes:
+        The mass-radius relation used here is a simplified approximation for main-sequence stars:
+
+                R* = 1.01*(M/Msun)^0.724 Rsun, for 0.1 < M < 10 Msun (Demircan & Kahraman 1991, ZAMS models fit)
+                R* = 1.6*(M/Msun)^0.47 Rsun,   for 10. < M < 50 Msun (Bond et al. 1984)
+                R* = 0.85*(M/Msun)^0.67 Rsun,  for M >=50 Msun       (Demircan & Kahraman 1991, Empirical fit)
+
+        This relation provides a reasonable estimate of the stellar radius based on mass for a wide range of stellar types.
+    ________________________________________________________________________________________________________________________
+    """
+    # Convert to array for validation
+    stellar_mass = np.atleast_1d(stellar_mass)
+
+    # Define units
+    mass_unit   = u.solMass
+    radius_unit = u.solRad
+
+    # Input validation
+    if np.any(stellar_mass <= 0):
+        raise ValueError("Stellar mass must be positive")
+
+    # Initialize array for stellar radius
+    stellar_radius = np.zeros_like(stellar_mass)
+
+    # Low mass range: 0.1 < M < 10 Msun (Demircan & Kahraman 1991)
+    mask_low_mass = (stellar_mass >= 0.1) & (stellar_mass < 10.0)
+    stellar_radius[mask_low_mass] = 1.01 * (stellar_mass[mask_low_mass])**0.724
+    
+    # Medium mass range: 10 < M < 50 Msun (Bond et al. 1984)
+    mask_medium_mass = (stellar_mass >= 10.0) & (stellar_mass < 50.0)
+    stellar_radius[mask_medium_mass] = 1.6 * (stellar_mass[mask_medium_mass])**0.47
+    
+    # High mass range: M >= 50 Msun (Demircan & Kahraman 1991)
+    mask_high_mass = stellar_mass >= 50.0
+    stellar_radius[mask_high_mass] = 0.85 * (stellar_mass[mask_high_mass])**0.67
+    
+    # Handle edge case: masses below 0.1 Msun (extrapolate with low-mass relation)
+    mask_very_low_mass = stellar_mass < 0.1
+    if np.any(mask_very_low_mass):
+        stellar_radius[mask_very_low_mass] = 1.01 * (stellar_mass[mask_very_low_mass])**0.724
+    
+    # Validate that result is reasonable (should be positive)
+    if np.any(stellar_radius <= 0):
+        raise ValueError("Stellar radius calculation resulted in non-positive value")
+    
+    return stellar_radius, radius_unit
+
+# Computation of the Galactocentric Radius --------------------------------------------------------------------------------#
+def galactocentric_radius(tildal_radius: Union[float, np.ndarray], 
+                          total_mass   : Union[float, np.ndarray],
+                          v_circ       : float = 220.0) -> Tuple[np.ndarray, u.Unit]:  # v_circ in km/s
+    """
+    ________________________________________________________________________________________________________________________
+    Calculate the Galactocentric radius  (Unit conversion is handled by Astropy)
+    ________________________________________________________________________________________________________________________
+    Parameters:
+        tildal_radius (Union[float, np.ndarray]) [pc]   : Tidal radius of the cluster.
+        total_mass    (Union[float, np.ndarray]) [Msun] : Total mass of the cluster.
+        v_circ        (float)                    [km/s] : Circular velocity at the solar radius. Default is 220 km/s.
+    ________________________________________________________________________________________________________________________
+    Returns:
+        r_gal, r_unit (Tuple[np.ndarray, u.Unit]) [pc]: Galactocentric radius calculated as 
+    ________________________________________________________________________________________________________________________
+    Notes:
+        The Galactocentric radius is computed by inverting the classical tidal-radius relation assuming a spherical host 
+        galaxy with a flat rotation curve (isothermal sphere potential) and a circular orbit:
+
+                Rgc = sqrt((3.0*(v_circ**2)*(tildal_radius**3))/(G*total_mass))
+        
+        This expression assumes:
+            - a flat rotation curve (M_host(R) ∝ R),
+            - a circular orbit,
+            - the tidal radius corresponds to the instantaneous (or pericentric) orbit,
+            - the cluster mass is fully enclosed within the tidal radius.
+
+        Deviations from these assumptions (e.g., eccentric orbits, time-dependent tides, or non-spherical potentials) may 
+        lead to systematic uncertainties in the estimated Galactocentric radius.
+
+        Unit conversion is handled internally using Astropy
+    ________________________________________________________________________________________________________________________
+    """
+    # Convert to arrays for validation
+    tildal_radius = np.atleast_1d(tildal_radius)
+    total_mass    = np.atleast_1d(total_mass)
+    
+    # Define units
+    radius_unit = u.pc
+    mass_unit   = u.solMass
+    v_circ_unit = u.km / u.s
+    
+    # Input validation
+    if np.any(tildal_radius <= 0):
+        raise ValueError("Tidal radius must be positive")
+    if np.any(total_mass <= 0):
+        raise ValueError("Total mass must be positive")
+    if v_circ <= 0:
+        raise ValueError("Circular velocity must be positive")
+    
+    # Convert G to appropriate units: pc^3 / (solar_mass * (km/s)^2)
+    G_value = c.G.to(radius_unit**3 / (mass_unit * v_circ_unit**2)).value
+    
+    # Calculate Galactocentric radius: Rgc = sqrt((3.0 * v_circ^2 * r_tidal^3) / (G * M_total))
+    r_gal = np.sqrt((3.0 * v_circ**2 * tildal_radius**3) / (G_value * total_mass))
+    
+    # Validate that result is reasonable (should be positive)
+    if np.any(r_gal <= 0):
+        raise ValueError("Galactocentric radius calculation resulted in non-positive value")
+    
+    return r_gal, radius_unit
 
 #--------------------------------------------------------------------------------------------------------------------------#
