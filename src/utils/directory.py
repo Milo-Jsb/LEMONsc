@@ -6,6 +6,27 @@ import json
 import numpy  as np
 import pandas as pd
 
+# Path Management for the mocca dataset preparation ------------------------------------------------------------------------#
+class PathManagerMOCCAExperiment:
+    """
+    ________________________________________________________________________________________________________________________
+    Centralized path management for the pipeline of feature building in the mocca experiment.
+    ________________________________________________________________________________________________________________________
+    """
+    def __init__(self, root_dir: str, dataset: str, exp_name: str, out_dir: str, fig_dir: str):
+        self.data_path       = f"{root_dir}{dataset}/simulations/"
+        self.out_path        = f"{out_dir}{exp_name}/{dataset}/"
+        self.out_figs        = f"{fig_dir}{exp_name}/{dataset}/"
+        self.stratified_path = f"{root_dir}{dataset}/"
+        
+        # Create directories
+        os.makedirs(self.out_path, exist_ok=True)
+        os.makedirs(self.out_figs, exist_ok=True)
+    
+    def get_stratified_file_path(self, env_type: str) -> str:
+        """Get path for stratified simulation files."""
+        return os.path.join(self.stratified_path, f"{env_type}_simulations.txt")
+    
 # Listing directories -----------------------------------------------------------------------------------------------------#
 def list_all_directories(directory: str):
     """
@@ -59,8 +80,16 @@ def load_yaml_dict(path: str, verbose: bool = False):
     if not os.path.exists(path):
         raise FileNotFoundError(f"File not found: {path}")
     
+    # Tuple constructor if needed -----------------------------------------------------------------------------------------#
+    def tuple_constructor(loader, node):
+        return tuple(loader.construct_sequence(node))
+
+    yaml.SafeLoader.add_constructor('!tuple', tuple_constructor)
+
+    # Verbose logging -----------------------------------------------------------------------------------------------------#
     if verbose: print(f"Loading configuration from: {path}")
     
+    # Load YAML file ------------------------------------------------------------------------------------------------------#
     try:
         with open(path, 'r') as f:
             yaml_dict = yaml.safe_load(f)
