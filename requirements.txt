@@ -15,6 +15,8 @@ optuna
 plotly
 lightgbm --no-binary lightgbm --config-settings=cmake.define.USE_CUDA=ON
 xgboost
+cudf-cu12==25.2.1
+cuml-cu12==25.2.1
 python-dotenv>=1.0.0
 python-magic>=0.4.27
 python-docx>=1.0.0
