@@ -58,7 +58,6 @@ def time_preparation(time_evolution: pd.Series) -> np.ndarray:
     if not isinstance(time_evolution, pd.Series):
         raise TypeError("time_evolution must be a pandas Series.")
 
-
     # Convert to numpy array ----------------------------------------------------------------------------------------------#
     try:
         time = time_evolution.to_numpy()

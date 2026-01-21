@@ -3,60 +3,73 @@ import numpy  as np
 import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing                import Optional, Union, List, Dict, Any
+from typing                import Optional, Union, Dict, Any
+from pandas.api.types      import CategoricalDtype
+
+# Custom utilities and functions ------------------------------------------------------------------------------------------#
 from src.utils.phyfactors  import relaxation_time, core_collapse_time, collision_time, crossing_time
 from src.utils.phyfactors  import rho_at_rh, critical_mass, safronov_num, mean_stellar_radius
-from src.processing.format import apply_noise
 
 # Define relevant operations for desired tabular features -----------------------------------------------------------------#
 def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=True, onehot:bool=True) -> pd.DataFrame:
     """
-    _______________________________________________________________________________________________________________________
-    Generation of a Dataframe with Relevant Elements of interest for ML exploration
-    _______________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
+    Generation of a dataframe with relevant features of interest for ML exploration
+    ________________________________________________________________________________________________________________________
     Parameters:
         - process_df (pd.DataFrame) : Dataframe with raw data to process. Mandatory.
         - names      (list)         : List of feature names to include. If None, all features are included. Optional.
         - return_names (bool)       : Whether to return feature labels along with the DataFrame. Default is True.
         - onehot     (bool)         : Whether to apply one-hot encoding to categorical features. Default is True.
-    _______________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Returns: 
         - result_df (pd.DataFrame)  : DataFrame with the selected and processed features.
-    _______________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     """
+    # Set defaul types for categorical features ---------------------------------------------------------------------------#
+    type_sim_dtype = CategoricalDtype(categories=[0., 1., 2.], ordered=False)
+
     # Set possible features and possible names with nested operations -----------------------------------------------------#
     default_feats = {
-        "M_MMO/M_tot" :{
-            "label"     : r"$M_{\rm{MMO}}/M_{\rm{tot}}$",
-            "operation" : lambda df: df['M'] / df['M_tot']
-             },
-        "t/t_cc" :{
+        "log(t/t_cc)" :{
             "label"     : r"$\log(t/t_{\rm{cc}})$",
             "operation" : lambda df: np.log10(df['t'] / df['t_cc']+1)
         },
-        "log(t_relax/t_cross)" :{
-            "label"     : r"$\log(t_{\rm relax}/t_{\rm cross})$",
-            "operation" : lambda df: np.log10((df['t_relax']/df['t_cross']) + 1)
+        "log(t/t_cross)" :{
+            "label"     : r"$\log(t/t_{\rm{cross}})$",
+            "operation" : lambda df: np.log10(df['t'] / df['t_cross']+1)
+        },
+        "log(t/t_relax)" :{
+            "label"     : r"$\log(t/t_{\rm{relax}})$",
+            "operation" : lambda df: np.log10(df['t'] / df['t_relax']+1)
         },
         "log(t)" :{
             "label"     : r"$\log(t)$",
             "operation" : lambda df: np.log10(df['t']+1)
         },
+        "log(t_coll)" :{
+            "label"     : r"$\log(t_{\rm{coll}})$",
+            "operation" : lambda df: np.log10(df['t_coll']+1)
+        },
         "log(rho(R_h))" :{
             "label"     : r"$\log(\rho(R_{h}))$",
             "operation" : lambda df: np.log10(df['rho(R_h)'] + 1)
         },
-        "M_tot/M_crit" :{
+        "log(M_tot/M_crit)" :{
             "label"     : r"$\log(M_{\rm tot}/M_{\rm crit})$",
-            "operation" : lambda df: np.log10(df['M_tot'] / df['M_crit'] + 1)
+            "operation" : lambda df:np.log10(df['M_tot']/df['M_crit']+1)
         },
         "log(R_h/R_core)" :{
             "label"     : r"$\log(R_{h}/R_{\rm{core}})$",
             "operation" : lambda df: np.log10((df['R_h'] / df['R_core']) + 1)
         },
+        "log(R_tid/R_core)" :{
+            "label"     : r"$\log(R_{\rm{tidal}}/R_{\rm{core}})$",
+            "operation" : lambda df: np.log10((df['R_tid'] / df['R_core']) + 1)
+        },
         "Z":{
             "label"     : r"$Z$",
-            "operation" : lambda df: np.log10(df['z'])
+            "operation" : lambda df: df['z']
         },
         "fracbin":{
             "label"     : r"$f_{\rm{bin}}$",
@@ -64,12 +77,13 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
         },
         "type_sim" :{
             "label"     : r"environment",
-            "operation" : lambda df: pd.get_dummies(df['type_sim'], prefix="type_sim") if onehot else df['type_sim'].astype('category')
-        }}
+            "operation" : lambda df: (pd.get_dummies(df["type_sim"].astype(type_sim_dtype),
+                                                     prefix = "type_sim"))}
+        }
 
     # Apply operations and create new columns -----------------------------------------------------------------------------#
     result_df    = process_df.copy()
-    feats_labels = {}  # dict: column_name -> label
+    feats_labels = {}  
 
     for feature_name, feature_info in default_feats.items():
         try:
@@ -88,7 +102,6 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
             print(f"Warning: Column {e} not found for feature {feature_name}")
         except Exception as e:
             print(f"Error processing feature {feature_name}: {e}")
-        
 
     # Apply operations to create new features -----------------------------------------------------------------------------#
     if names is not None:
@@ -104,137 +117,61 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
         return result_df, feats_labels
     else:
         return result_df
-    
-# Retrieve elements from the simulation and compute relevant features ------------------------------------------------------#
-def compute_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFrame, iconds_dict : Optional[Dict[str, Any]]=None, 
-                             noise     : bool          = False, 
-                             sim_env   : Optional[str] = None,
-                             temp_evol : bool          = False) -> Dict[str, Union[float, str]]:
-    """
-    ________________________________________________________________________________________________________________________
-    Compute relevant cluster features from simulation data 
-    ________________________________________________________________________________________________________________________
-    Parameters:
-        - system_df   (pd.DataFrame)             : DataFrame with system evolution data. Mandatory.
-        - imbh_df     (pd.DataFrame)             : DataFrame with IMBH formation
-        - iconds_dict (Optional[Dict[str, Any]]) : Dictionary with initial conditions. Optional.
-        - noise       (bool)                     : Whether to apply noise to the features. Default is False.
-        - sim_env     (Optional[str])            : Predefined simulation environment type. If None, it will be determined.
-                                                   Default is None.
-        - temp_evol   (bool)                     : Whether to compute features as temporal evolution (arrays) or single
-                                                   values. Default is False
-    ________________________________________________________________________________________________________________________
-    Returns:
-        - features_dict (Dict[str, Union[float, str]]) : Dictionary with computed cluster features.
-    ________________________________________________________________________________________________________________________
-    """
-    # Extract base values from the simulation data ------------------------------------------------------------------------#
-    try: 
-        if temp_evol:
-            base_values = {
-                'tau'    : system_df["tphys"].values,
-                'rh'     : system_df["r_h"].values,
-                'v_disp' : system_df["vc"].values,
-                'm_tot'  : system_df["smt"].values,
-                'n'      : system_df["nt"].values,
-                'm_mean' : system_df["atot"].values,
-                'm_max'  : system_df["smsm"].values,
-                'cr'     : system_df["rc"].values
-            }
-            
-        else:
-            base_values = {
-                'tau'    : system_df["tphys"].iloc[-1],
-                'rh'     : system_df["r_h"].iloc[0],
-                'v_disp' : system_df["vc"].iloc[0],
-                'm_tot'  : system_df["smt"].iloc[0],
-                'n'      : system_df["nt"].iloc[0],
-                'm_mean' : system_df["atot"].iloc[0],
-                'm_max'  : system_df["smsm"].iloc[0],
-                'cr'     : system_df["rc"].iloc[0]
-            }
-
-        if iconds_dict:
-            z_val       = float(iconds_dict["zini"])
-            fracbin_val = float(iconds_dict.get("fracb", 0.0))
-
-            if temp_evol:
-                # Repeat scalar values to match temporal dimension
-                n_timesteps            = len(system_df)
-                base_values["z"]       = np.full(n_timesteps, z_val)
-                base_values["fracbin"] = np.full(n_timesteps, fracbin_val)
-            else:
-                base_values["z"]       = z_val
-                base_values["fracbin"] = fracbin_val
-
-    except Exception as e:
-        raise ValueError(f"Error extracting base cluster features: {e}")
-    
-    # Apply noise if required, no consideration for "n" As it represents a count of elements in the cluster.
-    if noise:
-        for key in base_values:
-            if key != "n":
-                base_values[key] = apply_noise(base_values[key], sigma=0.01)
-
-    # Compute derived features using physical formulas -------------------------------------------------------------------#
-    derived_values = compute_physical_parameters(
-                        time_values      = base_values["tau"],
-                        rh_values        = base_values['rh'],
-                        v_disp_values    = base_values['v_disp'],
-                        n_values         = base_values['n'],
-                        m_mean_values    = base_values['m_mean'],
-                        m_max_values     = base_values['m_max'],
-                        comp_stellar_val = temp_evol)
-            
-    # Type of the environment of the simulation (repeat if the simulation its already classified)
-    if (sim_env is not None):  env = sim_env
-    
-    # Determine the formation channel based on initial core density and time of IMBH formation if first seen
-    else: env = determine_formation_channel(system_df, imbh_df, None)
-
-   
-    return {**base_values, **derived_values, 'type_sim': env}
 
 # Categorize the simulations given their IMBH formation channel ----------------------------------------------------------#
-def determine_formation_channel(system_df: pd.DataFrame, imbh_df: pd.DataFrame, n_virtual: Optional[int]=None):
+def determine_formation_channel(imbh_df: pd.DataFrame, mass_colum_name: str, time_colum_name: str,
+                                minimun_bh_mass    : float = 100,
+                                minimun_time_thres : float = 20
+                                ) -> str:
     """
     ________________________________________________________________________________________________________________________
-    Classify a simulation based on IMBH formation channel using initial core density and formation time criteria
+    Classify a simulation based on IMBH formation channel using formation time criteria
     ________________________________________________________________________________________________________________________
     Parameters:
-        - system_df  (pd.DataFrame)  : DataFrame containing system evolution data with core density information. Mandatory.
-        - imbh_df    (pd.DataFrame)  : DataFrame containing IMBH formation data with mass and time information. Mandatory.
-        - n_virtual  (Optional[int]) : Number of virtual simulations for tracking purposes. Default is None.
+    -> imbh_df    (pd.DataFrame) : DataFrame containing IMBH formation data with mass and time information. Mandatory.
+    -> mass_colum_name (str)     : Name of the column in imbh_df representing IMBH mass. Mandatory.
+    -> time_colum_name (str)     : Name of the column in imbh_df representing IMBH formation time. Mandatory.
+    -> minimun_bh_mass (float)   : Minimum mass threshold to consider IMBH formation [Msun]. Default is 100 Msun.
+    -> minimun_time_thres (float): Time threshold to classify formation channel [Myr]. Default is 20 Myr.
     ________________________________________________________________________________________________________________________
     Returns:
-        - chform  (str) : Classification of the formation channel ("FAST", "SLOW", or "STEADY").
+    -> chform  (str) : Classification of the formation channel ("FAST", "SLOW").
     ________________________________________________________________________________________________________________________
     Notes:
-        Classification criteria based on initial core density and IMBH formation time:
-        - "FAST"  : High initial density (≥ 1e7) and early formation (≤ 50 Myr)
-        - "SLOW"  : Low initial density (≤ 1e6) and late formation (≥ 500 Myr)  
-        - "STEADY": All other cases (intermediate density/time combinations)
+        Classification criteria based on IMBH formation time:
+        - "FAST"  : Early formation of a massive central object (T_bh(>100Msun) ≤ 20 Myr)
+                    
+                    Gravitationally bound BH subsystem form early on in the cluster evolution. IMBH can rapidly form via 
+                    dynamical interactions between single and binary BHs. In this FAST scenario for IMBH formation, 
+                    the large cluster density (and escape velocity) serves to drive the growth of the most massive
+                    BH in the system. The FAST scenario might occur more commonly in the NSCs of low-mass galaxies than in 
+                    GCs.
+                    The FAST scenario is initiated practically from the very beginning of our simulations, has a very high 
+                    accretion rate and requires extreme densities of around 10^8 Msun/pc^3
         
-        Requires system_df to have "roc" column (core density) and imbh_df to have "massNew[Msun](10)" and "time[Myr]" 
-        columns for IMBH mass and formation time respectively.
+        - "SLOW"  : Late formation of a massive central object  (T_bh(>100Msun) > 20 Myr)
+                    
+                    BH mass growth due solely to dynamical interactions and mass transfer from binary companions. 
+                    In this SLOW scenario, IMBH formation happens at late times in the cluster evolution, typically during
+                    the post-core-collapse phase of evolution. The SLOW scenario is initiated at later times in the cluster 
+                    evolution, has a small accretion rate and requires modest cluster densities of around 10^5 Msun/pc^3.
+    
+    References:
+    -> https://ui.adsabs.harvard.edu/link_gateway/2015MNRAS.454.3150G/doi:10.1093/mnras/stv2162
     ________________________________________________________________________________________________________________________
-    """
-    
+    """   
     try:
-        i_density = system_df["roc"].iloc[0]
-        mass_time = imbh_df[imbh_df['massNew[Msun](10)'] > 100].iloc[0]['time[Myr]']
-    
+        
+        mass_time = imbh_df[imbh_df[mass_colum_name] > minimun_bh_mass].iloc[0][time_colum_name]
+
     except Exception as e:
         raise ValueError("Could not determine formation channel. Check if IMBH formed in the simulation.")
     
-    if (i_density >= 1e7) and (mass_time <= 50):
-        chform  = "FAST" 
-
-    elif (i_density <= 1e6) and (mass_time >= 500):
-        chform  = "SLOW" 
+    if (mass_time <= minimun_time_thres):
+        chform = "FAST" 
     
     else:
-        chform  = "STEADY"
+        chform = "SLOW" 
     
     return chform
 
@@ -261,7 +198,7 @@ def compute_physical_parameters(time_values : np.ndarray, rh_values: Union[float
     ________________________________________________________________________________________________________________________
     Returns:
         Dictionary with all computed features as arrays:
-            - 'stellar_radius' : Mean stellar radius values [Rsun] if comp_stellar_val is True, else default to 1.0 Rsun
+            - 'stellar_radius' : Mean stellar radius values [Rsun] if comp_stellar_val is True, else default to 1.0 [Rsun]
             - 'mcrit'          : Critical mass values       [Msun]
             - 'safnum'         : Safronov number values     [#]
             - 'trelax'         : Relaxation time values     [Myr]
@@ -269,8 +206,6 @@ def compute_physical_parameters(time_values : np.ndarray, rh_values: Union[float
             - 'tcoll'          : Collision time values      [Myr]
             - 'tcross'         : Crossing time values       [Myr]
             - 'rho_half'       : Number density values      [pc^-3]
-    ________________________________________________________________________________________________________________________
-    Notes:
     ________________________________________________________________________________________________________________________
     """
     # Ensure all inputs are arrays with positive time values
@@ -280,7 +215,7 @@ def compute_physical_parameters(time_values : np.ndarray, rh_values: Union[float
     if comp_stellar_val:
         stellar_radius = mean_stellar_radius(m_mean_values)[0]
     else:
-        stellar_radius = 1.0  # Default value in Rsun
+        stellar_radius = 1.0  
     
     # Compute all features using vectorized functions
     results = {
