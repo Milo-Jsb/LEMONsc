@@ -9,9 +9,9 @@ from typing         import Optional, List, Tuple, Union
 from loguru._logger import Logger
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
-from src.processing.filters              import safe_downsampling_of_points
-from src.processing.datasets.moccasurvey import MoccaSurveyExperimentConfig, def_config
-from src.processing.datasets.moccasurvey import load_moccasurvey_imbh_history, process_single_mocca_simulation
+from src.processing.filters                  import safe_downsampling_of_points
+from src.processing.constructors.moccasurvey import MoccaSurveyExperimentConfig, def_config
+from src.processing.constructors.moccasurvey import load_moccasurvey_imbh_history, process_single_mocca_simulation
 
 # Retrieve a partition of input / target values for a ML-Experiment -------------------------------------------------------#
 def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSurveyExperimentConfig = def_config,

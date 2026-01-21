@@ -8,7 +8,7 @@ from typing import List, Tuple, Optional
 from loguru import logger
 
 # Custome functions --------------------------------------------------------------------------------------------------------#
-from src.utils.directory import PathManagerMOCCAExperiment
+from src.utils.directory import PathManagerExperiment
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
@@ -33,21 +33,27 @@ class DataPartitioner:
     
     def create_random_partitions(self, simulations: List[str]) -> Tuple[List[str], List[str], List[str]]:
         """Create random train/validation/test partitions."""
+        
+        # Simulations, number of files and shuffled indices
         simulations  = np.array(simulations)
         n_total      = len(simulations)
         shuffled_idx = np.random.permutation(n_total)
 
+        # Calculate split sizes
         n_train = int(n_total * self.config.train_split)
         n_val   = int(n_total * self.config.val_split)
 
+        # Get indices for each partition
         train_idx = shuffled_idx[:n_train]
         val_idx   = shuffled_idx[n_train:n_train + n_val]
         test_idx  = shuffled_idx[n_train + n_val:]
 
+        # Create partitions
         train_simulations = simulations[train_idx].tolist()
         val_simulations   = simulations[val_idx].tolist()
         test_simulations  = simulations[test_idx].tolist()
 
+        # Logging in console
         logger.info("Random partitioning:")
         logger.info(f"Training   : {len(train_simulations)}")
         logger.info(f"Validation : {len(val_simulations)}")
@@ -55,20 +61,35 @@ class DataPartitioner:
 
         return train_simulations, val_simulations, test_simulations
     
-    def create_stratified_partitions(self, path_manager: PathManagerMOCCAExperiment
+    def create_stratified_partitions(self, path_manager: PathManagerExperiment, 
+                                     valid_simulations: Optional[List[str]] = None
                                      )-> Optional[Tuple[List[str], List[str], List[str]]]:
         """Create stratified partitions based on environment type."""
+        
+        # Create dictionary
         simulations_by_type = {}
         
+        # Convert valid_simulations to set for faster lookup
+        valid_set = set(valid_simulations) if valid_simulations is not None else None
+        
         # Mapping of env name to numeric label
-        env_to_label = {"FAST": 0, "SLOW": 1, "STEADY": 2}
+        env_to_label = {"FAST": 0, "SLOW": 1}
         
         # Load simulation paths by environment type
-        for env_type in ["fast", "slow", "steady"]:
+        for env_type in ["fast", "slow"]:
             filepath = path_manager.get_stratified_file_path(env_type)
             if os.path.exists(filepath):
                 with open(filepath, 'r') as f:
-                    simulations_by_type[env_type.upper()] = [line.strip() for line in f.readlines()]
+                    all_paths = [line.strip() for line in f.readlines()]
+                    
+                    # Filter by valid_simulations if provided
+                    if valid_set is not None:
+                        filtered_paths = [p for p in all_paths if p in valid_set]
+                        if len(filtered_paths) < len(all_paths):
+                            logger.info(f"{env_type.upper()}: Filtered {len(all_paths)} -> {len(filtered_paths)} valid simulations")
+                        simulations_by_type[env_type.upper()] = filtered_paths
+                    else:
+                        simulations_by_type[env_type.upper()] = all_paths
             else:
                 logger.warning(f"File {filepath} not found. Using random partitioning instead.")
                 return None

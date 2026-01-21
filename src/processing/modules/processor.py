@@ -1,5 +1,7 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
 import sys
+import os
+
 import numpy  as np
 import pandas as pd
 
@@ -12,7 +14,10 @@ from loguru      import logger
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.processing.modules.simulations import SimulationProcessor
 from src.processing.features            import determine_formation_channel
-from src.processing.dataset             import process_single_simulation
+from src.processing.filters             import efficiency_mass_ratio_relation
+
+# Import dataset-specific processing functions
+from src.processing.constructors.moccasurvey import process_single_mocca_simulation
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
@@ -72,25 +77,24 @@ class ProcessingStats:
             'avg_points'   : avg_points,
             'std_points'   : std_points,
             'fast_count'   : self.environment.count("FAST"),
-            'steady_count' : self.environment.count("STEADY"),
             'slow_count'   : self.environment.count("SLOW")
-        }
+                }
         
         # Add augmentation statistics if enabled
         if self.augmentation_enabled:
             summary['virtual_sims_generated'] = self.virtual_sims_generated
-            summary['total_effective_sims'] = self.used_sims + self.virtual_sims_generated
+            summary['total_effective_sims']   = self.used_sims + self.virtual_sims_generated
             
             if self.points_per_original:
-                summary['avg_points_per_original'] = float(np.mean(self.points_per_original))
-                summary['std_points_per_original'] = float(np.std(self.points_per_original))
+                summary['avg_points_per_original']  = float(np.mean(self.points_per_original))
+                summary['std_points_per_original']  = float(np.std(self.points_per_original))
                 summary['avg_virtual_per_original'] = float(self.virtual_sims_generated / len(self.points_per_original))
         
         return summary
 
-# Main Data Processor Class --------------------------------------------------------------------------------------------#
+# Main Data Processor Class -----------------------------------------------------------------------------------------------#
 class DataProcessor:
-    """Optimized data processing for MOCCA simulations."""
+    """Optimized data processing for simulations."""
     
     def __init__(self, config):
         self.config     = config
@@ -100,23 +104,34 @@ class DataProcessor:
                             augmentation: bool = False, 
                             apply_noise : bool = False, 
                             n_virtual   : Optional[int] = None, 
+                            study_mode  : bool = False,
                             verbose     : bool = True
-                            ) -> Tuple[List, List, List]:
+                            ) -> Tuple[List, List, List, List]:
         """
+        ____________________________________________________________________________________________________________________
         Process simulations efficiently with reduced memory allocations.
-        
+        ____________________________________________________________________________________________________________________
         Parameters:
-            simulations  : List of simulation paths
-            labels       : Optional list of environment labels for each simulation
-            augmentation : Whether to apply data augmentation
-            apply_noise  : Whether to apply noise to features
-            n_virtual    : Number of virtual simulations per real simulation
-            verbose      : Whether to print statistics
-            
+        -> simulations  (list)         : List of simulation paths
+        -> labels       (list or None) : Optional list of environment labels for each simulation
+        -> augmentation (bool)         : Whether to apply data augmentation
+        -> apply_noise  (bool)         : Whether to apply noise to features
+        -> n_virtual    (int or None)  : Number of virtual simulations per real simulation
+        -> verbose      (bool)         : Whether to print statistics
+        ____________________________________________________________________________________________________________________    
         Returns:
-            Tuple of (time_list, mass_list, phy_list)
+            Tuple of (time_list, mass_list, phy_list, path_list)
+                If config.retain_order=True  : Each list contains sublists per simulation, path_list has corresponding paths
+                If config.retain_order=False : Each list contains flattened data, path_list is empty
+        ____________________________________________________________________________________________________________________
+        Notes:
+        - Uses ProcessingStats to track statistics during processing.
+        - Handles exceptions per simulation to ensure robust processing.
+        - Reports detailed statistics if verbose=True.
+        - Check processor to look for specific details of processing.
+        ____________________________________________________________________________________________________________________
         """
-        time_list, mass_list, phy_list = [], [], []
+        time_list, mass_list, phy_list, path_list = [], [], [], []
         stats = ProcessingStats()
         
         for idx, path in enumerate(tqdm(simulations, desc="Processing simulations", unit="sim")):
@@ -131,16 +146,18 @@ class DataProcessor:
                     continue
                 
                 # Determine formation channel and process
-                chform = determine_formation_channel(system_df, imbh_df, n_virtual)
+                chform = determine_formation_channel(imbh_df         = imbh_df, 
+                                                     mass_colum_name = self.config.mass_column_imbh,
+                                                     time_colum_name = self.config.time_column_imbh)
                 
                 feats, masses, idxs = self._process_single(imbh_df, system_df, iconds_dict, self.config, label, 
                                                            augmentation, 
                                                            apply_noise)
                 
                 # Track statistics and accumulate results
-                # If augmentation is enabled, pass n_virtual to track virtual simulations
                 stats.increment_used(chform, len(feats), is_augmented=augmentation, n_virtual=n_virtual)
-                self._accumulate_results(feats, masses, time_list, mass_list, phy_list)
+                self._accumulate_results(feats, masses, time_list, mass_list, phy_list, path_list, 
+                                       path, study_mode)
                 
             except Exception as e:
                 stats.increment_ignored()
@@ -151,10 +168,87 @@ class DataProcessor:
         if verbose:
             self._report_statistics(stats, len(simulations))
         
-        return time_list, mass_list, phy_list
+        return time_list, mass_list, phy_list, path_list
+    
+    def select_suitable_sims(self, simulations: List[str], simulations_by_type: Dict[str, List[str]], 
+                             out_path: str) -> Dict:
+        """Retrieve suitable simulations based on efficiency-mass ratio filtering"""
+        
+        # Check if division already exist
+        valid_sims_path = os.path.join(out_path, 'valid_simulations.txt')
+        outliers_path   = os.path.join(out_path, 'outliers.txt')
+        
+        # If both files exist, load them and skip filtering
+        if os.path.exists(valid_sims_path) and os.path.exists(outliers_path):
+            logger.info("Found existing filter files. Loading from disk...")
+        
+            # Load valid simulations
+            with open(valid_sims_path, 'r') as f:
+                valid_sim_paths = [line.strip() for line in f if line.strip()]
+        
+            # Load outliers
+            with open(outliers_path, 'r') as f:
+                outlier_paths = [line.strip() for line in f if line.strip()]
+                    
+            logger.info(f"Loaded {len(valid_sim_paths)} valid simulations from: {valid_sims_path}")
+            logger.info(f"Loaded {len(outlier_paths)} outliers from: {outliers_path}")
+            
+            simulations = valid_sim_paths + outlier_paths
+
+        # If not, proceed with filtering
+        else:
+            logger.info("No existing filter files found. Proceeding with filtering...")
+            
+        # Retrieve labels
+        path_to_label = {path: env_type
+                        for env_type, paths in simulations_by_type.items()
+                        for path in paths
+                        }
+
+        labels = [path_to_label.get(path, np.nan) for path in simulations]
+        
+        # First check which simulations can be retrieved with the actual configuration
+        t_base, m_base, phy_base, path_list = self.process_simulations(simulations, labels, 
+                                                                       augmentation = False, 
+                                                                       apply_noise  = False,
+                                                                       n_virtual    = None, 
+                                                                       study_mode   = True, 
+                                                                       verbose      = False)
+        
+        # Update label list
+        filt_labels = [path_to_label.get(path, np.nan) for path in path_list]
+        
+        # Now filter simulations based on their values of efficiency-mass_ratio
+        filter_output = efficiency_mass_ratio_relation(mmo_mass        = m_base, 
+                                                       physical_params = phy_base, 
+                                                       path_list       = path_list,
+                                                       labels_list     = filt_labels,
+                                                       logger          = logger)
+        
+        # Ensure output directory exists
+        os.makedirs(out_path, exist_ok=True)
+        
+        if not os.path.exists(valid_sims_path) and not os.path.exists(outliers_path):
+            
+            # Save filtered simulation paths of usable simulations
+            with open(valid_sims_path, 'w') as f:
+                for sim_path in filter_output['valid_sims']['paths']:
+                    f.write(f"{sim_path}\n")
+            
+            logger.info(f"Filtered simulation paths saved to: {valid_sims_path}")
+            
+            # Save outliers paths (overwrite mode)
+            with open(outliers_path, 'w') as f:
+                for sim_path in filter_output['outliers']['paths']:
+                    f.write(f"{sim_path}\n")
+            
+            logger.info(f"Outliers paths saved to: {out_path+'outliers.txt'}")
+        
+        return filter_output
     
     def _validate_simulation(self, imbh_df: pd.DataFrame) -> bool:
         """Check if simulation has sufficient points for processing."""
+        
         return len(imbh_df) > self.config.min_points_threshold
     
     def _process_single(self, imbh_df: pd.DataFrame, system_df: pd.DataFrame, iconds_dict: Dict,
@@ -164,24 +258,42 @@ class DataProcessor:
                        apply_noise : bool,
                        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Process a single simulation and return features, masses, and indices."""
-        return process_single_simulation(imbh_df= imbh_df, system_df = system_df, meta_dict = iconds_dict,
-                                         config         = config,
-                                         environment    = label,
-                                         points_per_sim = self.config.points_per_sim, 
-                                         augment        = augmentation, 
-                                         noise          = apply_noise,
-                                         n_virtual      = self.config.n_virtual,
-                                    )
-    
+        
+        # Process based on dataset type
+        if (self.config.dataset_name == "moccasurvey"):
+        
+            return process_single_mocca_simulation(imbh_df= imbh_df, system_df = system_df, meta_dict = iconds_dict,
+                                                    config         = config,
+                                                    environment    = label,
+                                                    points_per_sim = self.config.points_per_sim, 
+                                                    augment        = augmentation, 
+                                                    noise          = apply_noise,
+                                                    n_virtual      = self.config.n_virtual,
+                                                )
+        
+        else:
+            raise NotImplementedError(f"Dataset '{self.config.dataset_name}' not supported in processor.")
+        
     def _accumulate_results(self, feats: np.ndarray, masses: np.ndarray, time_list : List, mass_list: List, 
-                            phy_list  : List) -> None:
+                            phy_list: List, path_list: List, sim_path: str, keep_sims_sep: bool = False) -> None:
         """Accumulate features into output lists."""
-        time_list.extend(feats[:, 0])
-        mass_list.extend(masses)
-        phy_list.extend(feats[:, 1:])
+        
+        if keep_sims_sep:
+            # Keep simulations separated - append as sublists
+            time_list.append(list(feats[:, 0]))
+            mass_list.append(list(masses))
+            phy_list.append(feats[:, 1:].tolist())
+            path_list.append(sim_path)  # Track corresponding simulation path
+        
+        else:
+            # Flatten - extend the lists directly (no path tracking)
+            time_list.extend(feats[:, 0])
+            mass_list.extend(masses)
+            phy_list.extend(feats[:, 1:])
     
     def _report_statistics(self, stats: ProcessingStats, total_sims: int) -> None:
         """Report processing statistics to logger."""
+        
         summary = stats.get_summary()
         
         logger.info(110*"_")
@@ -198,12 +310,12 @@ class DataProcessor:
             logger.info(f"  - Avg virtual per original sim  : {summary['avg_virtual_per_original']:.1f}")
         
         logger.info(f"  - FAST formation channel sims   : {summary['fast_count']}")
-        logger.info(f"  - STEADY formation channel sims : {summary['steady_count']}")
         logger.info(f"  - SLOW formation channel sims   : {summary['slow_count']}")
         
         # Report points statistics based on augmentation state
         if 'avg_points_per_original' in summary:
-            logger.info(f"  - Average points per original   : {summary['avg_points_per_original']:.1f} ± {summary['std_points_per_original']:.1f}")
+            logger.info(f"  - Average points per original   : {summary['avg_points_per_original']:.1f} ± \
+                        {summary['std_points_per_original']:.1f}")
             logger.info(f"  - Average points per output     : {summary['avg_points']:.1f} ± {summary['std_points']:.1f}")
         else:
             logger.info(f"  - Average points per simulation : {summary['avg_points']:.1f} ± {summary['std_points']:.1f}")

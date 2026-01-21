@@ -7,6 +7,7 @@ from typing      import List, Optional
 # Custom plotting functions ------------------------------------------------------------------------------------------------#
 from src.utils.visualize import truncate_colormap, dataset_2Dhist_comparison
 from src.utils.visualize import boxplot_features_with_points, classic_correlogram
+from src.utils.visualize import plot_efficiency_mass_ratio_dataset
 
 # Unique class for plot relevant features of the dataset or simulations ----------------------------------------------------#
 class PlotGenerator:
@@ -20,7 +21,7 @@ class PlotGenerator:
                                t_augm: List, m_augm: List, phy_augm: List,
                                t_down: List, m_down: List, phy_down: List,
                                out_figs : str,
-                               scaled   : bool = True):
+                               scaled   : bool = False):
         """Create all comparison plots efficiently."""
         # Convert to numpy arrays once
         t_base_arr   = np.array(t_base)
@@ -77,7 +78,7 @@ class PlotGenerator:
         
         
         # Create environment-specific plots
-        for channel_code, env_name in [(0, 'fast'), (1, 'slow'), (2, 'steady')]:
+        for channel_code, env_name in [(0., 'fast'), (1., 'slow')]:
             self._create_environment_plot(tb_scaled, mb_scaled, phy_base_arr,
                                         ta_scaled, ma_scaled, phy_augm_arr,
                                         td_scaled, md_scaled, phy_down_arr,
@@ -111,6 +112,7 @@ class PlotGenerator:
                                 channel_code: int, 
                                 env_name: str, 
                                 out_figs: str):
+        
         """Create environment-specific comparison plot."""
         mask = phy_base[:, -1] == channel_code
         
@@ -132,17 +134,18 @@ class PlotGenerator:
         self._create_single_plot(t_base_env, m_base_env, t_augm_env, m_augm_env,
                                  t_down_env, m_down_env, xlabel, ylabel,
                                  env_name, out_figs)
+    
     @staticmethod
     def _create_features_analysis(feats, names, dataset, experiment, out_figs):
 
         # Boxplot of the features selected        
         boxplot_features_with_points(features= feats, feature_names= names,
                                      path_save     = out_figs,
-                                     figsize       = (12, 12),
+                                     figsize       = (18, 9),
                                      name_file     = experiment,
                                      dataset_name  = dataset,
                                      nrows         = 2,
-                                     ncols         = 3,
+                                     ncols         = 5,
                                      point_color   = "wheat",
                                      ifsave        = True,
                                      ifshow        = False)
@@ -150,8 +153,23 @@ class PlotGenerator:
         # Correlation plot of the features selected (Spearman coefficient)        
         classic_correlogram(df= feats, method= "spearman", path_save=out_figs,
                             name_file    = experiment,
-                            dataset_name = dataset,
+                            dataset_name = None,
                             labels       = names,
-                            cmap         = "RdGy")
+                            cmap         = "PuOr",
+                            figsize      = (10, 10),
+                            show         = False)
+     
+    @staticmethod
+    def _create_efficiency_plot(data, out_figs):
+        
+        plot_efficiency_mass_ratio_dataset(data_dict = data,
+                                           cmap       = "plasma",
+                                           figsize    = (7, 5),
+                                           title      = None,
+                                           cmap_label = "Density",
+                                           s_valid    = 10,
+                                           s_outlier  = 10,
+                                           savepath   = out_figs,
+                                           show       = False)
 
 #--------------------------------------------------------------------------------------------------------------------------#

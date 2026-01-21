@@ -42,7 +42,7 @@ class DownsamplingProcessor:
         
         # Process each formation channel
         # Note: Using -1 index for the type_sim feature (last column in phy_array)
-        for channel_code, channel_name in [(0, 'FAST'), (1, 'SLOW'), (2, 'STEADY')]:
+        for channel_code, channel_name in [(0, 'FAST'), (1, 'SLOW')]:
 
             mask = phy_array[:, -1] == channel_code
 
