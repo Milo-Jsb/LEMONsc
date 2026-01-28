@@ -7,8 +7,8 @@ LEMONsc/
     │_ rawdata/                # gitignore. The authors reserve the rights to share the data upon reasonable request.
     │_ datasets/               # gitignore. The authors reserve the rights to share the data upon reasonable request.
     |_ logs/                   # gitignore. Store the output of the functions for debug.
-    |_ scripts/                # main working functions and experiments.
-    │_ src/                    # source scripts. Data preprocessing and additional funtions.
+    |_ jobs/                   # main working functions and experiments.
+    │_ src/                    # source scripts. Processing, modeling, and additional funtions.
     │_ notebooks/              # interactive jupyter notebooks for test, vizualization and tutorials.
     │_ Dockerfile              # proposed image for running the experiments.
     │_ core-build-container.sh # bash script for building the container.
@@ -44,10 +44,10 @@ bash core-run-container.sh
 This script finds an available port to expose and open the container, feel free to update or change the instruction. After running the container from the terminal use the following instruction to run the interactive notebooks:
 
 ```
-jupyter notebook --ip 0.0.0.0 --port 8889 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
+jupyter [notebook|lab] --ip 0.0.0.0 --port 8889 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
 ```
 
-Or you can recreate our experiments using the scripts provided in the `/scritps/` folder (check the respective README folder for more info). 
+Or you can recreate our experiments using the scripts provided in the `/jobs/` folder. 
 
 ¡Have fun and contact us if you have any suggestions :sunglasses:!
 

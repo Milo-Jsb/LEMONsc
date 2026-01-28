@@ -8,22 +8,22 @@ from astropy import constants as c
 
 # Computation of crossing times -------------------------------------------------------------------------------------------#
 def crossing_time(hm_radius: Union[float, np.ndarray], v_disp: Optional[Union[float, np.ndarray]] = None, 
-                  mtot: Optional[Union[float, np.ndarray]] = None) -> Tuple[np.ndarray, u.Unit]:
+                  mtot: Optional[Union[float, np.ndarray]] = None
+                  ) -> Tuple[np.ndarray, u.Unit]:
     """
     ________________________________________________________________________________________________________________________
     Calculate the crossing time of a star cluster. (Unit conversion is handled by Astropy)
     ________________________________________________________________________________________________________________________
     Parameters:
-        - hm_radius (Union[float, np.ndarray])           [pc]   : Half-mass radius of the star cluster. Mandatory.
-        - v_disp    (Optional[Union[float, np.ndarray]]) [km/s] : Velocity dispersion of the star cluster. Optional.
-        - mtot      (Optional[Union[float, np.ndarray]]) [Msun] : Total mass of the star cluster. 
-                                                                  Mandatory if v_disp is None.
+    -> hm_radius (Union[float, np.ndarray])           [pc]   : Half-mass radius of the star cluster. Mandatory.
+    -> v_disp    (Optional[Union[float, np.ndarray]]) [km/s] : Velocity dispersion of the star cluster. Optional.
+    -> mtot      (Optional[Union[float, np.ndarray]]) [Msun] : Total mass of the star cluster. Mandatory if v_disp is None.
     ________________________________________________________________________________________________________________________
     Returns:
-        - t_cross, t_unit (Tuple[np.ndarray, astropy.unit]) [Myr] : Crossing time of the star cluster (time that takes a 
-                                                                    star to travel across the whole system under the 
-                                                                    influence of the gravitational field of the cluster).
-                                                                    Returns array with values and astropy temporal unit.
+    -> t_cross, t_unit (Tuple[np.ndarray, astropy.unit]) [Myr] : Crossing time of the star cluster (time that takes a 
+                                                                 star to travel across the whole system under the 
+                                                                 influence of the gravitational field of the cluster).
+                                                                 Returns array with values and astropy temporal unit.
     ________________________________________________________________________________________________________________________
     Notes:
         Formula from Spitzer (1987). Standard approximation:  
@@ -46,7 +46,8 @@ def crossing_time(hm_radius: Union[float, np.ndarray], v_disp: Optional[Union[fl
     time_unit   = u.Myr
     v_disp_unit = u.km / u.s
     mtot_unit   = u.solMass
-
+    G_unit      = u.pc**3 / (u.solMass * u.Myr**2)
+    
     # Input validation
     if np.any(hm_radius <= 0):
         raise ValueError("Half-mass radius must be positive")
@@ -57,26 +58,39 @@ def crossing_time(hm_radius: Union[float, np.ndarray], v_disp: Optional[Union[fl
             raise ValueError("Total mass must be provided when velocity dispersion is not given")
 
         # Convert mtot to array if applicable
-        mtot      = np.atleast_1d(mtot)
+        mtot = np.atleast_1d(mtot)
         
         if np.any(mtot <= 0):
             raise ValueError("Total mass must be positive")
         
+        # Ensure correct dimension
+        v_unit = np.sqrt(G_unit * mtot_unit / hm_unit)
+        assert v_unit.is_equivalent(u.pc/u.Myr), f"Velocity dispersion must have units of pc/Myr, got {v_unit}"
+        
         # Calculate velocity dispersion using virial theorem
-        G_val = c.G.to(hm_unit**3 / (mtot_unit * time_unit**2)).value
+        G_val = c.G.to(G_unit).value
         v_val = np.sqrt((3 * G_val * mtot) / (5 * hm_radius))
         
-        # Retrieve in proper units
-        v_disp_myrs_pc = v_val * (hm_unit / time_unit)
-        v_disp         = v_disp_myrs_pc.to(v_disp_unit).value
+        # Retrieve in proper units (km/s)
+        cfactor_vel = v_unit.to(v_disp_unit).value
+        v_disp      = v_val * cfactor_vel
 
     else:
         v_disp = np.atleast_1d(v_disp)
         if np.any(v_disp <= 0):
             raise ValueError("Velocity dispersion must be positive")
     
-    # Calculate crossing time
-    t_cross = (hm_radius / v_disp)
+    # Transform velocity to correct units (pc/Myr)
+    cfactor_vel   = v_disp_unit.to(u.pc / u.Myr)
+    v_disp_pc_myr = v_disp * cfactor_vel
+    v_disp_unit   = u.pc / u.Myr
+    
+    # Ensure correct dimension
+    t_cross_unit = hm_unit / v_disp_unit
+    assert t_cross_unit.is_equivalent(u.Myr), f"Crossing time must have time units (Myr), got {t_cross_unit}"
+    
+    # Calculate crossing time with proper unit conversion (Convert pc/(km/s) to Myr)
+    t_cross = (hm_radius / v_disp_pc_myr)
 
     return t_cross, time_unit
 
@@ -87,17 +101,18 @@ def rho_at_rh(n_stars: Union[int, np.ndarray], hm_radius: Union[float, np.ndarra
     Calculate the number density within the half-mass radius of a star cluster. (Unit conversion is handled by Astropy)
     ________________________________________________________________________________________________________________________
     Parameters:
-        n_stars   (Union[int, np.ndarray])          [#]    : Number of stars in the cluster. Mandatory.
-        hm_radius (Union[float, np.ndarray])        [pc]   : Half-mass radius of the star cluster. Mandatory.
+    -> n_stars   (Union[int, np.ndarray])   [#]    : Number of stars in the cluster. Mandatory.
+    -> hm_radius (Union[float, np.ndarray]) [pc]   : Half-mass radius of the star cluster. Mandatory.
     ________________________________________________________________________________________________________________________
     Returns:
-        n_density, density_unit (Tuple[np.ndarray, u.Unit]) [pc^-3]: Number density within the half-mass radius of the star
-                                                                     cluster, assuming a uniform distribution of stars 
-                                                                     across the cluster volume.
-                                                                     Returns array with values and astropy temporal unit.
+    -> n_density, density_unit (Tuple[np.ndarray, u.Unit]) [pc^-3]: Number density within the half-mass radius of the star
+                                                                    cluster, assuming a uniform distribution of stars 
+                                                                    across the cluster volume.
+                                                                    Returns array with values and astropy temporal unit.
     ________________________________________________________________________________________________________________________
     Notes:
-        Formula assumes a uniform distribution of stars across the cluster volume. The number density is approximated as:
+        The formula assumes a uniform distribution of stars across the cluster volume. The number density is 
+        approximated as:
         
                 n_density = (3 * n_stars) / (8 * pi * hm_radius^3)
         
@@ -131,22 +146,23 @@ def rho_at_rh(n_stars: Union[int, np.ndarray], hm_radius: Union[float, np.ndarra
 # Computation of relaxation time ------------------------------------------------------------------------------------------#
 def relaxation_time(n_stars: Union[int, np.ndarray], hm_radius: Union[float, np.ndarray], 
                     v_disp: Optional[Union[float, np.ndarray]] = None, 
-                    mtot  : Optional[Union[float, np.ndarray]] = None) -> Tuple[np.ndarray, u.Unit]:
+                    mtot  : Optional[Union[float, np.ndarray]] = None
+                    ) -> Tuple[np.ndarray, u.Unit]:
     """
     ________________________________________________________________________________________________________________________
     Calculate the relaxation time of a star cluster. (Unit conversion is handled by Astropy)
     ________________________________________________________________________________________________________________________
     Parameters:
-        n_stars   (Union[int, np.ndarray])             [#]    : Number of stars in the cluster. Mandatory
-        hm_radius (Union[float, np.ndarray])           [pc]   : Half-mass radius of the star cluster. Mandatory.
-        v_disp    (Optional[Union[float, np.ndarray]]) [km/s] : Velocity dispersion of the star cluster. Optional.
-        mtot      (Optional[Union[float, np.ndarray]]) [Msun] : Total mass of the star cluster. Mandatory if v_disp is None.
+    -> n_stars   (Union[int, np.ndarray])             [#]    : Number of stars in the cluster. Mandatory
+    -> hm_radius (Union[float, np.ndarray])           [pc]   : Half-mass radius of the star cluster. Mandatory.
+    -> v_disp    (Optional[Union[float, np.ndarray]]) [km/s] : Velocity dispersion of the star cluster. Optional.
+    -> mtot      (Optional[Union[float, np.ndarray]]) [Msun] : Total mass of the star cluster. Mandatory if v_disp is None.
     ________________________________________________________________________________________________________________________
     Returns:
-        t_relax, t_unit (Tuple[np.ndarray, u.Unit]) [Myr]  : Relaxation time of the star cluster (time required for stellar 
-                                                             encounters to significantly alter the velocities of stars and 
-                                                             drive the system toward energy equipartition).
-                                                             Returns array with values and astropy temporal unit.
+    -> t_relax, t_unit (Tuple[np.ndarray, u.Unit]) [Myr]  : Relaxation time of the star cluster (time required for stellar 
+                                                            encounters to significantly alter the velocities of stars and 
+                                                            drive the system toward energy equipartition).
+                                                            Returns array with values and astropy temporal unit.
     ________________________________________________________________________________________________________________________
     Notes:
         Formula from Binney & Tremaine, Galactic Dynamics, Second Edition (Eq 1.38). The relaxation time is given by:
@@ -169,7 +185,6 @@ def relaxation_time(n_stars: Union[int, np.ndarray], hm_radius: Union[float, np.
     # Compute crossing time
     t_cross, time_unit = crossing_time(hm_radius, v_disp, mtot)
     
-    
     # Vectorized calculation
     t_relax = 0.1 * (n_stars * t_cross) / np.log(n_stars)
     
@@ -179,26 +194,27 @@ def relaxation_time(n_stars: Union[int, np.ndarray], hm_radius: Union[float, np.
 def core_collapse_time(m_mean: Union[float, np.ndarray], m_max: Union[float, np.ndarray], n_stars: Union[int, np.ndarray], 
                        hm_radius: Union[float, np.ndarray], 
                        v_disp   : Optional[Union[float, np.ndarray]] = None, 
-                       mtot     : Optional[Union[float, np.ndarray]] = None) -> Tuple[np.ndarray, u.Unit]:
+                       mtot     : Optional[Union[float, np.ndarray]] = None
+                       ) -> Tuple[np.ndarray, u.Unit]:
     """
     ________________________________________________________________________________________________________________________
     Calculate the core collapse time of a star cluster. (Unit conversion is handled by Astropy)
     ________________________________________________________________________________________________________________________
     Parameters:
-        m_mean    (Union[float, np.ndarray])           [Msun] : Mean mass per star. Mandatory.
-        m_max     (Union[float, np.ndarray])           [Msun] : Maximum stellar mass (considering the initial range of 
-                                                                stellar masses). Mandatory.
-        n_stars   (Union[int, np.ndarray])             [#]    : Number of stars in the cluster. Mandatory
-        hm_radius (Union[float, np.ndarray])           [pc]   : Half-mass radius of the star cluster. Mandatory.
-        v_disp    (Optional[Union[float, np.ndarray]]) [km/s] : Velocity dispersion of the star cluster. Optional.
-        mtot      (Optional[Union[float, np.ndarray]]) [Msun] : Total mass of the star cluster. Mandatory if v_disp is None.
+    -> m_mean    (Union[float, np.ndarray])           [Msun] : Mean mass per star. Mandatory.
+    -> m_max     (Union[float, np.ndarray])           [Msun] : Maximum stellar mass (considering the initial range of 
+                                                               stellar masses). Mandatory.
+    -> n_stars   (Union[int, np.ndarray])             [#]    : Number of stars in the cluster. Mandatory
+    -> hm_radius (Union[float, np.ndarray])           [pc]   : Half-mass radius of the star cluster. Mandatory.
+    -> v_disp    (Optional[Union[float, np.ndarray]]) [km/s] : Velocity dispersion of the star cluster. Optional.
+    -> mtot      (Optional[Union[float, np.ndarray]]) [Msun] : Total mass of the star cluster. Mandatory if v_disp is None.
     ________________________________________________________________________________________________________________________
     Returns:
-        t_cc, t_unit (Tuple[np.ndarray, u.Unit]) [Myr]: Core collapse time of the star cluster, which accounts for the 
-                                                        presence of massive stars. The time is scaled by the ratio of the 
-                                                        mean stellar mass to the maximum stellar mass, reflecting the 
-                                                        accelerated collapse driven by mass segregation.
-                                                        Returns array with values and astropy temporal unit.
+    -> t_cc, t_unit (Tuple[np.ndarray, u.Unit]) [Myr]: Core collapse time of the star cluster, which accounts for the 
+                                                       presence of massive stars. The time is scaled by the ratio of the 
+                                                       mean stellar mass to the maximum stellar mass, reflecting the 
+                                                       accelerated collapse driven by mass segregation.
+                                                       Returns array with values and astropy temporal unit.
     ________________________________________________________________________________________________________________________
     Notes:
         Formula from Portegies & McMillan (2002) accounting for mass segregation: 
@@ -226,21 +242,22 @@ def core_collapse_time(m_mean: Union[float, np.ndarray], m_max: Union[float, np.
 
 # Computation of safronov number ------------------------------------------------------------------------------------------#
 def safronov_num(mass_per_star: Union[float, np.ndarray], v_disp: Union[float, np.ndarray], 
-                 stellar_radius: Union[float, np.ndarray] = 1.0) -> Tuple[np.ndarray, u.Unit]:
+                 stellar_radius: Union[float, np.ndarray] = 1.0
+                 ) -> Tuple[np.ndarray, u.Unit]:
     """
     ________________________________________________________________________________________________________________________
     Calculate the Safronov number of a star cluster. (Unit conversion is handled by Astropy)
     ________________________________________________________________________________________________________________________
     Parameters:
-        mass_per_star   (Union[float, np.ndarray])  [Msun] : Typical stellar mass per star in the cluster. Mandatory.
-        v_disp          (Union[float, np.ndarray])  [km/s] : Velocity dispersion of the star cluster. Mandatory.
-        stellar_radius  (Union[float, np.ndarray])  [Rsun] : Stellar radius. Default is 1.0 Rsun.
+    -> mass_per_star   (Union[float, np.ndarray])  [Msun] : Typical stellar mass per star in the cluster. Mandatory.
+    -> v_disp          (Union[float, np.ndarray])  [km/s] : Velocity dispersion of the star cluster. Mandatory.
+    -> stellar_radius  (Union[float, np.ndarray])  [Rsun] : Stellar radius. Default is 1.0 Rsun.
     ________________________________________________________________________________________________________________________
     Returns:
-        theta (Union[float, np.ndarray]) [#]: Safronov number, a dimensionless parameter that measures the importance of 
-                                              gravitational focusing in stellar encounters. Values >> 1 indicate strong 
-                                              gravitational focusing, while values << 1 indicate weak focusing.
-                                              Returns array with values and astropy temporal unit.
+    -> theta (Union[float, np.ndarray]) [#]: Safronov number, a dimensionless parameter that measures the importance of 
+                                             gravitational focusing in stellar encounters. Values >> 1 indicate strong 
+                                             gravitational focusing, while values << 1 indicate weak focusing.
+                                             Returns array with values and astropy temporal unit.
     ________________________________________________________________________________________________________________________
     Notes:
         Formula adapted from Binney & Tremaine, Galactic Dynamics, Second Edition (Eq. 7.195b). The Safronov number is 
@@ -254,9 +271,12 @@ def safronov_num(mass_per_star: Union[float, np.ndarray], v_disp: Union[float, n
     ________________________________________________________________________________________________________________________
     """
     # Convert to arrays for calculation
-    mass_per_star  = np.asarray(mass_per_star)
-    v_disp         = np.asarray(v_disp)
-    stellar_radius = np.asarray(stellar_radius)
+    mass_per_star      = np.asarray(mass_per_star)
+    v_disp             = np.asarray(v_disp)
+    stellar_radius     = np.asarray(stellar_radius)
+    solar_mass         = 1.0 
+    solar_radius       = 1.0
+    reference_velocity = 100.0
     
     # Input validation
     if np.any(mass_per_star <= 0):
@@ -270,20 +290,29 @@ def safronov_num(mass_per_star: Union[float, np.ndarray], v_disp: Union[float, n
     mass_per_star_unit =  u.solMass
     v_disp_unit        =  u.km / u.s
     stellar_radius_u   =  u.solRad
-        
-    # Calculate Safronov number using astropy units
-    solar_mass         = 1.0 * u.solMass
-    solar_radius       = 1.0 * u.solRad
-    reference_velocity = 100.0 * u.km / u.s
+    solar_mass_unit    =  u.solMass
+    ref_vel_unit       =  u.km / u.s
+    solar_radius_unit  =  u.solRad
     
-    theta      = 9.54 * (mass_per_star / solar_mass.value) * (solar_radius.value / stellar_radius) * (reference_velocity.value / v_disp)**2
-    theta_unit = (mass_per_star_unit / solar_mass.unit) * (solar_radius.unit/stellar_radius_u) * (reference_velocity.unit / v_disp_unit)**2
+    # Convert reference velocity to [pc/Myr]
+    cfactor_vel  = ref_vel_unit.to(u.pc / u.Myr)    
+    rvel_pc_myr  = reference_velocity * cfactor_vel
+    ref_vel_unit = u.pc / u.Myr
     
-    # Ensure the result is dimensionless
+    # Convert v_disp to [pc/Myr]
+    cfactor_vel   = v_disp_unit.to(u.pc / u.Myr)
+    v_disp_pc_myr = v_disp * cfactor_vel
+    v_disp_unit   = u.pc / u.Myr
+    
+    # Ensure correcttness of units
+    theta_unit = (mass_per_star_unit / solar_mass_unit) * (solar_radius_unit/stellar_radius_u) * (ref_vel_unit / v_disp_unit)**2
     theta_unit = theta_unit.decompose()
     
     # Assert that the result is dimensionless
     assert theta_unit.is_unity(), f"Safronov number must be dimensionless, got {theta_unit}"
+    
+    # Calculate Safronov number vectorized
+    theta = 9.54 * (mass_per_star / solar_mass) * (solar_radius / stellar_radius) * (rvel_pc_myr / v_disp_pc_myr)**2
     
     # Validate that result is reasonable (should be positive)
     if np.any(theta <= 0):
@@ -295,23 +324,24 @@ def safronov_num(mass_per_star: Union[float, np.ndarray], v_disp: Union[float, n
 def collision_time(hm_radius: Union[float, np.ndarray], n_stars: Union[int, np.ndarray], 
                    mass_per_star  : Union[float, np.ndarray], 
                    v_disp         : Union[float, np.ndarray], 
-                   stellar_radius : Union[float, np.ndarray] = 1.0) -> Tuple[np.ndarray, u.Unit]:
+                   stellar_radius : Union[float, np.ndarray] = 1.0
+                   ) -> Tuple[np.ndarray, u.Unit]:
     """
     ________________________________________________________________________________________________________________________
     Calculate the collision time of a star cluster. (Unit conversion is handled by Astropy)
     ________________________________________________________________________________________________________________________
     Parameters:
-        hm_radius      (Union[float, np.ndarray]) [pc]   : Half-mass radius of the star cluster. Mandatory.
-        n_stars        (Union[int, np.ndarray])   [#]    : Number of stars in the cluster. Mandatory.
-        mass_per_star  (Union[float, np.ndarray]) [Msun] : Typical stellar mass per star in the cluster. Mandatory.
-        v_disp         (Union[float, np.ndarray]) [km/s] : Velocity dispersion of the star cluster. Mandatory.
-        stellar_radius (Union[float, np.ndarray]) [Rsun] : Stellar radius. Default is 1.0 Rsun.
+    -> hm_radius      (Union[float, np.ndarray]) [pc]   : Half-mass radius of the star cluster. Mandatory.
+    -> n_stars        (Union[int, np.ndarray])   [#]    : Number of stars in the cluster. Mandatory.
+    -> mass_per_star  (Union[float, np.ndarray]) [Msun] : Typical stellar mass per star in the cluster. Mandatory.
+    -> v_disp         (Union[float, np.ndarray]) [km/s] : Velocity dispersion of the star cluster. Mandatory.
+    -> stellar_radius (Union[float, np.ndarray]) [Rsun] : Stellar radius. Default is 1.0 Rsun.
     ________________________________________________________________________________________________________________________
     Returns:
-        t_coll, t_unit (np.ndarray, u.Unit]) [Myr]: Collision time of the star cluster (average time 
-                                                    between stellar collisions, accounting for 
-                                                    gravitational focusing effects).
-                                                    Returns array with values and astropy temporal unit.
+    -> t_coll, t_unit (np.ndarray, u.Unit]) [Myr]: Collision time of the star cluster (average time 
+                                                   between stellar collisions, accounting for 
+                                                   gravitational focusing effects).
+                                                   Returns array with values and astropy temporal unit.
     ________________________________________________________________________________________________________________________
     Notes:
         Formula from Binney & Tremaine, Galactic Dynamics, Second Edition (Eq. 7.195). The expression includes 
@@ -336,7 +366,8 @@ def collision_time(hm_radius: Union[float, np.ndarray], n_stars: Union[int, np.n
     stellar_radius = np.atleast_1d(stellar_radius)
     
     # Define units
-    time_unit = u.Myr
+    v_disp_unit         = u.km / u.s
+    stellar_radius_unit = u.solRad
     
     # Input validation
     if np.any(hm_radius <= 0):
@@ -350,18 +381,26 @@ def collision_time(hm_radius: Union[float, np.ndarray], n_stars: Union[int, np.n
     if np.any(stellar_radius <= 0):
         raise ValueError("Stellar radius must be positive")
     
-    # Calculate number density within half-mass radius
+    # Calculate number density within half-mass radius [pc^-3]
     n_density, density_unit = rho_at_rh(n_stars, hm_radius)
     
-    # Calculate Safronov number
+    # Calculate Safronov number [dimensionless]
     theta, theta_unit = safronov_num(mass_per_star, v_disp, stellar_radius)
     
-    # Convert stellar radius from solar radii to pc
-    solar_radius_pc   = c.R_sun.to(u.pc).value
-    stellar_radius_pc = stellar_radius * solar_radius_pc
+    # Convert stellar radius from solar radii to pc (update the unit)
+    cfactor_dist        = c.R_sun.to(u.pc).value
+    stellar_radius_pc   = stellar_radius * cfactor_dist
+    stellar_radius_unit = u.pc
     
     # Convert v_disp from km/s to pc/Myr
-    v_disp_pc_myr = (v_disp * u.km / u.s).to(u.pc / time_unit).value
+    cfactor_vel   = v_disp_unit.to(u.pc / u.Myr)
+    v_disp_pc_myr = v_disp * cfactor_vel
+    v_disp_unit   = u.pc / u.Myr
+    
+    # Ensure correcttness of units
+    time_unit = (density_unit * v_disp_unit * stellar_radius_unit**2 * theta_unit)**-1
+
+    assert time_unit.is_equivalent(u.Myr), f"Collision time must have time units, got {time_unit}"
     
     # Calculate collision time: t_coll = 1 / (16 * sqrt(pi) * n * v_disp * R_star^2 * (1 + theta))
     t_coll = 1.0 / (16 * np.sqrt(np.pi) * n_density * v_disp_pc_myr * stellar_radius_pc**2 * (1 + theta))
@@ -376,7 +415,8 @@ def collision_time(hm_radius: Union[float, np.ndarray], n_stars: Union[int, np.n
 def critical_mass(hm_radius: Union[float, np.ndarray], mass_per_star: Union[float, np.ndarray], 
                   cluster_age    : Union[float, np.ndarray], 
                   v_disp         : Union[float, np.ndarray], 
-                  stellar_radius : Union[float, np.ndarray] = 1.0) -> Tuple[np.ndarray, u.Unit]:
+                  stellar_radius : Union[float, np.ndarray] = 1.0
+                  ) -> Tuple[np.ndarray, u.Unit]:
     """
     ________________________________________________________________________________________________________________________
     Calculate the critical mass of a star cluster. (Unit conversion is handled by Astropy)
@@ -420,7 +460,11 @@ def critical_mass(hm_radius: Union[float, np.ndarray], mass_per_star: Union[floa
     stellar_radius = np.atleast_1d(stellar_radius)
     
     # Define units
-    mass_unit = u.solMass
+    mass_unit           = u.solMass
+    hm_radius_unit      = u.pc
+    cluster_age_unit    = u.Myr
+    stellar_radius_unit = u.solRad
+    G_unit              = u.pc**3 / (mass_unit * u.Myr**2)
     
     # Input validation
     if np.any(hm_radius <= 0):
@@ -438,17 +482,25 @@ def critical_mass(hm_radius: Union[float, np.ndarray], mass_per_star: Union[floa
     theta, theta_unit = safronov_num(mass_per_star, v_disp, stellar_radius)
 
     # Convert stellar radius from solar radii to pc
-    stellar_radius_pc = (stellar_radius * u.solRad).to(u.pc).value
+    cfactor_stellar_radius = stellar_radius_unit.to(u.pc)
+    stellar_radius_pc      = stellar_radius * cfactor_stellar_radius
+    stellar_radius_unit    = u.pc
 
     # Compute Sigma_0 (effective cross-section): Sigma_0 = 16 * sqrt(pi) * R_star^2 * (1 + theta)
-    Sigma_0 = 16 * np.sqrt(np.pi) * stellar_radius_pc**2 * (1 + theta)
+    Sigma_0_unit = stellar_radius_unit**2 * theta_unit
+    Sigma_0      = 16 * np.sqrt(np.pi) * stellar_radius_pc**2 * (1 + theta)
 
     # Convert G to appropriate units: pc^3 / (solar_mass * Myr^2)
-    G_value = c.G.to(u.pc**3 / (mass_unit * u.Myr**2)).value
+    G_value = c.G.to(G_unit).value
 
     # Compute the factor: (4 * pi * mass_per_star) / (3 * Sigma_0 * tau * sqrt(G))
-    factor = (4 * np.pi * mass_per_star) / (3 * Sigma_0 * cluster_age * np.sqrt(G_value))
+    factor_unit = mass_unit / (Sigma_0_unit * cluster_age_unit * G_unit**0.5)
+    factor      = (4 * np.pi * mass_per_star) / (3 * Sigma_0 * cluster_age * np.sqrt(G_value))
 
+    # Ensure dimension
+    m_crit_unit = hm_radius_unit**(7/3) * factor_unit**(2/3)
+    assert m_crit_unit.is_equivalent(mass_unit), f"Critical mass must have mass units [Msun], got {m_crit_unit}"
+    
     # Compute critical mass: m_crit = R_h^(7/3) * factor^(2/3)
     m_crit = hm_radius**(7/3) * factor**(2/3)
 
@@ -519,68 +571,5 @@ def mean_stellar_radius(stellar_mass : Union[float, np.ndarray]) -> Tuple[np.nda
         raise ValueError("Stellar radius calculation resulted in non-positive value")
     
     return stellar_radius, radius_unit
-
-# Computation of the Galactocentric Radius --------------------------------------------------------------------------------#
-def galactocentric_radius(tildal_radius: Union[float, np.ndarray], 
-                          total_mass   : Union[float, np.ndarray],
-                          v_circ       : float = 220.0) -> Tuple[np.ndarray, u.Unit]:  # v_circ in km/s
-    """
-    ________________________________________________________________________________________________________________________
-    Calculate the Galactocentric radius  (Unit conversion is handled by Astropy)
-    ________________________________________________________________________________________________________________________
-    Parameters:
-        tildal_radius (Union[float, np.ndarray]) [pc]   : Tidal radius of the cluster.
-        total_mass    (Union[float, np.ndarray]) [Msun] : Total mass of the cluster.
-        v_circ        (float)                    [km/s] : Circular velocity at the solar radius. Default is 220 km/s.
-    ________________________________________________________________________________________________________________________
-    Returns:
-        r_gal, r_unit (Tuple[np.ndarray, u.Unit]) [pc]: Galactocentric radius calculated as 
-    ________________________________________________________________________________________________________________________
-    Notes:
-        The Galactocentric radius is computed by inverting the classical tidal-radius relation assuming a spherical host 
-        galaxy with a flat rotation curve (isothermal sphere potential) and a circular orbit:
-
-                Rgc = sqrt((3.0*(v_circ**2)*(tildal_radius**3))/(G*total_mass))
-        
-        This expression assumes:
-            - a flat rotation curve (M_host(R) ∝ R),
-            - a circular orbit,
-            - the tidal radius corresponds to the instantaneous (or pericentric) orbit,
-            - the cluster mass is fully enclosed within the tidal radius.
-
-        Deviations from these assumptions (e.g., eccentric orbits, time-dependent tides, or non-spherical potentials) may 
-        lead to systematic uncertainties in the estimated Galactocentric radius.
-
-        Unit conversion is handled internally using Astropy
-    ________________________________________________________________________________________________________________________
-    """
-    # Convert to arrays for validation
-    tildal_radius = np.atleast_1d(tildal_radius)
-    total_mass    = np.atleast_1d(total_mass)
-    
-    # Define units
-    radius_unit = u.pc
-    mass_unit   = u.solMass
-    v_circ_unit = u.km / u.s
-    
-    # Input validation
-    if np.any(tildal_radius <= 0):
-        raise ValueError("Tidal radius must be positive")
-    if np.any(total_mass <= 0):
-        raise ValueError("Total mass must be positive")
-    if v_circ <= 0:
-        raise ValueError("Circular velocity must be positive")
-    
-    # Convert G to appropriate units: pc^3 / (solar_mass * (km/s)^2)
-    G_value = c.G.to(radius_unit**3 / (mass_unit * v_circ_unit**2)).value
-    
-    # Calculate Galactocentric radius: Rgc = sqrt((3.0 * v_circ^2 * r_tidal^3) / (G * M_total))
-    r_gal = np.sqrt((3.0 * v_circ**2 * tildal_radius**3) / (G_value * total_mass))
-    
-    # Validate that result is reasonable (should be positive)
-    if np.any(r_gal <= 0):
-        raise ValueError("Galactocentric radius calculation resulted in non-positive value")
-    
-    return r_gal, radius_unit
 
 #--------------------------------------------------------------------------------------------------------------------------#

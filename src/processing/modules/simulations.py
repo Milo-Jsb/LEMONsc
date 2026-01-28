@@ -154,8 +154,8 @@ class SimulationProcessor:
                 
                 # Determine formation channel
                 chform = determine_formation_channel(imbh_df         = imbh_df, 
-                                                     mass_colum_name = self.config.mass_column_imbh,
-                                                     time_colum_name = self.config.time_column_imbh)
+                                                     mass_column_name = self.config.mass_column_imbh,
+                                                     time_column_name = self.config.time_column_imbh)
                 simulations_by_type[chform].append(path)
                 
             except Exception as e:

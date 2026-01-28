@@ -189,11 +189,13 @@ def efficiency_mass_ratio_relation(mmo_mass        : Union[List[float], np.ndarr
     ________________________________________________________________________________________________________________________
     """
     # Compute elements of interest from the input elements
-    mass_ratio = np.array([entry[config.sim_pos][config.Mtot_pos] / entry[config.sim_pos][config.Mcrit_pos] 
-                           for entry in physical_params])
-    epsilon    = np.array([(mmo[config.Mmmo_pos] / (entry[config.sim_pos][config.Mtot_pos] - \
-                                                    entry[config.sim_pos][config.M_loss_total_pos])) 
-                           for entry, mmo in zip(physical_params, mmo_mass)])
+    init_totmass    = np.array([entry[config.sim_pos][config.Mtot_pos] for entry in physical_params])
+    init_mcrit      = np.array([entry[config.sim_pos][config.Mcrit_pos] for entry in physical_params])
+    final_bhmass    = np.array([mmo[config.Mmmo_pos] for mmo in mmo_mass])
+    total_mass_loss = np.array([entry[config.sim_pos][config.M_loss_total_pos] for entry in physical_params])
+    
+    mass_ratio = init_totmass / init_mcrit
+    epsilon    = final_bhmass / (init_totmass - total_mass_loss)
     
     # Define fit from Vergara et al. (2025)
     def V2025_epsilon_BH(m_ratio: np.ndarray, k: float=4.63, x0: float=4.0, a: float=-0.1):

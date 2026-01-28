@@ -26,10 +26,14 @@ RUN echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-chec
     curl \
     libgl1-mesa-glx \
     python3-pip \
-    texlive \
+    texlive-latex-base \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
+    cm-super \
+    dvipng \
     ca-certificates \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     && pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy requirements file first, separately

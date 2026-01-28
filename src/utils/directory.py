@@ -6,13 +6,9 @@ import json
 import numpy  as np
 import pandas as pd
 
-# Path Management for the mocca dataset preparation ------------------------------------------------------------------------#
-class PathManagerMOCCAExperiment:
-    """
-    ________________________________________________________________________________________________________________________
-    Centralized path management for the pipeline of feature building in the mocca experiment.
-    ________________________________________________________________________________________________________________________
-    """
+# Path Management for dataset preparation ---------------------------------------------------------------------------------#
+class PathManagerExperiment:
+    """Centralized path management for the pipeline of feature building in the experiment."""
     def __init__(self, root_dir: str, dataset: str, exp_name: str, out_dir: str, fig_dir: str):
         self.data_path       = f"{root_dir}{dataset}/simulations/"
         self.out_path        = f"{out_dir}{exp_name}/{dataset}/"
@@ -29,11 +25,7 @@ class PathManagerMOCCAExperiment:
     
 # Listing directories -----------------------------------------------------------------------------------------------------#
 def list_all_directories(directory: str):
-    """
-    ________________________________________________________________________________________________________________________
-    Recursively list all directory names inside the specified directory path.
-    ________________________________________________________________________________________________________________________
-    """
+    """Recursively list all directory names inside the specified directory path."""
     all_dirs = []
     
     for root, dirs, files in os.walk(directory):
@@ -43,11 +35,8 @@ def list_all_directories(directory: str):
 
 # Safe Load of JSONfiles --------------------------------------------------------------------------------------------------#
 def load_json_file(json_path: str, description: str, verbose: bool= False):
-    """
-    ________________________________________________________________________________________________________________________
-    Helper function: Load a JSON existing file from a given path.
-    ________________________________________________________________________________________________________________________
-    """
+    """Helper function: Load a JSON existing file from a given path."""
+    
     if os.path.exists(json_path):
         if verbose: print(f"Loading {description} from: {json_path}")
         with open(json_path, 'r') as f:
@@ -71,6 +60,10 @@ def load_yaml_dict(path: str, verbose: bool = False):
     ________________________________________________________________________________________________________________________
     Raises:
     -> FileNotFoundError, yaml.YAMLError, TypeError
+    ________________________________________________________________________________________________________________________
+    Notes:
+    -> Supports tuple construction in YAML using !tuple tag.
+    -> Verbose logging provides insights into loading process.
     ________________________________________________________________________________________________________________________
     """
     # Input validation ----------------------------------------------------------------------------------------------------#

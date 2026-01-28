@@ -147,8 +147,8 @@ class DataProcessor:
                 
                 # Determine formation channel and process
                 chform = determine_formation_channel(imbh_df         = imbh_df, 
-                                                     mass_colum_name = self.config.mass_column_imbh,
-                                                     time_colum_name = self.config.time_column_imbh)
+                                                     mass_column_name = self.config.mass_column_imbh,
+                                                     time_column_name = self.config.time_column_imbh)
                 
                 feats, masses, idxs = self._process_single(imbh_df, system_df, iconds_dict, self.config, label, 
                                                            augmentation, 
@@ -156,8 +156,7 @@ class DataProcessor:
                 
                 # Track statistics and accumulate results
                 stats.increment_used(chform, len(feats), is_augmented=augmentation, n_virtual=n_virtual)
-                self._accumulate_results(feats, masses, time_list, mass_list, phy_list, path_list, 
-                                       path, study_mode)
+                self._accumulate_results(feats, masses, time_list, mass_list, phy_list, path_list, path, study_mode)
                 
             except Exception as e:
                 stats.increment_ignored()

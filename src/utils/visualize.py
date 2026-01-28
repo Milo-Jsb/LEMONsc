@@ -8,10 +8,10 @@ import matplotlib.pyplot   as plt
 import matplotlib.gridspec as gridspec
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing                                import Optional, Union, Tuple
+from typing                                import Optional, Union, Tuple, Dict, Literal
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from matplotlib                            import cm
-from matplotlib.colors                     import Normalize, LogNorm, Colormap
+from matplotlib.colors                     import Normalize, LogNorm, Colormap, Normalize, BoundaryNorm, LogNorm
 from matplotlib.cm                         import ScalarMappable    
 from sklearn.metrics                       import r2_score
 from scipy.stats                           import gaussian_kde
@@ -386,7 +386,6 @@ def boxplot_features_with_points(features: np.ndarray, feature_names: list, path
     
     plt.close(fig)
 
-
 # Custom Full Correlogram Plot (Upper Triangle) ---------------------------------------------------------------------------#
 def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "PuOr",
                          path_save: str = None, name_file: str = None, dataset_name: str = None,
@@ -523,7 +522,7 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
         title = title_map[method]
         if dataset_name:
             title = f"{title} - {dataset_name}"
-        ax.set_title(title, fontsize=16, loc="left", pad=10)
+            ax.set_title(title, fontsize=16, loc="left", pad=10)
         
         # Add colorbar
         sm = ScalarMappable(cmap=cmap_obj, norm=norm)
@@ -600,11 +599,11 @@ def plot_simulation_example(df: pd.DataFrame, y_var: str = "massNew[Msun](10)",
     # Create plot ---------------------------------------------------------------------------------------------------------#
     fig, ax = plt.subplots(figsize=(8, 6))
     
-    ax.plot(x_vals, y_vals, lw=0.75, color="darkblue", marker=".", label='MMO')
+    ax.plot(x_vals, y_vals, lw=0.75, color="darkblue", marker=".", label='Most Massive Object (MMO)')
     ax.set_ylabel(y_label, size=14)
     ax.set_xlabel(x_label, size=14)
     ax.set_title("Simulation example", size=16, loc="left", pad=10)
-    ax.legend()
+    ax.legend(loc="best")
 
     # Add metadata text box if parameters are provided -------------------------------------------------------------------#
     if any(x is not None for x in [t_cc, t_coll, t_relax, M_crit, rho_half]):
@@ -621,11 +620,11 @@ def plot_simulation_example(df: pd.DataFrame, y_var: str = "massNew[Msun](10)",
             text_lines.append(f"$\\rho(R_h)={rho_half:.2e}$ pc$^{{-3}}$")
         
         text_content = "\n".join(text_lines)
-        ax.text(0.98, 0.98, text_content,
+        ax.text(0.01, 0.98, text_content,
                 transform=ax.transAxes,
                 fontsize=11,
                 verticalalignment='top',
-                horizontalalignment='right',
+                horizontalalignment='left',
                 bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
 
     # Save file -----------------------------------------------------------------------------------------------------------#
@@ -643,41 +642,41 @@ def plot_simulation_example(df: pd.DataFrame, y_var: str = "massNew[Msun](10)",
         raise RuntimeError(f"Failed to save or display plot: {e}")
 
 # Get a comparison between datasets ---------------------------------------------------------------------------------------#
-def dataset_2Dhist_comparison(times_base: np.ndarray, masses_base: np.ndarray,
-                              times_aug : np.ndarray, masses_aug : np.ndarray,
-                              times_filt: np.ndarray, masses_filt: np.ndarray,
+def dataset_2Dhist_comparison(x_base: np.ndarray, y_base: np.ndarray, x_aug : np.ndarray, y_aug : np.ndarray,
+                              x_filt: np.ndarray, y_filt: np.ndarray,
                               name       : Optional[str] = "full",
                               bins       : int = 200,
                               cmap       : Union[str, Colormap ] = "viridis",
                               savepath   : Optional[str] = None,
                               figsize    : tuple = (18, 5),
-                              titles     : tuple = ("RawDataset", "AugSampledDataset", "DownSampledDataset"),
+                              titles     : tuple = ("Original Dataset", "Augmented Dataset", "Downsampled Dataset"),
                               axislabels : Tuple[str,str]= (r"log($t$ [Myr])", r"M$_{\rm{MMO}}$ [M$_\odot$]"),
-                              cmap_label : str = "Count",
+                              cmap_label : str = "Count per bin",
                               show       : bool = False):
     """
     _______________________________________________________________________________________________________________________
     Generate 2D histogram comparison plots for three datasets (base, augmented, filtered) showing time-mass distributions.
     _______________________________________________________________________________________________________________________
     Parameters:
-        times_base   (array-like) : Time values for base dataset. Mandatory.
-        masses_base  (array-like) : Mass values for base dataset. Mandatory.
-        times_aug    (array-like) : Time values for augmented dataset. Mandatory.
-        masses_aug   (array-like) : Mass values for augmented dataset. Mandatory.
-        times_filt   (array-like) : Time values for filtered dataset. Mandatory.
-        masses_filt  (array-like) : Mass values for filtered dataset. Mandatory.
-        bins         (int)        : Number of bins for histograms. Default is 200.
-        cmap         (str)        : Colormap for histograms. Default is "viridis".
-        savepath     (str)        : Path to save the plot. Default is None (no saving).
-        figsize      (tuple)      : Figure size (width, height). Default is (18, 5).
-        titles       (tuple)      : Titles for the three subplots. Default is ("RawDataset", "AugSampledDataset", "DownSampledDataset").
-        cmap_label   (str)        : Label for colorbar. Default is "Count".
+    -> x_base     (array-like) : Time values for base dataset. Mandatory.
+    -> y_base     (array-like) : Mass values for base dataset. Mandatory.
+    -> x_aug      (array-like) : Time values for augmented dataset. Mandatory.
+    -> y_aug      (array-like) : Mass values for augmented dataset. Mandatory.
+    -> x_filt     (array-like) : Time values for filtered dataset. Mandatory.
+    -> y_filt     (array-like) : Mass values for filtered dataset. Mandatory.
+    -> bins       (int)        : Number of bins for histograms. Default is 200.
+    -> cmap       (str)        : Colormap for histograms. Default is "viridis".
+    -> savepath   (str)        : Path to save the plot. Default is None (no saving).
+    -> figsize    (tuple)      : Figure size (width, height). Default is (18, 5).
+    -> titles     (tuple)      : Titles for the three subplots. Default is 
+                                    ("Original Dataset", "Augmented Dataset", "Downsampled Dataset").
+    -> cmap_label (str)        : Label for colorbar. Default is "Count per bin".
     _______________________________________________________________________________________________________________________
     Returns:
-        None. The function displays the plot and optionally saves it.
+    -> None. The function displays the plot and optionally saves it.
     _______________________________________________________________________________________________________________________
     Notes:
-        - Converts time values to log10 scale for better visualization.
+        - Converts time values to log10 1p scale for better visualization.
         - Uses shared bin edges across all histograms for consistent comparison.
         - Applies logarithmic normalization to color scale.
         - Displays point counts for each dataset.
@@ -688,21 +687,18 @@ def dataset_2Dhist_comparison(times_base: np.ndarray, masses_base: np.ndarray,
     _______________________________________________________________________________________________________________________
     """
     # Input validation ----------------------------------------------------------------------------------------------------#
-    if any(x is None for x in [times_base, masses_base, times_aug, masses_aug, times_filt, masses_filt]):
+    if any(x is None for x in [x_base, y_base, x_aug, y_aug, x_filt, y_filt]):
         raise ValueError("All input arrays must not be None.")
     
     try:
-        times_base  = np.asarray(times_base)
-        masses_base = np.asarray(masses_base)
-        times_aug   = np.asarray(times_aug)
-        masses_aug  = np.asarray(masses_aug)
-        times_filt  = np.asarray(times_filt)
-        masses_filt = np.asarray(masses_filt)
+        x_base, y_base  = np.asarray(x_base), np.asarray(y_base)
+        x_aug, y_aug    = np.asarray(x_aug), np.asarray(y_aug)
+        x_filt, y_filt  = np.asarray(x_filt), np.asarray(y_filt)
     
     except Exception as e:
         raise TypeError(f"Could not convert inputs to numpy arrays: {e}")
     
-    if not all(len(x) == len(y) for x, y in [(times_base, masses_base), (times_aug, masses_aug), (times_filt, masses_filt)]):
+    if not all(len(x) == len(y) for x, y in [(x_base, y_base), (x_aug, y_aug), (x_filt, y_filt)]):
         raise ValueError("Time and mass arrays must have the same length for each dataset.")
     
     if not isinstance(bins, int) or bins <= 0:
@@ -715,17 +711,14 @@ def dataset_2Dhist_comparison(times_base: np.ndarray, masses_base: np.ndarray,
         raise TypeError("titles must be a tuple of length 3.")
 
     # Data preparation ----------------------------------------------------------------------------------------------------#
-    t_base = times_base
-    m_base = masses_base
-    t_aug  = times_aug.flatten()
-    m_aug  = masses_aug.flatten()
-    t_filt = times_filt.flatten()
-    m_filt = masses_filt.flatten()
+    x_base, y_base = x_base.flatten(), y_base.flatten()
+    x_aug, y_aug   = x_aug.flatten(), y_aug.flatten()
+    x_filt, y_filt = x_filt.flatten(), y_filt.flatten()
 
     # Calculate histograms manually to share vmax
-    H1, xedges, yedges = np.histogram2d(t_base, m_base, bins=bins)
-    H2, _, _ = np.histogram2d(t_aug, m_aug, bins=[xedges, yedges])
-    H3, _, _ = np.histogram2d(t_filt, m_filt, bins=[xedges, yedges])
+    H1, xedges, yedges = np.histogram2d(x_base, y_base, bins=bins)
+    H2, _, _ = np.histogram2d(x_aug, y_aug, bins=[xedges, yedges])
+    H3, _, _ = np.histogram2d(x_filt, y_filt, bins=[xedges, yedges])
 
     vmax = max(H1.max(), H2.max(), H3.max())
     norm = LogNorm(vmin=1, vmax=vmax)
@@ -735,9 +728,9 @@ def dataset_2Dhist_comparison(times_base: np.ndarray, masses_base: np.ndarray,
     gs  = gridspec.GridSpec(1, 3, figure=fig, wspace=0.1)
 
     datasets = [
-        (t_base, m_base, H1, titles[0]),
-        (t_aug, m_aug, H2, titles[1]),
-        (t_filt, m_filt, H3, titles[2]),
+        (x_base, y_base, H1, titles[0]),
+        (x_aug, y_aug, H2, titles[1]),
+        (x_filt, y_filt, H3, titles[2]),
     ]
 
     # Create subplots ----------------------------------------------------------------------------------------------------#
@@ -775,27 +768,124 @@ def dataset_2Dhist_comparison(times_base: np.ndarray, masses_base: np.ndarray,
     if show: plt.show()
     plt.close(fig)
     
-#--------------------------------------------------------------------------------------------------------------------------#
+# Single 2D histogram plot ------------------------------------------------------------------------------------------------#
+def dataset_2Dhist(x_values: np.ndarray, y_values: np.ndarray, name : Optional[str] = "dataset", bins : int = 200,
+                   cmap       : Union[str, Colormap] = "viridis",
+                   savepath   : Optional[str] = None,
+                   figsize    : tuple = (8, 6),
+                   title      : str = "Dataset",
+                   axislabels : Tuple[str,str] = (r"log($t$ [Myr])", r"M$_{\rm{MMO}}$ [M$_\odot$]"),
+                   cmap_label : str = "Count",
+                   show       : bool = False):
+    """
+    _______________________________________________________________________________________________________________________
+    Generate a 2D histogram plot for a single dataset showing time-mass distribution.
+    _______________________________________________________________________________________________________________________
+    Parameters:
+    -> x_values     (array-like) : Time values for dataset. Mandatory.
+    -> y_values     (array-like) : Mass values for dataset. Mandatory.
+    -> name         (str)        : Name identifier for saving. Default is "dataset".
+    -> bins         (int)        : Number of bins for histogram. Default is 200.
+    -> cmap         (str)        : Colormap for histogram. Default is "viridis".
+    -> savepath     (str)        : Path to save the plot. Default is None (no saving).
+    -> figsize      (tuple)      : Figure size (width, height). Default is (8, 6).
+    -> title        (str)        : Title for the plot. Default is "Dataset".
+    -> axislabels   (tuple)      : Labels for x and y axes. Default is time and mass labels.
+    -> cmap_label   (str)        : Label for colorbar. Default is "Count".
+    -> show         (bool)       : Whether to display the plot. Default is False.
+    _______________________________________________________________________________________________________________________
+    Returns:
+    -> None. The function displays the plot and optionally saves it.
+    _______________________________________________________________________________________________________________________
+    Notes:
+        - Applies logarithmic normalization to color scale.
+        - Displays point count for the dataset.
+        - Handles input validation and file saving errors.
+    _______________________________________________________________________________________________________________________
+    Raises:
+        ValueError, TypeError, OSError
+    _______________________________________________________________________________________________________________________
+    """
+    # Input validation ----------------------------------------------------------------------------------------------------#
+    if x_values is None or y_values is None:
+        raise ValueError("Time and mass arrays must not be None.")
+    
+    try:
+        x_values  = np.asarray(x_values)
+        y_values = np.asarray(y_values)
+    except Exception as e:
+        raise TypeError(f"Could not convert inputs to numpy arrays: {e}")
+    
+    if len(x_values) != len(y_values):
+        raise ValueError("Time and mass arrays must have the same length.")
+    
+    if not isinstance(bins, int) or bins <= 0:
+        raise TypeError("bins must be a positive integer.")
+    
+    if not isinstance(figsize, tuple) or len(figsize) != 2:
+        raise TypeError("figsize must be a tuple of length 2.")
+
+    # Data preparation ----------------------------------------------------------------------------------------------------#
+    x = x_values.flatten()
+    y = y_values.flatten()
+
+    # Calculate histogram
+    H, xedges, yedges = np.histogram2d(x, y, bins=bins)
+    vmax = H.max()
+    norm = LogNorm(vmin=1, vmax=vmax)
+
+    # Create figure -------------------------------------------------------------------------------------------------------#
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    h = ax.hist2d(x, y, bins=[xedges, yedges], cmap=cmap, norm=norm, cmin=1)
+    
+    ax.set_title(title, loc="left", size=14)
+    ax.set_xlabel(axislabels[0], size=12)
+    ax.set_ylabel(axislabels[1], size=12)
+
+    # Colorbar (inset)
+    cax = inset_axes(ax, width="50%", height="4%", loc="upper left", borderpad=1)
+    cb = fig.colorbar(h[3], cax=cax, orientation='horizontal')
+    cb.set_label(cmap_label, size=10)
+    cb.ax.tick_params(labelsize=8)
+
+    # Add count text
+    n_points = len(x)
+    ax.text(0.03, 0.75, f"$N_{{\\rm points}}$ = {n_points:,}",
+            transform=ax.transAxes, fontsize=9,
+            bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'))
+
+    # Save and display ----------------------------------------------------------------------------------------------------#
+    if savepath:
+        try:
+            plt.savefig(f"{savepath}2dhist_{name}.jpg", dpi=600, bbox_inches="tight")
+        except Exception as e:
+            raise OSError(f"Error saving plot to {savepath}: {e}")
+    
+    if show: plt.show()
+    plt.close(fig)
+    
+#Histograms and KDE for different features --------------------------------------------------------------------------------#
 def plot_feature_distributions(feats_raw: pd.DataFrame, feats_processed: pd.DataFrame, labels: dict, cont_features: list, 
-                               sample_size: int = 1000000,
-                               bins: Union[int, str] = 50,
-                               save_dir: str = "dist_aug_study"):
+                               sample_size : int = 1e6,
+                               bins        : Union[int, str] = 50,
+                               save_dir    : str = "dist_aug_study"):
     """
     ________________________________________________________________________________________________________________________
     Plot histogram and KDE for each continuous feature (original vs augmented) using pure matplotlib.
     ________________________________________________________________________________________________________________________
     Parameters:
-        feats_raw      (pd.DataFrame) : Original features dataframe. Mandatory.
-        feats_processed(pd.DataFrame) : Augmented/processed features dataframe. Mandatory.
-        cont_features  (list)         : List of continuous feature names to plot. Mandatory.
-        sample_size    (int)          : Number of points to sample from each dataframe for plotting. Default is 100000.
-        save_dir       (str)          : Directory to save the figures. Default is "dist_aug_study".
+    -> feats_raw      (pd.DataFrame) : Original features dataframe. Mandatory.
+    -> feats_processed(pd.DataFrame) : Augmented/processed features dataframe. Mandatory.
+    -> cont_features  (list)         : List of continuous feature names to plot. Mandatory.
+    -> sample_size    (int)          : Number of points to sample from each dataframe for plotting. Default is 100000.
+    -> save_dir       (str)          : Directory to save the figures. Default is "dist_aug_study".
     ________________________________________________________________________________________________________________________
     Returns:
         None. The function saves the plots as .png files in the specified directory.
     ________________________________________________________________________________________________________________________
     Notes:
-        - Plots both histogram and KDE for each feature, comparing original and augmented distributions.
+        - Plots both histogram and Gaussian KDE for each feature, comparing original and augmented distributions.
         - Samples up to sample_size points from each dataframe for efficiency.
         - Handles input validation and file saving errors.
     ________________________________________________________________________________________________________________________
@@ -803,50 +893,205 @@ def plot_feature_distributions(feats_raw: pd.DataFrame, feats_processed: pd.Data
         ValueError, TypeError, OSError
     ________________________________________________________________________________________________________________________
     """
+    
+    # Set saving directory
     path = save_dir + "comparison_features/"
     os.makedirs(path, exist_ok=True)
 
+    # Plot each feature ---------------------------------------------------------------------------------------------------#
     for idx, feature in enumerate(cont_features):
         
         raw_sample  = feats_raw[feature].dropna()
         proc_sample = feats_processed[feature].dropna()
-        label      = labels.get(feature, feature)
+        label       = labels.get(feature, feature)
 
         if len(raw_sample) > sample_size:
-            raw_sample  = raw_sample.sample(sample_size, random_state=42)
+            raw_sample  = raw_sample.sample(int(sample_size), random_state=42)
         
         if len(proc_sample) > sample_size:
-            proc_sample = proc_sample.sample(sample_size, random_state=42)
+            proc_sample = proc_sample.sample(int(sample_size), random_state=42)
 
         # Histogram
-        fig, ax = plt.subplots(figsize=(6, 5))
+        fig, ax = plt.subplots(figsize=(6, 4))
 
         # Original dataset
-        counts_raw, bin_edges_raw, _ = ax.hist(raw_sample, bins=bins, color='teal', alpha=0.4, density=True, label='Original dataset')
+        counts_raw, bin_edges_raw, _ = ax.hist(raw_sample, bins=bins, color='darkcyan', alpha=0.4, density=True, 
+                                               label='Original dataset')
 
         # Augmented dataset
-        counts_proc, bin_edges_proc, _ = ax.hist(proc_sample, bins=bins, color='gold', alpha=0.4, density=True, label='Training sample')
+        counts_proc, bin_edges_proc, _ = ax.hist(proc_sample, bins=bins, color='goldenrod', alpha=0.4, density=True, 
+                                                 label='Training sample')
 
-        # KDE
+        # Gaussian KDE
         kde_raw  = gaussian_kde(raw_sample)
         kde_proc = gaussian_kde(proc_sample)
 
-        x_min = min(raw_sample.min(), proc_sample.min())
-        x_max = max(raw_sample.max(), proc_sample.max())
+        x_min  = min(raw_sample.min(), proc_sample.min())
+        x_max  = max(raw_sample.max(), proc_sample.max())
         x_vals = np.linspace(x_min, x_max, 500)
 
         ax.plot(x_vals, kde_raw(x_vals), color='darkslategrey', lw=2)
-        ax.plot(x_vals, kde_proc(x_vals), color='orange', lw=2)
+        ax.plot(x_vals, kde_proc(x_vals), color='darkorange', lw=2)
 
         ax.set_title(f'Distribution of {label}')
         ax.set_xlabel(label)
         ax.set_ylabel('Density')
         ax.legend()
 
-        # Guardar figura
+        # Save figure
         save_path = os.path.join(path, f"feature{idx}.jpg")
         fig.tight_layout()
         fig.savefig(save_path, dpi=600, bbox_inches="tight")
         plt.close(fig)
 
+# Plot efficiency v mass ratio scatter plot -------------------------------------------------------------------------------#
+def plot_efficiency_mass_ratio_dataset(
+    data_dict                : Dict[str, Dict[str, Union[list, np.ndarray]]],
+    figsize                  : tuple                                                         = (7, 5),
+    title                    : Optional[str]                                                 = None,
+    cmap_label               : Optional[str]                                                 = None,
+    cmap                     : Optional[Union[str, Colormap]]                                = None,
+    cmap_name                : Optional[str]                                                 = None,
+    norm_mode                : Optional[Literal["linear", "log", "discrete", "categorical"]] = "linear",
+    n_bins                   : Optional[int]                                                 = 6,
+    log_vmin                 : Optional[float]                                               = None,
+    include_fit_curve        : bool                                                          = True,
+    include_fit_uncertainty  : bool                                                          = False,
+    savepath                 : Optional[str]                                                 = None,
+    show                     : bool                                                          = False
+    ):
+    # Fit from Vergara et al. (2025) --------------------------------------------------------------------------------------#
+    def V2025_epsilon_BH(m_ratio: np.ndarray, k: float = 4.63, x0: float = 4.0, a: float = -0.1):
+        X = np.log(m_ratio)
+        return (1 + np.exp(-k * (X - x0)))**a
+
+    # Prepare data --------------------------------------------------------------------------------------------------------#
+    tags = list(data_dict.keys())
+
+    # Collect all cmap values globally if a colormap is requested
+    if cmap is not None:
+        c_all = []
+        for tag in tags:
+            if cmap_name not in data_dict[tag]:
+                raise ValueError(f"Group '{tag}' is missing but a cmap {cmap_name}.")
+            c_all.append(np.asarray(data_dict[tag][cmap_name]))
+        c_all = np.concatenate(c_all)
+
+        cmap_obj      = cm.get_cmap(cmap)
+        cb_ticks      = None
+        cb_ticklabels = None
+        cb_spacing    = "uniform"
+
+        # Normalization set up for the colorbar --------------------------------------------------------------------------# 
+        if norm_mode == "linear":
+            norm = Normalize(vmin=c_all.min(), vmax=c_all.max())
+
+        elif norm_mode == "log":
+            if np.any(c_all <= 0):
+                raise ValueError("LogNorm requires cmap_values > 0.")
+            vmin = log_vmin if log_vmin is not None else np.percentile(c_all, 1)
+            norm = LogNorm(vmin=vmin, vmax=c_all.max())
+
+        elif norm_mode == "discrete":
+            bounds     = np.linspace(c_all.min(), c_all.max(), n_bins + 1)
+            norm       = BoundaryNorm(bounds, n_bins)
+            cb_spacing = "proportional"
+
+        elif norm_mode == "categorical":
+            categories = np.unique(c_all)
+            n_cat      = len(categories)
+            cmap_obj   = cm.get_cmap(cmap, n_cat)
+
+            cat_to_idx = {cat: i for i, cat in enumerate(categories)}
+            bounds     = np.arange(-0.5, n_cat + 0.5, 1)
+            norm       = BoundaryNorm(bounds, n_cat)
+
+            cb_ticks      = np.arange(n_cat)
+            cb_ticklabels = categories
+
+            for tag in tags:
+                vals = np.asarray(data_dict[tag]["cmap_values"])
+                data_dict[tag]["_cmap_mapped"] = np.array([cat_to_idx[v] for v in vals])
+
+        else:
+            raise ValueError(f"Unknown norm_mode: {norm_mode}")
+
+    # Figure --------------------------------------------------------------------------------------------------------------#
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if title:
+        ax.set_title(title, loc="left", fontsize=14)
+
+    # Plot uncertainties in the model if requested ------------------------------------------------------------------------#
+    if include_fit_uncertainty:
+        pass  # Placeholder for future implementation
+    
+    # Scatter plots (one per tag) inside the dictionary -------------------------------------------------------------------#
+    last_scatter = None
+
+    for tag in tags:
+
+        # Retrieve group
+        group = data_dict[tag]
+
+        # Set variables
+        x = np.asarray(group["mass_ratio"])
+        y = np.asarray(group["epsilon"])
+
+        # Retrieve configuration
+        marker    = group.get("marker", "o")
+        color     = group.get("color", None)
+        edgecolor = group.get("edgecolor", "none")
+        s         = group.get("s", 30)
+        label     = group.get("label", tag)
+
+        if cmap is None:
+            sc = ax.scatter(x, y, s=s, marker=marker, c=color, edgecolor=edgecolor,label=label+f" ({len(x)})")
+        else:
+            if norm_mode == "categorical":
+                cvals = group["_cmap_mapped"]
+            else:
+                cvals = np.asarray(group[cmap_name])
+
+            sc = ax.scatter(x, y, s=s, marker=marker, c=cvals, cmap=cmap_obj, norm=norm, edgecolor=edgecolor, 
+                            label=label+f" ({len(x)})")
+
+        last_scatter = sc  # for colorbar handle
+
+    # Plot fit curve if requested -----------------------------------------------------------------------------------------#
+    if include_fit_curve:
+        xx = np.logspace(-5, 4)
+        ax.plot(xx, V2025_epsilon_BH(xx), "--", color="black", lw=1.0, label="Fit from V+25b")
+
+    # Axes Configuration --------------------------------------------------------------------------------------------------#
+    ax.set_xscale("log")
+    ax.set_xlim(1e-5, 1e4)
+    ax.set_ylim(bottom=-0.05, top=1.05)
+    ax.set_xlabel(r"$M_{\rm tot}/M_{\rm crit}$", fontsize=12)
+    ax.set_ylabel(r"$\epsilon_{\rm BH}$", fontsize=12)
+
+    # Colorbar (only if cmap is provided) ---------------------------------------------------------------------------------#
+    if cmap is not None:
+        cax = inset_axes(ax, width="50%", height="4%", loc="upper left", borderpad=1)
+
+        cb = fig.colorbar(last_scatter, cax=cax, orientation="horizontal", spacing=cb_spacing, ticks=cb_ticks)
+
+        if cb_ticklabels is not None:
+            cb.set_ticklabels(cb_ticklabels)
+
+        cb.set_label(cmap_label, fontsize=10)
+        cb.ax.tick_params(labelsize=8)
+
+    # Legend --------------------------------------------------------------------------------------------------------------#
+    ax.legend(loc="lower right", fontsize=8)
+
+    # Save / Show ---------------------------------------------------------------------------------------------------------#
+    if savepath:
+        namefile = f"efficiency_vs_mass_ratio_{cmap_name}.jpg" if cmap_name else "efficiency_vs_mass_ratio.jpg"
+        plt.savefig(savepath + namefile, dpi=700, bbox_inches="tight")
+
+    if show: plt.show()
+
+    plt.close(fig)
+    
 #--------------------------------------------------------------------------------------------------------------------------#

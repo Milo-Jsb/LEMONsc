@@ -119,20 +119,20 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
         return result_df
 
 # Categorize the simulations given their IMBH formation channel ----------------------------------------------------------#
-def determine_formation_channel(imbh_df: pd.DataFrame, mass_colum_name: str, time_colum_name: str,
-                                minimun_bh_mass    : float = 100,
-                                minimun_time_thres : float = 20
+def determine_formation_channel(imbh_df: pd.DataFrame, mass_column_name: str, time_column_name: str,
+                                minimum_bh_mass    : float = 100,
+                                minimum_time_thres : float = 20
                                 ) -> str:
     """
     ________________________________________________________________________________________________________________________
     Classify a simulation based on IMBH formation channel using formation time criteria
     ________________________________________________________________________________________________________________________
     Parameters:
-    -> imbh_df    (pd.DataFrame) : DataFrame containing IMBH formation data with mass and time information. Mandatory.
-    -> mass_colum_name (str)     : Name of the column in imbh_df representing IMBH mass. Mandatory.
-    -> time_colum_name (str)     : Name of the column in imbh_df representing IMBH formation time. Mandatory.
-    -> minimun_bh_mass (float)   : Minimum mass threshold to consider IMBH formation [Msun]. Default is 100 Msun.
-    -> minimun_time_thres (float): Time threshold to classify formation channel [Myr]. Default is 20 Myr.
+    -> imbh_df    (pd.DataFrame)  : DataFrame containing IMBH formation data with mass and time information. Mandatory.
+    -> mass_column_name (str)     : Name of the column in imbh_df representing IMBH mass. Mandatory.
+    -> time_column_name (str)     : Name of the column in imbh_df representing IMBH formation time. Mandatory.
+    -> minimun_bh_mass (float)    : Minimum mass threshold to consider IMBH formation [Msun]. Default is 100 Msun.
+    -> minimun_time_thres (float) : Time threshold to classify formation channel [Myr]. Default is 20 Myr.
     ________________________________________________________________________________________________________________________
     Returns:
     -> chform  (str) : Classification of the formation channel ("FAST", "SLOW").
@@ -162,12 +162,12 @@ def determine_formation_channel(imbh_df: pd.DataFrame, mass_colum_name: str, tim
     """   
     try:
         
-        mass_time = imbh_df[imbh_df[mass_colum_name] > minimun_bh_mass].iloc[0][time_colum_name]
+        mass_time = imbh_df[imbh_df[mass_column_name] > minimum_bh_mass].iloc[0][time_column_name]
 
     except Exception as e:
         raise ValueError("Could not determine formation channel. Check if IMBH formed in the simulation.")
     
-    if (mass_time <= minimun_time_thres):
+    if (mass_time <= minimum_time_thres):
         chform = "FAST" 
     
     else:

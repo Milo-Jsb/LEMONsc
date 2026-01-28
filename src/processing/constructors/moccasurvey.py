@@ -62,7 +62,7 @@ class MoccaSurveyExperimentConfig:
     """
     feature_names        : List[str]      = field(default_factory=lambda: DEFAULT_FEATURE_NAMES.copy())
     expected_order       : List[str]      = field(default_factory=lambda: DEFAULT_EXPECTED_ORDER.copy())
-    target_name          : str            = "M_MMO"                
+    target_name          : str            = "M"                
     min_points_threshold : int            = 1000                   
     requires_temp_evol   : bool           = False                 
     sample_window        : bool           = True                   
@@ -443,7 +443,7 @@ def compute_mocca_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFram
     if (sim_env is not None):  env = sim_env
     
     # Determine the formation channel based on initial core density and time of IMBH formation if first seen
-    else: env = determine_formation_channel(imbh_df, mass_colum_name="massNew[Msun](10)", time_column_name="time[Myr]")
+    else: env = determine_formation_channel(imbh_df, mass_column_name="massNew[Msun](10)", time_column_name="time[Myr]")
 
    
     return {**base_values, **derived_values, 'type_sim': env}
