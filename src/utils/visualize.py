@@ -16,9 +16,6 @@ from matplotlib.cm                         import ScalarMappable
 from sklearn.metrics                       import r2_score
 from scipy.stats                           import gaussian_kde
 
-# Custom functions --------------------------------------------------------------------------------------------------------#
-from src.processing.format import time_preparation, target_preparation
-
 # Helpers -----------------------------------------------------------------------------------------------------------------#
 def truncate_colormap(cmap, minval=0.05, maxval=1.0, n=256):
     """Helper to truncate a color mat from a min to a max val"""
