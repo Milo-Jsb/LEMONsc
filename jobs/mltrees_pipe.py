@@ -16,15 +16,36 @@ from datetime        import datetime
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
+
+# Directory
+from src.utils.directory import PathManagerTrainOptPipeline, load_yaml_dict
+
 from src.processing.features      import tabular_features
-from src.optim.optimizer          import SpaceSearch, SpaceSearchConfig
-from src.utils.directory          import load_yaml_dict
+
+# Optimization
+from src.optim.optimizer          import SpaceSearchConfig, SpaceSearch
+
+# Vizualization
 from src.utils.visualize          import correlation_plot, residual_plot
+
+# Model Wrapper
 from src.models.mltrees.regressor import MLTreeRegressor
 
 # Warnings managment ------------------------------------------------------------------------------------------------------#
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+
+# List of tabular features to compute for the dataset (can be extended for other datasets if needed) ----------------------#
+TabFeats = {
+    "cont_feats"  : ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", "log(t_coll)", 
+                     "log(M_tot/M_crit)", 
+                     "log(R_h/R_core)", "log(R_tid/R_core)",
+                     "log(rho(R_h))",
+                     "Z"],
+    "cat_feats"   : ["type_sim"],
+    
+    "target_feat" : ["M_MMO/M_tot"],
+            }
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
@@ -86,25 +107,6 @@ def get_args():
                        help="Type of model to use")
 
     return parser.parse_args()
-
-# Path Management ---------------------------------------------------------------------------------------------------------#
-class PathManager:
-    """Centralized path management for the pipeline."""
-    
-    def __init__(self, root_dir: str, dataset: str, exp_name: str, model: str, out_dir: str, fig_dir: str):
-        # Data paths
-        self.data_path = Path(root_dir) / exp_name / dataset
-        
-        # Output structure
-        self.base_out   = Path(out_dir) / exp_name / dataset / model
-        self.optim_path = self.base_out / "optim"
-        self.model_path = self.base_out
-        self.fig_path   = Path(fig_dir) / exp_name / dataset / model
-        
-        # Create directories
-        self.optim_path.mkdir(parents=True, exist_ok=True)
-        self.model_path.mkdir(parents=True, exist_ok=True)
-        self.fig_path.mkdir(parents=True, exist_ok=True)
     
 # Pipeline Modes -----------------------------------------------------------------------------------------------------------#
 def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: list,  out_path: str, n_folds: int = 3):
@@ -116,86 +118,86 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
 
     # Load and prepare data partitions
     logger.info("Loading and preparing data partitions...")
+    
+    # Define feature configuration (once for all folds)
+    feature_names = contfeats + catfeats + target
+    
+    # Determine column names after transformation (use first fold as reference)
+    fold_0_path = feats_path + "/0_fold/train.csv"
+    temp_df     = pd.read_csv(fold_0_path, index_col=False)
+    temp_feats  = tabular_features(temp_df, names=feature_names, return_names=False)
+    
+    # Identify transformed column names
+    cont_columns   = [col for col in temp_feats.columns if col in contfeats]
+    cat_columns    = [col for col in temp_feats.columns if any(col.startswith(cf+"_") for cf in catfeats)]
+    target_columns = [col for col in temp_feats.columns if col in target]
+    feature_cols   = cont_columns + cat_columns
+    
+    # Log feature configuration
+    logger.info("Features configuration:")
+    logger.info(f"  - Continuous features  : {contfeats} -> {cont_columns}")
+    logger.info(f"  - Categorical features : {catfeats} -> {cat_columns}")
+    logger.info(f"  - Target               : {target} -> {target_columns}")
+    logger.info(f"  - Total features       : {len(feature_cols)}")
+    
+    # Process each fold
     partitions = []
-
     for fold in range(n_folds):
-        fold_path  = feats_path / f"{fold}_fold"
-        train_path = fold_path / "train.csv"
-        val_path   = fold_path / "val.csv"
+        fold_path  = feats_path + f"/{fold}_fold"
+        train_path = fold_path + "/train.csv"
+        val_path   = fold_path + "/val.csv"
 
-        # Load fold data
+        # Load and transform fold data
         train_df = pd.read_csv(train_path, index_col=False)
         val_df   = pd.read_csv(val_path, index_col=False)
-
-        # Extract features and target
-        feature_names  = contfeats + catfeats + target
         
-        # Training
-        feats_train, feats_names = tabular_features(train_df, names=feature_names, return_names=True)
-
-        # Identify continuous and categorical and target columns   
-        cont_columns   = [col for col in feats_train.columns if col in contfeats]
-        cat_columns    = [col for col in feats_train.columns if any(col.startswith(cf+"_") for cf in catfeats)]
-        target_columns = [col for col in feats_train.columns if col in target]
+        feats_train = tabular_features(train_df, names=feature_names, return_names=False)
+        feats_val   = tabular_features(val_df, names=feature_names, return_names=False)
         
-        # Extract numpy arrays
-        X_train    = feats_train[cont_columns+cat_columns].astype(np.float32).to_numpy()
-        y_train    = feats_train[target_columns].astype(np.float32).to_numpy().flatten()  
-        
-        # Validation
-        feats_val, _ = tabular_features(val_df, names=feature_names, return_names=True)
+        # Extract arrays
+        X_train = feats_train[feature_cols].astype(np.float32).to_numpy()
+        y_train = feats_train[target_columns].astype(np.float32).to_numpy().flatten()  
+        X_val   = feats_val[feature_cols].astype(np.float32).to_numpy()
+        y_val   = feats_val[target_columns].astype(np.float32).to_numpy().flatten()  
 
-        X_val      = feats_val[cont_columns+cat_columns].astype(np.float32).to_numpy()
-        y_val      = feats_val[target_columns].astype(np.float32).to_numpy().flatten()  
-
-        # Scaling factor based on total mass (if available)
+        # Scaling factor (if available)
         scaler_val = val_df["M_tot"].astype(np.float32).to_numpy().flatten() if "M_tot" in val_df.columns else None
 
-        # Create partition dictionary with optional scaler, exclude target from features names
+        # Create partition dictionary
         partition = {
-                    'X_train': X_train, 'y_train': y_train,
-                    'X_val'  : X_val,   'y_val': y_val,
-                    'scaler' : scaler_val,
-                    'features_names': cont_columns + cat_columns,
-                    'target' : target_columns 
-                    }
+            'X_train'        : X_train,
+            'y_train'        : y_train,
+            'X_val'          : X_val,
+            'y_val'          : y_val,
+            'scaler'         : scaler_val,
+            'features_names' : feature_cols
+        }
         partitions.append(partition)
         
-        logger.info(f"Fold {fold + 1}/{n_folds} loaded:")
-        logger.info(f"  - Training features (Xtrain type={type(X_train)}): {len(X_train)} [{np.shape(X_train)}]")
-        logger.info(f"  - Training targets  (ytrain type={type(y_train)}): {len(y_train)} [{np.shape(y_train)}]")
-        logger.info(f"  - Validation features (Xval type={type(X_val)}): {len(X_val)} [{np.shape(X_val)}]")
-        logger.info(f"  - Validation targets  (yval type={type(y_val)}): {len(y_val)} [{np.shape(y_val)}]")
+        logger.info(f"Fold {fold + 1}/{n_folds} loaded: Train={X_train.shape}, Val={X_val.shape}")
 
-    # Log feature information
-    logger.info("Features configuration:")
-    logger.info(f"  - Continuous features  : {contfeats}")
-    logger.info(f"  - Categorical features : {catfeats} -> {cat_columns}")
-    logger.info(f"  - Target               : {target}")
-
-    # Initialize optimizer with configuration
-    config    = SpaceSearchConfig(model_type = args.model, 
-                                  n_jobs     = CONFIG.n_jobs, 
-                                  n_trials   = CONFIG.n_trials, 
-                                  device     = CONFIG.device, 
-                                  seed       = CONFIG.seed)
+    # Initialize optimizer
+    logger.info("Initializing optimizer...")
+    config = SpaceSearchConfig(model_type = args.model, n_jobs = CONFIG.n_jobs, n_trials = CONFIG.n_trials, 
+                               device = CONFIG.device, 
+                               seed   = CONFIG.seed)
     optimizer = SpaceSearch(config)
     
-    # Create study name with timestamp
+    # Prepare study
     timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
     study_name = f"cv_study_{n_folds}fold_{timestamp}"
+    study_path = Path(out_path) / "optim"
     
-    # Run optimization with cross-validation
-    logger.info(f"Starting optimization study: {study_name}")
+    logger.info(f"Starting optimization: {study_name}")
+    logger.info(f"  - Model            : {args.model}")
     logger.info(f"  - Device           : {CONFIG.device}")
-    logger.info(f"  - Number of trials : {CONFIG.n_trials}")
+    logger.info(f"  - Trials           : {CONFIG.n_trials}")
     logger.info(f"  - Direction        : {CONFIG.direction}")
     logger.info(f"  - Metric           : {CONFIG.metric}")
+    logger.info(f"  - Lambda penalty   : {CONFIG.lambda_penalty}")
+    logger.info(f"  - Patience         : {CONFIG.patience}")
     
     try:
-        # Update output path to use optim subdirectory
-        study_path = Path(out_path) / "optim" 
-        
         results = optimizer.optimize(partitions     = partitions,
                                      study_name     = study_name,
                                      direction      = CONFIG.direction,
@@ -208,34 +210,41 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         # Log results
         logger.info(110*"_")
         logger.info("Optimization completed successfully!")
-        logger.info(f"Best score: {results.best_score:.6f}")
-        logger.info("Best parameters:")
+        logger.info(f"  - Best score   : {results.best_score:.6f}")
+        logger.info(f"  - Trials run   : {results.n_trials}")
+        logger.info("  - Best parameters:")
         for param, value in results.best_params.items():
-            logger.info(f"  - {param}: {value}")
+            logger.info(f"      {param}: {value}")
         
         # Save optimization summary
         summary_path = study_path / study_name / "optimization_summary.yaml"
-        with open(summary_path, "w") as f:
-            yaml.dump({
-                'study_name'  : study_name,
-                'n_folds'     : n_folds,
-                'n_trials'    : results.n_trials,
-                'best_score'  : float(results.best_score),
-                'best_params' : results.best_params,
-                'features': {
-                    'continuous'  : cont_columns,
-                    'categorical' : cat_columns,
-                    'target'      : target_columns[0]},
-                'config': {
-                    'direction'      : CONFIG.direction,
-                    'metric'         : CONFIG.metric,
-                    'lambda_penalty' : CONFIG.lambda_penalty,
-                    'device'         : CONFIG.device,
-                    'n_jobs'         : CONFIG.n_jobs
-                }
-            }, f, default_flow_style=False)
+        summary_data = {
+            'study_name'  : study_name,
+            'model_type'  : args.model,
+            'n_folds'     : n_folds,
+            'n_trials'    : results.n_trials,
+            'best_score'  : float(results.best_score),
+            'best_params' : results.best_params,
+            'features': {
+                'continuous'  : cont_columns,
+                'categorical' : cat_columns,
+                'target'      : target_columns[0]
+            },
+            'config': {
+                'direction'      : CONFIG.direction,
+                'metric'         : CONFIG.metric,
+                'lambda_penalty' : CONFIG.lambda_penalty,
+                'patience'       : CONFIG.patience,
+                'device'         : CONFIG.device,
+                'n_jobs'         : CONFIG.n_jobs,
+                'seed'           : CONFIG.seed
+            }
+        }
         
-        logger.info(f"Results saved to: {summary_path}")
+        with open(summary_path, "w") as f:
+            yaml.dump(summary_data, f, default_flow_style=False)
+        
+        logger.info(f"  - Results saved to: {summary_path}")
         
     except Exception as e:
         logger.error(f"Optimization failed: {str(e)}")
@@ -277,7 +286,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     partitions = []
 
     # Load test set (outside the folds, same for all)
-    test_path  = feats_path / "test.csv"
+    test_path  = feats_path + "/test.csv"
     test_df    = pd.read_csv(test_path, index_col=False)
     
     # Get test features and target
@@ -304,8 +313,8 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     for fold in range(n_folds):
         logger.info(f"Processing fold {fold + 1}/{n_folds}")
 
-        fold_path  = feats_path / f"{fold}_fold"
-        train_path = fold_path / "train.csv"
+        fold_path  = feats_path + f"/{fold}_fold"
+        train_path = fold_path + "/train.csv"
 
         # Load fold data
         train_df = pd.read_csv(train_path, index_col=False)
@@ -320,7 +329,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         model = MLTreeRegressor(model_type   = args.model,
                                 model_params = model_params,
                                 device       = CONFIG.device,
-                                feat_names   = feats_names,
+                                feat_names   = cont_columns+cat_columns,
                                 n_jobs       = CONFIG.n_jobs)
 
         logger.info(f"Training model on {len(X_train)} samples...")
@@ -453,7 +462,7 @@ def run_prediction():
 def run_pipeline(args):
     """Main pipeline orchestrator."""
     # Setup path manager
-    path_manager = PathManager(root_dir = args.root_dir,
+    path_manager = PathManagerTrainOptPipeline(root_dir = args.root_dir,
                                dataset  = args.dataset,
                                exp_name = args.exp_name,
                                model    = args.model,
@@ -463,23 +472,17 @@ def run_pipeline(args):
     # Run appropriate mode
     if args.mode == "optim":
         run_optimization(feats_path = path_manager.data_path,
-                         contfeats  = ["t/t_cc", "t/t_relax", "t/t_cross", "log(t_coll)", "M_tot/M_crit", 
-                                       "log(R_h/R_core)", "log(R_tid/R_core)",
-                                       "log(rho(R_h))",
-                                       "Z"],
-                         catfeats   = ["type_sim"], 
-                         target     = ["M_MMO/M_tot"],
+                         contfeats  = TabFeats["cont_feats"],
+                         catfeats   = TabFeats["cat_feats"], 
+                         target     = TabFeats["target_feat"],
                          out_path   = path_manager.base_out,
                          n_folds    = CONFIG.n_folds)
     
     elif args.mode == "train":
         run_training(feats_path = path_manager.data_path,
-                     contfeats  = ["t/t_cc", "t/t_relax", "t/t_cross", "log(t_coll)", "M_tot/M_crit", 
-                                    "log(R_h/R_core)", "log(R_tid/R_core)",
-                                    "log(rho(R_h))",
-                                    "Z"],
-                     catfeats   = ["type_sim"],
-                     target     = ["M_MMO/M_tot"],
+                     contfeats  = TabFeats["cont_feats"],
+                     catfeats   = TabFeats["cat_feats"],
+                     target     = TabFeats["target_feat"],
                      out_path   = path_manager.base_out,  
                      n_folds    = CONFIG.n_folds)
     

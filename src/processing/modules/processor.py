@@ -117,12 +117,11 @@ class DataProcessor:
         -> augmentation (bool)         : Whether to apply data augmentation
         -> apply_noise  (bool)         : Whether to apply noise to features
         -> n_virtual    (int or None)  : Number of virtual simulations per real simulation
+        -> study_mode   (bool)         : Whether to keep simulations separated for study mode
         -> verbose      (bool)         : Whether to print statistics
         ____________________________________________________________________________________________________________________    
         Returns:
             Tuple of (time_list, mass_list, phy_list, path_list)
-                If config.retain_order=True  : Each list contains sublists per simulation, path_list has corresponding paths
-                If config.retain_order=False : Each list contains flattened data, path_list is empty
         ____________________________________________________________________________________________________________________
         Notes:
         - Uses ProcessingStats to track statistics during processing.
@@ -146,7 +145,7 @@ class DataProcessor:
                     continue
                 
                 # Determine formation channel and process
-                chform = determine_formation_channel(imbh_df         = imbh_df, 
+                chform = determine_formation_channel(imbh_df          = imbh_df, 
                                                      mass_column_name = self.config.mass_column_imbh,
                                                      time_column_name = self.config.time_column_imbh)
                 
@@ -192,7 +191,7 @@ class DataProcessor:
             logger.info(f"Loaded {len(valid_sim_paths)} valid simulations from: {valid_sims_path}")
             logger.info(f"Loaded {len(outlier_paths)} outliers from: {outliers_path}")
             
-            simulations = valid_sim_paths + outlier_paths
+            simulations = valid_sim_paths
 
         # If not, proceed with filtering
         else:
@@ -216,7 +215,7 @@ class DataProcessor:
         
         # Update label list
         filt_labels = [path_to_label.get(path, np.nan) for path in path_list]
-        
+
         # Now filter simulations based on their values of efficiency-mass_ratio
         filter_output = efficiency_mass_ratio_relation(mmo_mass        = m_base, 
                                                        physical_params = phy_base, 
@@ -274,20 +273,22 @@ class DataProcessor:
             raise NotImplementedError(f"Dataset '{self.config.dataset_name}' not supported in processor.")
         
     def _accumulate_results(self, feats: np.ndarray, masses: np.ndarray, time_list : List, mass_list: List, 
-                            phy_list: List, path_list: List, sim_path: str, keep_sims_sep: bool = False) -> None:
+                            phy_list   : List, 
+                            path_list  : List, 
+                            sim_path   : str, 
+                            study_mode : bool = False) -> None:
         """Accumulate features into output lists."""
-        
-        if keep_sims_sep:
-            # Keep simulations separated - append as sublists
-            time_list.append(list(feats[:, 0]))
-            mass_list.append(list(masses))
+        if study_mode:
+            # Keep simulations separated - append as sublists and track corresponding simulation path
+            time_list.append(list(np.clip(feats[:, 0], a_min=0, a_max=None)))
+            mass_list.append(list(np.clip(masses, a_min=0, a_max=None)))
             phy_list.append(feats[:, 1:].tolist())
-            path_list.append(sim_path)  # Track corresponding simulation path
+            path_list.append(sim_path) 
         
         else:
             # Flatten - extend the lists directly (no path tracking)
-            time_list.extend(feats[:, 0])
-            mass_list.extend(masses)
+            time_list.extend(np.clip(feats[:, 0], a_min=0, a_max=None))
+            mass_list.extend(np.clip(masses, a_min=0, a_max=None))
             phy_list.extend(feats[:, 1:])
     
     def _report_statistics(self, stats: ProcessingStats, total_sims: int) -> None:

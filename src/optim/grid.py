@@ -1,3 +1,23 @@
+# ElasticNet grid to optimize search --------------------------------------------------------------------------------------#
+def ElasticNetGrid(trial):
+    param_grid = {
+        "alpha"     : trial.suggest_float("alpha", 1e-4, 1.0, log=True),
+        "l1_ratio"  : trial.suggest_float("l1_ratio", 0.0, 1.0),
+                 }
+    
+    return param_grid
+
+# Support Vector Regressor grid to optimize search -------------------------------------------------------------------------#
+def SVRGrid(trial):
+    param_grid = {
+        "kernel"    : trial.suggest_categorical("kernel", ["rbf", "linear", "poly"]),
+        "C"         : trial.suggest_float("C", 1e-3, 100.0, log=True),
+        "gamma"     : trial.suggest_float("gamma", 1e-4, 1.0, log=True),
+        "epsilon"   : trial.suggest_float("epsilon", 0.01, 1.0, log=True),
+                 }
+    
+    return param_grid
+
 # Random forest grid to optimize search -----------------------------------------------------------------------------------#
 def RandomForestGrid(trial):
     
@@ -19,15 +39,10 @@ def XGBoostGrid(trial):
         "objective"              : "reg:pseudohubererror",
         "huber_slope"            : trial.suggest_float("huber_slope", 0.2, 3.0, step=0.1),
         "learning_rate"          : trial.suggest_float("learning_rate", 1e-4, 0.3, log=True),
-        "num_leaves"             : trial.suggest_int("num_leaves", 16, 256, step=16),
         "min_child_samples"      : trial.suggest_int("min_child_samples", 5, 100),
-        "feature_fraction"       : trial.suggest_float("feature_fraction", 0.4, 1.0),
         "bagging_fraction"       : trial.suggest_float("bagging_fraction", 0.4, 1.0),
-        "bagging_freq"           : trial.suggest_int("bagging_freq", 1, 10),
         "n_estimators"           : trial.suggest_int("n_estimators", 100, 2000, step=100),
-        "max_depth"              : trial.suggest_int("max_depth", 3, 15),
         "lambda_l1"              : trial.suggest_float("lambda_l1", 0.0, 5.0),
-        "lambda_l2"              : trial.suggest_float("lambda_l2", 0.0, 5.0),
                  }
 
     return param_grid

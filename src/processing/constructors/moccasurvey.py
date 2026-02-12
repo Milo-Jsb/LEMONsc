@@ -27,7 +27,7 @@ DEFAULT_FEATURE_NAMES = [                                     # - Features names
         "z",                                                  #    - Metallicity
         "fracbin",                                            #    - Fraction of binaries of the model
         "type_sim"]                                           #    - Categorical feature: type of simulation 
-                                                              #       (FAST, SLOW)
+                                                              #      (FAST, SLOW)
 
 DEFAULT_EXPECTED_ORDER = [                                    # - Actual column names of the tabular features in the 
         "tcoll", "trelax", "tcc", "tcross",                   #   expected order
@@ -53,7 +53,6 @@ class MoccaSurveyExperimentConfig:
     -> min_points_threshold : Minimum number of points per simulation to be used
     -> requires_temp_evol   : Whether some features require time-evolution data
     -> sample_window        : Whether to sample a window of the simulation or use full data
-    -> retain_order         : Whether to retain the order of the simulation points
     -> mapping_dics_dir     : Directory path to mapping dictionaries
     -> time_column_imbh     : Name of the time column in the IMBH history data
     -> time_column_system   : Name of the time column in the system data
@@ -66,7 +65,6 @@ class MoccaSurveyExperimentConfig:
     min_points_threshold : int            = 1000                   
     requires_temp_evol   : bool           = False                 
     sample_window        : bool           = True                   
-    retain_order         : bool           = True                  
     mapping_dics_dir     : str            = "./rawdata/moccasurvey/mapping_dicts/"
     time_column_imbh     : str            = "time[Myr]"  
     time_column_system   : Optional[str]  = "tphys"

@@ -1,5 +1,4 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
-import math
 import os
 
 import numpy               as np
@@ -8,13 +7,16 @@ import matplotlib.pyplot   as plt
 import matplotlib.gridspec as gridspec
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing                                import Optional, Union, Tuple, Dict, Literal
+from typing                                import Optional, Union, Tuple, Dict, Literal, List
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from matplotlib.patches                    import Patch
 from matplotlib                            import cm
 from matplotlib.colors                     import Normalize, LogNorm, Colormap, Normalize, BoundaryNorm, LogNorm
 from matplotlib.cm                         import ScalarMappable    
 from sklearn.metrics                       import r2_score
-from scipy.stats                           import gaussian_kde
+from scipy.stats                           import gaussian_kde, pearsonr, spearmanr
+from scipy.optimize                        import curve_fit
+from sklearn.linear_model                  import LinearRegression
 
 # Helpers -----------------------------------------------------------------------------------------------------------------#
 def truncate_colormap(cmap, minval=0.05, maxval=1.0, n=256):
@@ -23,6 +25,230 @@ def truncate_colormap(cmap, minval=0.05, maxval=1.0, n=256):
     new_cmap = cm.colors.LinearSegmentedColormap.from_list(f'trunc({cmap.name},{minval:.2f},{maxval:.2f})',
                                                             cmap(np.linspace(minval, maxval, n)))
     return new_cmap
+
+# Plot the partial correlation coefficients with bootstrap uncertainties --------------------------------------------------#
+def plot_partial_correlation_bars(df: pd.DataFrame, features: list, target: str, path_save: str, name_file: str,
+                                  corr_metric    : Literal['pearson', 'spearman'] = 'pearson',
+                                  features_names : Optional[List[str]] = None,
+                                  target_name    : Optional[str] = None,
+                                  n_bootstrap    : int   = 1000,
+                                  bar_color      : str   = 'steelblue',
+                                  bar_edgecolor  : str   = 'black',
+                                  bar_width      : float = 0.6,
+                                  figsize        : tuple = (10, 6),
+                                  rotation       : int   = 45,
+                                  ifsave         : bool  = True,
+                                  ifshow         : bool  = False):
+    """
+    _______________________________________________________________________________________________________________________
+    Plot Partial Correlation Coefficients with bootstrap-estimated uncertainties for feature importance analysis.
+    _______________________________________________________________________________________________________________________
+    Parameters:
+    -> df             (pd.DataFrame) : Input dataframe containing features and target. Mandatory.
+    -> features       (list)         : List of feature column names. Mandatory.
+    -> target         (str)          : Target column name. Mandatory.
+    -> path_save      (str)          : Directory path to save the plot. Mandatory.
+    -> name_file      (str)          : Name for the saved plot file (without extension). Mandatory.
+    -> corr_metric    (str)          : Correlation metric to use ('pearson' or 'spearman'). Default is 'pearson'.
+    -> features_names (list)         : Optional list of feature display names. Default is None.
+    -> target_name    (str)          : Optional display name for the target variable. Default is None.
+    -> n_bootstrap    (int)          : Number of bootstrap resamples for uncertainty estimation. Default is 1000.
+    -> bar_color      (str)          : Color for the bars. Default is 'steelblue'.
+    -> bar_edgecolor  (str)          : Edge color for the bars. Default is 'black'.
+    -> bar_width      (float)        : Width of the bars. Default is 0.6.
+    -> figsize        (tuple)        : Figure size (width, height). Default is (10, 6).
+    -> rotation       (int)          : Rotation angle for x-axis labels. Default is 45.
+    -> ifsave         (bool)         : Whether to save the plot. Default is True.
+    -> ifshow         (bool)         : Whether to show the plot. Default is False.
+    _______________________________________________________________________________________________________________________
+    Returns:
+        None. The function saves the plot as a .jpg file and optionally displays it.
+    _______________________________________________________________________________________________________________________
+    Notes:
+        - Computes partial correlation by regressing out other features from both Xi and y.
+        - Uses bootstrap resampling to estimate standard errors of partial correlations.
+        - Reference line at y=0 helps identify positive vs negative partial correlations.
+        - Handles input validation and ensures all required columns are present.
+        - For single feature case, computes regular correlation instead of partial correlation.
+    _______________________________________________________________________________________________________________________
+    Methodology:
+        For each feature Xi:
+        1. Fit X_{-i} -> Xi to get residuals res_xi (Xi | X_{-i})
+        2. Fit X_{-i} -> y to get residuals res_y (y | X_{-i})
+        3. Compute Pearson/Spearman correlation between res_xi and res_y
+        4. Bootstrap: resample indices with replacement, recompute correlation
+        5. Use std of bootstrap samples as error bars
+    _______________________________________________________________________________________________________________________
+    Raises:
+        ValueError, TypeError, KeyError
+    _______________________________________________________________________________________________________________________
+    """
+    # Input validation ----------------------------------------------------------------------------------------------------#
+    if df is None or features is None or target is None:
+        raise ValueError("df, features, and target must not be None.")
+    
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas DataFrame.")
+    
+    if not isinstance(features, list) or len(features) == 0:
+        raise TypeError("features must be a non-empty list of column names.")
+    
+    if not isinstance(target, str):
+        raise TypeError("target must be a string.")
+    
+    if not all(isinstance(arg, str) for arg in [path_save, name_file]):
+        raise TypeError("path_save and name_file must be strings.")
+    
+    if not isinstance(figsize, tuple) or len(figsize) != 2:
+        raise TypeError("figsize must be a tuple of length 2.")
+    
+    if not isinstance(n_bootstrap, int) or n_bootstrap <= 0:
+        raise TypeError("n_bootstrap must be a positive integer.")
+    
+    if corr_metric not in ['pearson', 'spearman']:
+        raise ValueError("corr_metric must be 'pearson' or 'spearman'.")
+    
+    # Check if columns exist
+    missing_features = [f for f in features if f not in df.columns]
+    if missing_features:
+        raise KeyError(f"Features not found in dataframe: {missing_features}")
+    
+    if target not in df.columns:
+        raise KeyError(f"Target '{target}' not found in dataframe.")
+    
+    # Validate feature_names length if provided
+    if features_names is not None:
+        if not isinstance(features_names, list):
+            raise TypeError("features_names must be a list or None.")
+        if len(features_names) != len(features):
+            raise ValueError(f"features_names length ({len(features_names)}) must match features length ({len(features)}).")
+    
+    # Prepare data --------------------------------------------------------------------------------------------------------#
+    try:
+        X = df[features].values.astype(float)
+        y = df[target].values.astype(float)
+    except Exception as e:
+        raise TypeError(f"Could not convert features/target to numeric arrays: {e}")
+    
+    # Check for missing values
+    if np.any(np.isnan(X)) or np.any(np.isnan(y)):
+        raise ValueError("Data contains NaN values. Please handle missing data before plotting.")
+    
+    n_samples = len(y)
+    if n_samples < 10:
+        raise ValueError(f"Insufficient samples ({n_samples}). Need at least 10 samples for reliable estimates.")
+    
+    # Helper function for computing correlation ---------------------------------------------------------------------------#
+    def compute_correlation(x, y, method='pearson'):
+        """Compute correlation between two arrays."""
+        if method == 'pearson':
+            return pearsonr(x, y)[0]
+        else:  # spearman
+            return spearmanr(x, y)[0]
+    
+    # Compute Partial Correlation Coefficients ----------------------------------------------------------------------------#
+    pcc_values = np.zeros(len(features))
+    pcc_errors = np.zeros(len(features))
+    
+    # Set random seed for reproducibility
+    np.random.seed(42)
+    
+    for i, feat_name in enumerate(features):
+        # Indices of other features
+        idx_other = [j for j in range(len(features)) if j != i]
+        
+        if len(idx_other) == 0:
+            # Only one feature, partial correlation = regular correlation
+            pcc_values[i] = compute_correlation(X[:, i], y, corr_metric)
+            pcc_errors[i] = 0.0
+            continue
+        
+        # Regress Xi on other features to get residuals
+        reg_x = LinearRegression(fit_intercept=True).fit(X[:, idx_other], X[:, i])
+        res_x = X[:, i] - reg_x.predict(X[:, idx_other])
+        
+        # Regress y on other features to get residuals
+        reg_y = LinearRegression(fit_intercept=True).fit(X[:, idx_other], y)
+        res_y = y - reg_y.predict(X[:, idx_other])
+        
+        # Partial correlation is correlation between residuals
+        pcc_values[i] = compute_correlation(res_x, res_y, corr_metric)
+        
+        # Bootstrap to estimate uncertainty -------------------------------------------------------------------------------#
+        bootstrap_pccs = np.zeros(n_bootstrap)
+        
+        for b in range(n_bootstrap):
+            # Resample indices with replacement
+            boot_idx = np.random.randint(0, n_samples, size=n_samples)
+            
+            # Compute correlation on bootstrap sample
+            try:
+                r_boot = compute_correlation(res_x[boot_idx], res_y[boot_idx], corr_metric)
+                bootstrap_pccs[b] = r_boot
+            except:
+                # In rare cases correlation might fail (e.g., constant values)
+                bootstrap_pccs[b] = np.nan
+        
+        # Remove any NaN values from bootstrap
+        bootstrap_pccs = bootstrap_pccs[~np.isnan(bootstrap_pccs)]
+        
+        # Use standard deviation as uncertainty estimate
+        if len(bootstrap_pccs) > 0:
+            pcc_errors[i] = np.std(bootstrap_pccs)
+        else:
+            pcc_errors[i] = 0.0
+    
+    # Create Plot ---------------------------------------------------------------------------------------------------------#
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    x_pos = np.arange(len(features))
+    
+    # Create bars with error bars
+    bars = ax.bar(x_pos, pcc_values, yerr=pcc_errors, width=bar_width, color=bar_color, edgecolor=bar_edgecolor,
+                  capsize=4, linewidth=1.2, alpha=0.8, error_kw={'linewidth': 1.5})
+    
+    # Add reference line at y=0
+    ax.axhline(0, color='black', linewidth=0.8, linestyle='--', alpha=0.6)
+    
+    # Customize axes
+    feature_labels = features_names if features_names is not None else features
+    target_label   = target_name if target_name is not None else target
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(feature_labels, rotation=rotation, ha='right', fontsize=11)
+    
+    ax.set_ylabel(fr"PCC ($y$ = {target_label})", fontsize=12, fontweight='bold')
+    ax.set_xlabel("Features", fontsize=12, fontweight='bold')
+    ax.tick_params(axis='y', labelsize=11)
+    
+    # Add value labels on top of bars
+    for i, (val, err) in enumerate(zip(pcc_values, pcc_errors)):
+        y_pos = val + err + 0.02 if val >= 0 else val - err - 0.02
+        va = 'bottom' if val >= 0 else 'top'
+        ax.text(i, y_pos, f'{val:.3f}', ha='center', va=va, fontsize=9, fontweight='bold')
+    
+    # Set y-axis limits with some padding
+    y_max = np.max(np.abs(pcc_values) + pcc_errors)
+    if y_max > 0:
+        ax.set_ylim(-y_max * 1.15, y_max * 1.15)
+    else:
+        # Fallback if all values are zero
+        ax.set_ylim(-0.1, 0.1)
+    
+    fig.tight_layout()
+    
+    # Save and show plot --------------------------------------------------------------------------------------------------#
+    file_path = os.path.join(path_save, f"partial_corr_{name_file}.jpg")
+    
+    if ifsave:
+        try:
+            os.makedirs(path_save, exist_ok=True)
+            plt.savefig(file_path, bbox_inches="tight", dpi=600)
+        except Exception as e:
+            raise OSError(f"Could not save plot to {file_path}: {e}")
+    
+    if ifshow: plt.show()
+    
+    plt.close(fig)
 
 # Custom Correlation plot with density color map --------------------------------------------------------------------------#
 def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: str, name_file: str, model_name:str,
@@ -128,34 +354,34 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
     if show: plt.show()
     plt.close(fig)
 
-# Custom Residual plot with density color map ---------------------------------------------------------------------------#
+# Custom Residual plot with density color map -----------------------------------------------------------------------------#
 def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: str, name_file: str, model_name: str,
                   cmap  : Union[str, Colormap]="inferno",
                   scale : Optional[str] = None,
                   show  : bool = True):
     """
-    _______________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Generate a residual plot (residuals vs predicted values) with density coloring and RMSE annotation.
-    _______________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Parameters:
         predictions (array-like) : Predicted values from the model. Mandatory.
         true_values (array-like) : Ground truth values. Mandatory.
         path_save   (str)        : Directory path to save the plot. Mandatory.
         name_file   (str)        : Name for the saved plot file (without extension). Mandatory.
         model_name  (str)        : Name of the model for annotation. Mandatory.
-    _______________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Returns:
         None. The function saves the plot as a .jpg file and displays it.
-    _______________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Notes:
         - Calculates residuals as (true - predicted) values
         - Colors points by density using gaussian_kde
         - Shows RMSE and mean absolute error
         - Includes a horizontal line at y=0 for reference
-    _______________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Raises:
         ValueError, TypeError, OSError
-    _______________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     """
     # Input validation ----------------------------------------------------------------------------------------------------#
     if predictions is None or true_values is None:
@@ -231,7 +457,7 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
     if show: plt.show()
     plt.close(fig)
 
-# Custom Boxplot Analysis with mean values display -----------------------------------------------------------------------#
+# Custom Boxplot Analysis with mean values display ------------------------------------------------------------------------#
 def boxplot_features_with_points(features: np.ndarray, feature_names: list, path_save: str, name_file: str, 
                                  dataset_name : str,
                                  figsize      : tuple = (20, 10),
@@ -371,6 +597,164 @@ def boxplot_features_with_points(features: np.ndarray, feature_names: list, path
     fig.tight_layout(rect=[0, 0, 1, 0.95])
 
     file_path = os.path.join(path_save, f"boxplot_analysis_{name_file}.jpg")
+    
+    if ifsave:
+        try:
+            os.makedirs(path_save, exist_ok=True)
+            plt.savefig(file_path, bbox_inches="tight", dpi=600)
+        except Exception as e:
+            raise OSError(f"Could not save plot to {file_path}: {e}")
+
+    if ifshow: plt.show()
+    
+    plt.close(fig)
+
+# Custom Violin Plot Analysis with statistics display ---------------------------------------------------------------------#
+def violinplot_features(features: np.ndarray, feature_names: list, path_save: str, name_file: str, 
+                        dataset_name : str,
+                        figsize      : tuple = (20, 10),
+                        violin_color : str   = 'rebeccapurple',
+                        nrows        : int   = 2,
+                        ncols        : int   = 4,
+                        num_points   : int   = 1000,
+                        ifsave       : bool  = True,
+                        ifshow       : bool  = False):
+    """
+    _______________________________________________________________________________________________________________________
+    Generate violin plots for all features with statistical information displayed, providing distribution analysis.
+    _______________________________________________________________________________________________________________________
+    Parameters:
+        features      (array-like) : Feature array with shape (n_samples, n_features). Mandatory.
+        feature_names (list)       : List of feature names corresponding to columns. Mandatory.
+        path_save     (str)        : Directory path to save the plot. Mandatory.
+        name_file     (str)        : Name for the saved plot file (without extension). Mandatory.
+        dataset_name  (str)        : Name of the dataset for annotation. Mandatory.
+        figsize       (tuple)      : Figure size (width, height). Default is (20, 10).
+        violin_color  (str)        : Color for the violin plots. Default is 'rebeccapurple'.
+        nrows         (int)        : Number of rows in the subplot grid. Default is 2.
+        ncols         (int)        : Number of columns in the subplot grid. Default is 4.
+        num_points    (int)        : Number of points to use for the violin plot. Default is 1000.
+        ifsave        (bool)       : Whether to save the plot. Default is True.
+        ifshow        (bool)       : Whether to show the plot. Default is False.
+    _______________________________________________________________________________________________________________________
+    Returns:
+        None. The function saves the plot as a .jpg file and optionally displays it.
+    _______________________________________________________________________________________________________________________
+    Notes:
+        - Creates violin plots for each feature showing distribution shape.
+        - Arranges subplots in a nrows x ncols grid.
+        - Displays mean, Q1, Q3, and standard deviation as text annotations.
+        - Saves the plot to the specified path with the given file name.
+        - Handles input validation and file saving errors.
+        - If fewer features than subplots, remaining subplots are hidden.
+    _______________________________________________________________________________________________________________________
+    Raises:
+        ValueError, TypeError, OSError
+    _______________________________________________________________________________________________________________________
+    """
+    if features is None or feature_names is None:
+        raise ValueError("features and feature_names must not be None.")
+    
+    try:
+        features = np.asarray(features)
+    except Exception as e:
+        raise TypeError(f"Could not convert features to numpy array: {e}")
+    
+    if features.ndim != 2:
+        raise ValueError("features must be a 2D array.")
+    
+    if len(feature_names) != features.shape[1]:
+        raise ValueError(f"Mismatch between feature_names and feature columns.")
+    
+    if not all(isinstance(arg, str) for arg in [path_save, name_file, dataset_name]):
+        raise TypeError("path_save, name_file, and dataset_name must be strings.")
+    
+    if not isinstance(figsize, tuple) or len(figsize) != 2:
+        raise TypeError("figsize must be a tuple of length 2.")
+    
+    if not isinstance(nrows, int) or not isinstance(ncols, int) or nrows <= 0 or ncols <= 0:
+        raise TypeError("nrows and ncols must be positive integers.")
+    
+    # Check if we have enough subplots for all features
+    total_subplots = nrows * ncols
+    n_features     = features.shape[1]
+    
+    if n_features > total_subplots:
+        raise ValueError(f"Not enough subplots ({total_subplots}) for all features ({n_features}). "
+                        f"Increase nrows or ncols, or reduce number of features.")
+    
+    df_features = pd.DataFrame(features, columns=feature_names)
+    fig, axes   = plt.subplots(figsize=figsize, nrows=nrows, ncols=ncols)
+    
+    # Flatten axes array for easier indexing
+    axes_flat = axes.flatten() if nrows * ncols > 1 else [axes]
+
+    for i, col in enumerate(feature_names):
+        try:
+            ax = axes_flat[i]
+            
+            # Violin plot
+            parts = ax.violinplot([df_features[col].values], positions=[1], widths=0.5, 
+                                  points      = num_points,
+                                  showmeans   = False, 
+                                  showmedians = False, 
+                                  showextrema = False)
+            
+            # Style the violin plot
+            for pc in parts['bodies']:
+                pc.set_facecolor(violin_color)
+                pc.set_alpha(0.7)
+                pc.set_edgecolor('silver')
+                pc.set_linewidth(0.8)
+
+            # Calculate statistics
+            mean_val   = df_features[col].mean()
+            median_val = df_features[col].median()
+            q1_val     = df_features[col].quantile(0.25)
+            q3_val     = df_features[col].quantile(0.75)
+            std_val    = df_features[col].std()
+            
+            # Add markers for quartiles and median
+            ax.scatter([1], [median_val], color='white', s=80, zorder=3, edgecolors='silver', linewidths=1.0)
+            ax.plot([1, 1], [q1_val, q3_val], color='black', linewidth=2.5, zorder=2)
+            
+            # Add mean line
+            ax.axhline(y=mean_val, color=violin_color, linestyle='--', linewidth=1.5, alpha=0.8)
+            ax.text(1.1, mean_val, rf'$\mu=${mean_val:.2f}',
+                    transform=ax.transData,
+                    va='bottom', ha='left', fontsize=10)
+            
+            # Add ylabel only to leftmost plots
+            if i % ncols == 0:
+                ax.set_ylabel('Value', fontsize=12)
+            
+            ax.set_xticks([])
+            ax.set_xlim(0.5, 1.5)
+
+            # Feature name
+            ax.text(0.02, 0.98, col,
+                    transform=ax.transAxes,
+                    fontsize=14, fontweight='bold',
+                    verticalalignment='top')
+
+            # Statistics text
+            stats_text = f'Q1: {q1_val:.3f}\nQ3: {q3_val:.3f}\n$\sigma$ : {std_val:.3f}'
+            ax.text(0.02, 0.85, stats_text,
+                    transform=ax.transAxes,
+                    fontsize=10,
+                    verticalalignment='top',
+                    horizontalalignment='left')
+
+        except Exception as e:
+            raise ValueError(f"Error with feature {col}: {e}")
+    
+    # Hide unused subplots
+    for i in range(n_features, total_subplots):
+        axes_flat[i].set_visible(False)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+    file_path = os.path.join(path_save, f"violinplot_analysis_{name_file}.jpg")
     
     if ifsave:
         try:
@@ -742,7 +1126,14 @@ def dataset_2Dhist_comparison(x_base: np.ndarray, y_base: np.ndarray, x_aug : np
         
         if i != 0:
             ax.set_yticklabels([])
-
+        
+        # Set x limits
+        ax.set_xlim(left=0)
+        
+        # Set y limits to encompass all data
+        y_max = max(y_base.max(), y_aug.max(), y_filt.max())
+        ax.set_ylim(0, y_max+10000)
+        
         # Colorbar (inset)
         cax = inset_axes(ax, width="50%", height="4%", loc="upper left", borderpad=1)
         cb = fig.colorbar(h[3], cax=cax, orientation='horizontal')
@@ -1021,7 +1412,81 @@ def plot_efficiency_mass_ratio_dataset(
 
     # Plot uncertainties in the model if requested ------------------------------------------------------------------------#
     if include_fit_uncertainty:
-        pass  # Placeholder for future implementation
+        
+        # Define fit function
+        def fit_func(m, k, x0, a):
+            X = np.log(m)
+            return (1 + np.exp(-k * (X - x0)))**a
+                    
+        try:
+            
+            # Load historical data from V25
+            historical_path = os.path.join(os.path.dirname(__file__), "../../rawdata/historical/V25.txt")
+            historical_data = pd.read_csv(historical_path)
+            
+            # Get mass_ratio and epsilon from historical data
+            m_hist = historical_data['mass_ratio'].values
+            eps_hist = historical_data['epsilon'].values
+            
+            # Bootstrap parameters
+            n_bootstrap = 1000
+            n_data = len(m_hist)
+            
+            # Create smooth x-axis for predictions
+            xx_unc = np.logspace(-5, 4, 500)
+            bootstrap_predictions = np.zeros((n_bootstrap, len(xx_unc)))
+            
+            # Bootstrap resampling and fitting
+            np.random.seed(42)  # For reproducibility
+            for i in range(n_bootstrap):
+                # Resample with replacement
+                indices  = np.random.randint(0, n_data, size=n_data)
+                m_boot   = m_hist[indices]
+                eps_boot = eps_hist[indices]
+                
+                # Fit the model to bootstrap sample
+                try:
+                    
+                    # Fit with initial guess from original parameters
+                    # Bounds explanation:
+                    # k  > 0.1  : Steepness must be positive (avoid flat sigmoid)
+                    # x0 unbounded : Inflection point can be anywhere in log-space
+                    # -0.5 < a < 0 : Power must be negative (for decreasing sigmoid), but not too extreme
+                    popt, _ = curve_fit(fit_func, m_boot, eps_boot, 
+                                       p0     = [4.63, 4.0, -0.1],
+                                       maxfev = 5000,
+                                       bounds = ([0.1, -np.inf, -0.5], [20.0, np.inf, -0.01]))
+                    
+                    # Predict with fitted parameters
+                    bootstrap_predictions[i, :] = fit_func(xx_unc, *popt)
+                    
+                except:
+                    # If fit fails, flag as nan to exclude from percentile calculation
+                    bootstrap_predictions[i, :]  = np.nan
+            
+            # Remove any bootstrap samples where the fit failed (nan values)            
+            bootstrap_predictions = bootstrap_predictions[~np.isnan(bootstrap_predictions).any(axis=1)]
+
+            # Calculate percentiles for confidence bands: 1-sigma: 68% CI -> 16th to 84th percentile
+            lower_1sigma = np.percentile(bootstrap_predictions, 16, axis=0)
+            upper_1sigma = np.percentile(bootstrap_predictions, 84, axis=0)
+            
+            # Calculate percentiles for confidence bands: 2-sigma: 95% CI -> 2.5th to 97.5th percentile
+            lower_2sigma = np.percentile(bootstrap_predictions, 2.5, axis=0)
+            upper_2sigma = np.percentile(bootstrap_predictions, 97.5, axis=0)
+            
+            # Calculate percentiles for confidence bands: 3-sigma: 99.7% CI -> 0.15th to 99.85th percentile
+            lower_3sigma = np.percentile(bootstrap_predictions, 0.15, axis=0)
+            upper_3sigma = np.percentile(bootstrap_predictions, 99.85, axis=0)
+            
+            # Plot uncertainty bands (from outermost to innermost)
+            ax.fill_between(xx_unc, lower_3sigma, upper_3sigma, color='olive', alpha=0.15, 
+                          label=r'1$\sigma$ / 2$\sigma$ / 3$\sigma$ Confidence')
+            ax.fill_between(xx_unc, lower_2sigma, upper_2sigma, color='olive', alpha=0.25)
+            ax.fill_between(xx_unc, lower_1sigma, upper_1sigma, color='olive', alpha=0.35)
+            
+        except Exception as e:
+            print(f"Warning: Could not compute fit uncertainty: {e}")
     
     # Scatter plots (one per tag) inside the dictionary -------------------------------------------------------------------#
     last_scatter = None

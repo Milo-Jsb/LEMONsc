@@ -5,7 +5,8 @@ import pandas as pd
 from typing  import Dict, List, Callable, Optional
 
 # Custom functions and utilities ------------------------------------------------------------------------------------------#
-from src.models.mltrees.regressor import MLTreeRegressor
+from src.models.mltrees.regressor  import MLTreeRegressor
+from src.models.mlbasics.regressor import MLBasicRegressor
 
 # [Helper] Validate data format for ML models in SpaceSearch --------------------------------------------------------------#
 def validate_data_ml(partitions : List) -> None:
@@ -58,7 +59,7 @@ def normalize_partitions_ml(partitions: List[Dict]) -> List[Dict]:
     return normalized
  
 # [Helper] Evaluate a ML model on a given partition for SpaceSearch -------------------------------------------------------#
-def evaluate_partition_ml(model: MLTreeRegressor, partition: Dict, scorer: Callable) -> float:
+def evaluate_partition_ml(model: MLTreeRegressor | MLBasicRegressor, partition: Dict, scorer: Callable) -> float:
     """Train and evaluate model on a single partition, applying scaler if provided else return unscaled results"""
     X_train = partition['X_train']
     y_train = partition['y_train']

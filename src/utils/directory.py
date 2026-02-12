@@ -7,7 +7,7 @@ import numpy  as np
 import pandas as pd
 
 # Path Management for dataset preparation ---------------------------------------------------------------------------------#
-class PathManagerExperiment:
+class PathManagerDatasetPipeline:
     """Centralized path management for the pipeline of feature building in the experiment."""
     def __init__(self, root_dir: str, dataset: str, exp_name: str, out_dir: str, fig_dir: str):
         self.data_path       = f"{root_dir}{dataset}/simulations/"
@@ -22,7 +22,27 @@ class PathManagerExperiment:
     def get_stratified_file_path(self, env_type: str) -> str:
         """Get path for stratified simulation files."""
         return os.path.join(self.stratified_path, f"{env_type}_simulations.txt")
+
+# Path Management ---------------------------------------------------------------------------------------------------------#
+class PathManagerTrainOptPipeline:
+    """Centralized path management for the pipeline."""
     
+    def __init__(self, root_dir: str, dataset: str, exp_name: str, model: str, out_dir: str, fig_dir: str):
+        
+        # Data paths
+        self.data_path = f"{root_dir}{exp_name}/{dataset}"
+        
+        # Output structure
+        self.base_out   = f"{out_dir}{exp_name}/{dataset}/{model}"
+        self.optim_path = f"{self.base_out}/optim"
+        self.model_path = self.base_out
+        self.fig_path   = f"{fig_dir}{exp_name}/{dataset}/{model}"
+        
+        # Create directories
+        os.makedirs(self.optim_path, exist_ok=True)
+        os.makedirs(self.model_path, exist_ok=True)
+        os.makedirs(self.fig_path, exist_ok=True)
+        
 # Listing directories -----------------------------------------------------------------------------------------------------#
 def list_all_directories(directory: str):
     """Recursively list all directory names inside the specified directory path."""

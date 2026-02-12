@@ -6,13 +6,11 @@ import optuna
 import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing           import Dict, List, Callable
+from typing           import Any, Dict, List, Callable
 from torch.utils.data import DataLoader
 
 # Custom functions and utilities ------------------------------------------------------------------------------------------#
 from src.models.dltab.utils.losses import get_loss_function
-from src.optim.optimizer           import SpaceSearchConfig    
-from src.models.dltab.regressor    import DLTabularRegressor
 
 # [Helper] Validate data format for DL models in SpaceSearch --------------------------------------------------------------#
 def validate_data_dl(partitions:List) -> None:
@@ -71,9 +69,9 @@ def normalize_partitions_dl(partitions: List[Dict]) -> List[Dict]:
     return normalized
 
 # [Helper] Evaluate a DL model on a given partition for SpaceSearch -------------------------------------------------------#
-def evaluate_partition_dl(model: DLTabularRegressor, partition: Dict, scorer: Callable, trial: optuna.trial.Trial,
+def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: optuna.trial.Trial,
                           logger : logging.Logger,
-                          config : SpaceSearchConfig,
+                          config : Any,
                           loss_fn : str='huber') -> float:
     """Train and evaluate DL model with epoch-wise pruning to prevent state leakage."""
     

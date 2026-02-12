@@ -69,8 +69,9 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
             # Use merge_asof to align system_df to imbh_df times
             matched_system_df = pd.merge_asof(imbh_df[[def_config.time_column_imbh]], system_df,
                                               left_on   = def_config.time_column_imbh,
-                                              right_on  = def_config.time_column_system
-                                              ).reset_index(drop=True, direction="nearest")
+                                              right_on  = def_config.time_column_system, 
+                                              direction = "nearest"
+                                              ).reset_index(drop=True)
             
             # Ignore short simulations and raise warning
             if len(imbh_df) <= def_config.min_points_threshold:

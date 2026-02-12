@@ -6,10 +6,19 @@ import matplotlib.pyplot as plt
 from typing import List, Optional
 
 # Custom plotting functions ------------------------------------------------------------------------------------------------#
-from src.utils.visualize import plot_simulation_example
-from src.utils.visualize import truncate_colormap, dataset_2Dhist_comparison
-from src.utils.visualize import boxplot_features_with_points, classic_correlogram
-from src.utils.visualize import plot_efficiency_mass_ratio_dataset
+
+# Helpers
+from src.utils.visualize import truncate_colormap
+
+# Distribution functions
+from src.utils.visualize import boxplot_features_with_points, violinplot_features
+from src.utils.visualize import dataset_2Dhist_comparison, plot_feature_distributions
+
+# Correlation functions
+from src.utils.visualize import plot_partial_correlation_bars, classic_correlogram
+
+# Physical interpretation functions
+from src.utils.visualize import plot_simulation_example, plot_efficiency_mass_ratio_dataset
 
 # Set matplotlib configuration ---------------------------------------------------------------------------------------------#
 plt.rcParams.update({
@@ -54,11 +63,14 @@ class PlotGenerator:
         t_augm_arr, m_augm_arr, phy_augm_arr = np.array(t_augm), np.array(m_augm), np.array(phy_augm)
         t_down_arr, m_down_arr, phy_down_arr = np.array(t_down), np.array(m_down), np.array(phy_down)
             
-        # Normalized time scale (log10_1p scale)
-        tb_scaled, ta_scaled, td_scaled = np.log10(t_base_arr +1), np.log10(t_augm_arr +1), np.log10(t_down_arr +1)
+        # Normalized time arrays (if needed, here we keep them as they are for better interpretability)
+        tb_scaled, ta_scaled, td_scaled = t_base_arr, t_augm_arr, t_down_arr
+        
+        # Normalized mass arrays (if needed, here we keep them as they are for better interpretability)
+        m_base_arr, m_augm_arr, m_down_arr = m_base_arr, m_augm_arr, m_down_arr
 
         # Labels
-        xlabel = r"$\log_{10}$($t$ [Myr])"
+        xlabel = r"$t$ [Myr]"
         ylabel = r"M$_{\rm{MMO}}$ [M$_\odot$]"
 
         # Plot of the full dataset comparison
@@ -86,6 +98,7 @@ class PlotGenerator:
                             yaxis_label : str,
                             name        : str, 
                             out_figs    : str):
+        
         """Create a single comparison plot using a 2D histogram for time vs mass."""        
         dataset_2Dhist_comparison(x_base = t_base, y_base = m_base, x_aug  = t_augm, y_aug  = m_augm,
                                   x_filt = t_down, y_filt = m_down,
@@ -127,6 +140,18 @@ class PlotGenerator:
                                  t_down_env, m_down_env, xlabel, ylabel,
                                  env_name, out_figs)
     
+    # Create simple histograms of the features selected -------------------------------------------------------------------#
+    @staticmethod
+    def create_features_histograms(feats_or : np.ndarray, feats_pr : np.ndarray, labels:List[str], labels_names: List[str], 
+                                   out_figs: str):
+        
+        # Plot the distribution of the features selected
+        plot_feature_distributions(feats_raw= feats_or, feats_processed= feats_pr, labels=labels_names, 
+                                   cont_features = labels,
+                                   sample_size   = 1e6,
+                                   bins          = 50,
+                                   save_dir      = out_figs)
+    
     # Create features analysis plots --------------------------------------------------------------------------------------#
     @staticmethod
     def create_features_analysis(feats : np.ndarray, names: List[str], dataset : str, experiment: str, out_figs: str):
@@ -134,14 +159,25 @@ class PlotGenerator:
         # Boxplot of the features selected        
         boxplot_features_with_points(features= feats, feature_names= names,
                                      path_save     = out_figs,
-                                     figsize       = (18, 9),
+                                     figsize       = (9, 12),
                                      name_file     = experiment,
                                      dataset_name  = dataset,
-                                     nrows         = 2,
-                                     ncols         = 5,
+                                     nrows         = 3,
+                                     ncols         = 3,
                                      point_color   = "wheat",
                                      ifsave        = True,
                                      ifshow        = False)
+        
+        # Violin plot of the features selected
+        violinplot_features(features = feats, feature_names= names, path_save= out_figs, name_file= experiment, 
+                            dataset_name = dataset,
+                            figsize      = (9, 12),
+                            violin_color = 'darkcyan',
+                            nrows        = 3,
+                            ncols        = 3,
+                            num_points   = 1000,
+                            ifsave       = True,
+                            ifshow       = False)
         
         # Correlation plot of the features selected (Spearman coefficient)        
         classic_correlogram(df= feats, method= "spearman", path_save=out_figs,
@@ -151,19 +187,44 @@ class PlotGenerator:
                             cmap         = "RdGy",
                             figsize      = (10, 10),
                             show         = False)
-     
+        
+        # Partial Correlation Coefficient plot of the features selected agains the target (Pearson coefficient)
+        
+        # Extract feature names and target name from the columns of the dataframe
+        feats_names = feats.columns.tolist()[:-1]
+        target_name = feats.columns.tolist()[-1]
+        
+        # Extract feature names and target name from the provided list of names
+        feats_labels  = names[:-1] 
+        target_labels = names[-1]
+        
+        plot_partial_correlation_bars(df=feats, features=feats_names, target=target_name, path_save=out_figs, 
+                                      features_names = feats_labels,
+                                      target_name    = target_labels,
+                                      name_file      = experiment,
+                                      corr_metric    = 'pearson',
+                                      n_bootstrap    = 1000,
+                                      bar_color      = 'steelblue',
+                                      bar_edgecolor  = 'lightblue',
+                                      bar_width      = 0.6,
+                                      figsize        = (10, 6),
+                                      rotation       = 45,
+                                      ifsave         = True,
+                                      ifshow         = False) 
+        
     # Create efficiency plot ----------------------------------------------------------------------------------------------#
     @staticmethod
     def create_efficiency_plot(data: dict, config: dict, out_figs: str):
         
-        plot_efficiency_mass_ratio_dataset(data_dict         = data,
-                                           cmap_label        = config.get("cmap_label"),
-                                           cmap              = config.get("cmap"),
-                                           cmap_name         = config.get("cmap_name"),
-                                           figsize           = (7, 5),
-                                           norm_mode         = config.get("norm_mode"),
-                                           include_fit_curve = config.get("include_fit_curve", True),
-                                           show              = True,
-                                           savepath          = out_figs)
+        plot_efficiency_mass_ratio_dataset(data_dict               = data,
+                                           cmap_label              = config.get("cmap_label"),
+                                           cmap                    = config.get("cmap"),
+                                           cmap_name               = config.get("cmap_name"),
+                                           figsize                 = (7, 5),
+                                           norm_mode               = config.get("norm_mode"),
+                                           include_fit_curve       = config.get("include_fit_curve", True),
+                                           include_fit_uncertainty = config.get("include_fit_uncertainty", True),
+                                           show                    = True,
+                                           savepath                = out_figs)
 
 #--------------------------------------------------------------------------------------------------------------------------#

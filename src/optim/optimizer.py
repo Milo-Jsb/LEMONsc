@@ -9,24 +9,23 @@ import numpy             as np
 import pandas            as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from dataclasses                     import dataclass
-from torch.utils.data                import DataLoader
-from pathlib                         import Path
-from typing                          import Dict, List, Optional, Union, Callable, Any, Sequence, TypeVar, Literal
-from sklearn.metrics                 import get_scorer
+from pathlib              import Path
+from typing               import Dict, List, Optional, Union, Callable, Any, Sequence, TypeVar, Literal
+from sklearn.metrics      import get_scorer
             
 # Custom functions --------------------------------------------------------------------------------------------------------#
 
 # Main regressor constructors
-from src.models.mltrees.regressor import MLTreeRegressor
-from src.models.dltab.regressor   import DLTabularRegressor
+from src.models.mlbasics.regressor import MLBasicRegressor
+from src.models.mltrees.regressor  import MLTreeRegressor
+from src.models.dltab.regressor    import DLTabularRegressor
 
 # Grid of hyperparams to optimize
-from optim.grid import RandomForestGrid, LightGBMGrid, XGBoostGrid, MLPGrid
+from src.optim.grid import ElasticNetGrid, SVRGrid, RandomForestGrid, LightGBMGrid, XGBoostGrid, MLPGrid
 
 # Import helper functions for each type of regressor framework
-from src.optim.utils._mltrees import validate_data_ml, normalize_partitions_ml, evaluate_partition_ml
-from src.optim.utils._dltab   import validate_data_dl, normalize_partitions_dl, evaluate_partition_dl
+from src.optim.utils._ml    import validate_data_ml, normalize_partitions_ml, evaluate_partition_ml
+from src.optim.utils._dltab import validate_data_dl, normalize_partitions_dl, evaluate_partition_dl
 
 # Custom function for Huber loss
 from src.utils.callbacks import huber_loss
@@ -34,46 +33,8 @@ from src.utils.callbacks import huber_loss
 # Visualization plots
 from src.optim.utils._visuals import create_visualizations_per_study, plot_cv_evol_distributions
 
-# Definitions -------------------------------------------------------------------------------------------------------------#
-ModelType        = Literal["rf", "lightgbm", "xgboost", "mlp"]
-available_device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Configuration and result classes ----------------------------------------------------------------------------------------#
-@dataclass
-class SpaceSearchConfig:
-    """Configuration settings for SpaceSearch optimization"""
-    model_type      : ModelType
-    n_jobs          : int                                   = 10               # Core numbers for parallel processing
-    n_trials        : int                                   = 100              # Number of trials for optimization
-    device          : str                                   = available_device # Device to use ('cpu' or 'cuda')
-    verbose         : bool                                  = True             # Verbosity flag
-    seed            : int                                   = 42               # Fixed seed for reproducibility
-    sampler         : Optional[optuna.samplers.BaseSampler] = None             # Custom sampler, defaults to TPESampler
-    storage         : Optional[str]                         = None             # Storage URL for study persistence
-    load_if_exists  : bool                                  = False            # Checkpoint loading flag
-    huber_delta     : float                                 = 1.0              # Delta parameter for Huber loss
-    max_epochs      : Optional[int]                         = 100              # Max epochs for DL models 
-    dl_patience     : Optional[int]                         = 10               # Patience for DL early stopping  
-    dl_architecture : Optional[Dict[str, Any]]              = None             # Parameters to create a DL model
-
-@dataclass
-class SpaceSearchResult:
-    """Results from a SpaceSearch optimization study"""
-    best_params          : Dict[str, Any]                  
-    best_score           : float
-    study                : optuna.study.Study
-    n_trials             : int
-    output_dir           : str
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert results to dictionary format"""
-        output_dict = {
-                    'best_params': self.best_params, 
-                    'best_score' : self.best_score, 
-                    'n_trials'   : self.n_trials,
-                    'output_dir' : self.output_dir}
-
-        return output_dict
+# Configuration and result format dictionaries
+from src.optim.utils._formats import SpaceSearchConfig, SpaceSearchResult
 
 # Hyperparameter search ---------------------------------------------------------------------------------------------------#
 class SpaceSearch:
@@ -82,7 +43,7 @@ class SpaceSearch:
     SpaceSearch: A comprehensive hyperparameter optimization class using Optuna for Supervised Regression
     ________________________________________________________________________________________________________________________
     Features:
-    -> Support for multiple model types (LightGBM, XGBoost, Random Forest, MultiLayer Perceptron)
+    -> Support for multiple model types (ElasticNet, SVR, LightGBM, XGBoost, Random Forest, MultiLayer Perceptron)
     -> Customizable search spaces and objective functions
     -> Advanced visualization and analysis tools
     -> Study persistence and loading
@@ -90,7 +51,7 @@ class SpaceSearch:
     -> Multi-objective optimization capabilities
     ________________________________________________________________________________________________________________________
     Note:
-    -> SpaceSearch is made to work upon MLTreeRegressor and DLTabularRegressor.
+    -> SpaceSearch is made to work upon MLBasicRegressor, MLTreeRegressor, and DLTabularRegressor.
     ________________________________________________________________________________________________________________________
     """
     def __init__(self, config: SpaceSearchConfig):
@@ -103,15 +64,29 @@ class SpaceSearch:
         # Initialize sampler
         self.sampler = config.sampler or optuna.samplers.TPESampler(seed=config.seed, multivariate=True)
         
-        # Tag of regressor type
-        self.regressor = "dltab" if self.config.model_type in ["mlp"] else "mltrees"
+        # Tag of regressor type and mapping to model types
+        self.model_grid_map = {
+            "mlbasic": ["elasticnet", "svr"],
+            "mltrees": ["rf", "lightgbm", "xgboost"],
+            "dltab"  : ["mlp"]}
+        
+        # Config already normalizes model_type in __post_init__, so we can use it directly
+        self.model_type = config.model_type
+        self.regressor  = next((key for key, models in self.model_grid_map.items() if self.model_type in models), None)
+        
+        if self.regressor is None:
+            valid_models = [model for models in self.model_grid_map.values() for model in models]
+            raise ValueError(f"Unsupported model_type: '{config.model_type}'. "
+                           f"Valid options are: {valid_models}")
         
         # Parameter grid mapping
         self.param_grid_map = {
-            "rf"       : RandomForestGrid,
-            "lightgbm" : LightGBMGrid,
-            "xgboost"  : XGBoostGrid,
-            "mlp"      : MLPGrid
+            "elasticnet" : ElasticNetGrid,
+            "svr"        : SVRGrid,
+            "rf"         : RandomForestGrid,
+            "lightgbm"   : LightGBMGrid,
+            "xgboost"    : XGBoostGrid,
+            "mlp"        : MLPGrid
                               }
         
         # Custom metrics registry
@@ -128,7 +103,7 @@ class SpaceSearch:
         
         # Log initialization
         if self.config.verbose:
-            self.logger.info(f"SpaceSearch initialized for {self.config.model_type} model (device={self.config.device})")
+            self.logger.info(f"SpaceSearch initialized for {self.model_type} model (device={self.config.device})")
     
     # [Helper] Logging with loguru ----------------------------------------------------------------------------------------#
     def __setup_logging(self) -> logging.Logger:
@@ -147,13 +122,13 @@ class SpaceSearch:
     
     # [Helper] Model creation ---------------------------------------------------------------------------------------------#
     def __create_model(self, trial: optuna.trial.Trial, features_names: List[str]
-                       ) -> Union[MLTreeRegressor, DLTabularRegressor]:
+                       ) -> Union[MLBasicRegressor, MLTreeRegressor, DLTabularRegressor]:
         """Create a model instance with parameters from trial"""
-        if self.config.model_type not in self.param_grid_map:
-            raise ValueError(f"Unknown model_type: {self.config.model_type}")
+        if self.model_type not in self.param_grid_map:
+            raise ValueError(f"Unknown model_type: {self.model_type}")
         
         # Get trial parameters from grid
-        trial_params = self.param_grid_map[self.config.model_type](trial)
+        trial_params = self.param_grid_map[self.model_type](trial)
         
         # Route based on model type
         if self.regressor == "dltab":
@@ -175,7 +150,7 @@ class SpaceSearch:
             optimizer_name = merge_opt.get("optimizer_name", "adam")
             
             # Construct the Regressor with the given params
-            model = DLTabularRegressor(model_type       = self.config.model_type, 
+            model = DLTabularRegressor(model_type       = self.model_type, 
                                        model_params     = merge_model,
                                        optimizer_name   = optimizer_name,
                                        optimizer_params = merge_opt,
@@ -188,10 +163,19 @@ class SpaceSearch:
         elif self.regressor == "mltrees":
             
             # Construct the Regressor with the given params
-            model = MLTreeRegressor(model_type = self.config.model_type, model_params = trial_params, 
+            model = MLTreeRegressor(model_type = self.model_type, model_params = trial_params, 
                                     feat_names = features_names,
                                     device     = self.config.device,
                                     n_jobs     = self.config.n_jobs)
+        
+        # Route for basic linear and kernel-based models
+        elif self.regressor == "mlbasic":
+            
+            # Construct the Regressor with the given params
+            model = MLBasicRegressor(model_type = self.model_type, model_params = trial_params, 
+                                     feat_names = features_names,
+                                     device     = self.config.device,
+                                     n_jobs     = self.config.n_jobs)
         
         else:
             raise ValueError(f"Unknown regressor type: {self.regressor}")
@@ -199,7 +183,8 @@ class SpaceSearch:
         return model
     
     # [Helper] GPU memory cleanup -----------------------------------------------------------------------------------------#
-    def __cleanup_gpu_memory(self, model: Optional[Union[MLTreeRegressor, DLTabularRegressor]] = None) -> None:
+    def __cleanup_gpu_memory(self, model: Optional[Union[MLTreeRegressor, MLBasicRegressor, DLTabularRegressor]] = None
+                             ) -> None:
         """Clean up GPU memory after trial to prevent memory leaks"""
         # Delete model if provided
         if model is not None:
@@ -339,10 +324,13 @@ class SpaceSearch:
         """Validate input data shapes and types"""
         
         # Check case scenario for MLTreesRegressor 
-        if self.regressor == "mltrees": validate_data_ml(partitions)
+        if self.regressor == "mltrees"   : validate_data_ml(partitions)
         
         # Elif case scenario for DLTabularRegressor
-        elif self.regressor == "dltab": validate_data_dl(partitions)
+        elif self.regressor == "dltab"   : validate_data_dl(partitions)
+        
+        # Elif case scenario for MLBasicRegressor
+        elif self.regressor == "mlbasic" : validate_data_ml(partitions)
         
     # [Helper] Router to normalize partitions and ensure standardization of format ----------------------------------------#
     def __normalize_partitions(self, partitions: List[Dict]) -> List[Dict]:
@@ -352,12 +340,17 @@ class SpaceSearch:
             return normalize_partitions_dl(partitions)
         elif self.regressor == "mltrees":
             return normalize_partitions_ml(partitions)
+        elif self.regressor == "mlbasic":
+            return normalize_partitions_ml(partitions)
         else:
             raise ValueError(f"Unknown regressor type: {self.regressor}")
 
     # [Helper] Router to evaluation methods acording to the type of model selected ----------------------------------------#
-    def __evaluate_partition(self, model: Union[MLTreeRegressor, DLTabularRegressor], partition: Dict, scorer: Callable, 
-                             trial: Optional[optuna.trial.Trial] = None) -> float:
+    def __evaluate_partition(self, model: Union[MLBasicRegressor, MLTreeRegressor, DLTabularRegressor], 
+                             partition : Dict, 
+                             scorer    : Callable, 
+                             trial     : Optional[optuna.trial.Trial] = None
+                             ) -> float:
         """Router to appropriate evaluation method based on model type"""
         
         if isinstance(model, DLTabularRegressor):
@@ -366,6 +359,9 @@ class SpaceSearch:
             return evaluate_partition_dl(model, partition, scorer, trial, self.logger, self.config)
         
         elif isinstance(model, MLTreeRegressor):
+            return evaluate_partition_ml(model, partition, scorer)
+        
+        elif isinstance(model, MLBasicRegressor):
             return evaluate_partition_ml(model, partition, scorer)
 
         else:
@@ -398,7 +394,7 @@ class SpaceSearch:
         # Create CV-specific visualizations using imported function
         plot_cv_evol_distributions(cv_results_df, output_path)
     
-        # Main Optimization Method --------------------------------------------------------------------------------------------#
+    # Main Optimization Method --------------------------------------------------------------------------------------------#
     def optimize(self, 
                  partitions     : Optional[List[Dict]]                      = None,
                  study_name     : str                                       = "optuna_study",

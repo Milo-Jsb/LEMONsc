@@ -59,6 +59,10 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
             "label"     : r"$\log(M_{\rm tot}/M_{\rm crit})$",
             "operation" : lambda df:np.log10(df['M_tot']/df['M_crit']+1)
         },
+        "M_MMO/M_tot" :{
+            "label"     : r"$M_{\rm MMO}/M_{\rm tot}$",
+            "operation" : lambda df: df['M']/df['M_tot']
+        },
         "log(R_h/R_core)" :{
             "label"     : r"$\log(R_{h}/R_{\rm{core}})$",
             "operation" : lambda df: np.log10((df['R_h'] / df['R_core']) + 1)

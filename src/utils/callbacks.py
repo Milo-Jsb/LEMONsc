@@ -5,6 +5,22 @@ import pandas as pd
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from typing import Union
 
+# Helper function to check GPU availability -------------------------------------------------------------------------------#
+def check_gpu_available() -> bool:
+    """Check if CUDA GPU is available."""
+    try:
+        import torch
+        return torch.cuda.is_available()
+    
+    except ImportError:
+        try:
+            import cupy
+            cupy.cuda.Device(0).compute_capability
+            return True
+        
+        except (ImportError, Exception):
+            return False
+        
 # Custom metrics ----------------------------------------------------------------------------------------------------------#
 def huber_loss(y_true: Union[np.ndarray, pd.Series], y_pred: Union[np.ndarray, pd.Series], delta: float = 1.0) -> float:
     """

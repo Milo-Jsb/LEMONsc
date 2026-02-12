@@ -8,7 +8,7 @@ from typing import List, Tuple, Optional
 from loguru import logger
 
 # Custome functions --------------------------------------------------------------------------------------------------------#
-from src.utils.directory import PathManagerExperiment
+from src.utils.directory import PathManagerDatasetPipeline
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
@@ -61,7 +61,7 @@ class DataPartitioner:
 
         return train_simulations, val_simulations, test_simulations
     
-    def create_stratified_partitions(self, path_manager: PathManagerExperiment, 
+    def create_stratified_partitions(self, path_manager: PathManagerDatasetPipeline, 
                                      valid_simulations: Optional[List[str]] = None
                                      )-> Optional[Tuple[List[str], List[str], List[str]]]:
         """Create stratified partitions based on environment type."""

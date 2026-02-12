@@ -1,7 +1,5 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
 import os
-import sys
-import copy
 
 import numpy as np
 import torch
@@ -10,41 +8,36 @@ import torch
 from torch.utils.data import DataLoader
 from pathlib          import Path
 from typing           import Optional, Dict, List, Union, Any
-from sklearn.metrics  import mean_squared_error, mean_absolute_error, root_mean_squared_error, r2_score
 from loguru           import logger
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
-from src.utils.directory               import load_yaml_dict
-from src.models.dltab.encoders.mlp     import MLPRegressor
+
+# Safe load of yaml dictionaries
+from src.utils.directory import load_yaml_dict
+
+# Check GPU availability
+from src.utils.callbacks import check_gpu_available
+
+# DLTabular specific imports: Encoder architecture
+from src.models.dltab.encoders.mlp import MLPRegressor
+
+# DLTabular specific imports: Trainer, Predictor, Evaluator, CheckpointManager
+from src.models.dltab.core.trainer     import Trainer
+from src.models.dltab.core.predictor   import Predictor
+from src.models.dltab.core.evaluator   import Evaluator
+from src.models.dltab.utils.checkpoint import CheckpointManager
+
+# Optimizer selection
 from src.models.dltab.utils.optimizers import select_optimizer
-from src.models.dltab.utils.losses     import get_loss_function
-from src.models.dltab.utils.callbacks  import EarlyStopping
 
-# Logger configuration  ---------------------------------------------------------------------------------------------------#
-logger.remove()
+# Helpers
+from src.models.dltab.utils.handling import _setup_logger
 
-# Add outputs to the console
-logger.add(sink=sys.stdout, level="INFO", format="<level>{level}: {message}</level>")
-
-# Add outputs to the file
-logger.add("./logs/dltab_output.log",
-           level     = "INFO",
-           format    = "{time:YYYY-MM-DD HH:mm:ss} - {level}: {message}",
-           rotation  = "10 MB",    
-           retention = "10 days",  
-           encoding  = "utf-8")
-
-
-# Helpers -----------------------------------------------------------------------------------------------------------------#
-def _to_cpu_state_dict(state_dict: dict) -> dict:
-    """Convert a state_dict with tensors to CPU."""
-    cpu_state = {}
-    for k, v in state_dict.items():
-        if isinstance(v, torch.Tensor):
-            cpu_state[k] = v.detach().cpu()
-        else:
-            cpu_state[k] = v
-    return cpu_state
+# Constants ---------------------------------------------------------------------------------------------------------------#
+SUPPORTED_MODELS      = ["mlp"]
+SUPPORTED_OPTIMIZERS  = ["adam", "sgd"]
+DEFAULT_METRICS       = ["mse", "rmse", "mae", "r2"]
+DEFAULT_VERBOSE_EPOCH = 10
 
 # Custom Deep Learning Tabular Regressor ----------------------------------------------------------------------------------#
 class DLTabularRegressor:
@@ -53,11 +46,11 @@ class DLTabularRegressor:
     DLTabularRegressor: A comprehensive deep learning supervised regressor wrapper for model comparison
     ________________________________________________________________________________________________________________________
     Models supported:
-        - MultiLayer Perceptron Network (MLPRegressor) [custom implementation - pytorch]
+    -> MultiLayer Perceptron Network (MLPRegressor) [custom implementation - pytorch]
     ________________________________________________________________________________________________________________________
     """
     def __init__(self, model_type : str='mlp', in_features: int = 5, model_params: Optional[dict]=None, 
-                 optimizer_name   : Optional[str]  = None,
+                 optimizer_name   : str            = 'adam',
                  optimizer_params : Optional[dict] = None,
                  scheduler_name   : Optional[str]  = None,
                  scheduler_params : Optional[dict] = None,
@@ -65,6 +58,7 @@ class DLTabularRegressor:
                  n_jobs           : Optional[int]  = None, 
                  device           : Union[str, torch.device] = 'cuda',
                  use_amp          : bool           = False,
+                 log_file         : Optional[str]  = None,
                  verbose          : bool           = False):
         """    
         ____________________________________________________________________________________________________________________
@@ -74,50 +68,66 @@ class DLTabularRegressor:
         -> model_type       (str)  : Mandatory. Type of model to use ('mlp').
         -> in_features      (int)  : Mandatory. Number of input features for the model.
         -> model_params     (dict) : Optional. Dictionary containing model-specific hyperparameters.
-        -> optimizer_name   (str)  : Optional. Name of the optimizer to use ('adam', 'sgd').
+        -> optimizer_name   (str)  : Mandatory. Name of the optimizer to use ('adam', 'sgd'). Default: 'adam'.
         -> optimizer_params (dict) : Optional. Dictionary containing optimizer-specific hyperparameters.
         -> scheduler_name   (str)  : Optional. Name of the learning rate scheduler to use.
         -> scheduler_params (dict) : Optional. Dictionary containing scheduler-specific hyperparameters.
         -> feat_names       (list) : Optional. List of feature names.
-        -> device           (str)  : Optional. 'cpu' (default) or 'cuda' for GPU CUDA driven acceleration.
+        -> device           (str)  : Optional. 'cpu' or 'cuda' for GPU CUDA driven acceleration. Default: 'cuda'.
         -> n_jobs           (int)  : Optional. Number of cores to use during computation.
+        -> log_file         (str)  : Optional. Path to log file. If None, only console logging.
+        -> use_amp          (bool) : Optional. Enable Automatic Mixed Precision training. Default: False.
         -> verbose          (bool) : Optional. Enable verbose logging for debugging purposes.
         ____________________________________________________________________________________________________________________
         Raises:
-            - ValueError, TypeError
+        -> TypeError, KeyError, ImportError, AttributeError, RuntimeError for invalid inputs or issues during initialization
         ____________________________________________________________________________________________________________________
         """
+        # Setup logger first -----------------------------------------------------------------------------------------------#
+        _setup_logger(log_file)
+        
         # Input validation ------------------------------------------------------------------------------------------------#
-        if not isinstance(model_type , str):
-            raise TypeError("model_type  must be a string")
+        if not isinstance(model_type, str):
+            raise TypeError("model_type must be a string")
         if model_params is not None and not isinstance(model_params, dict):
             raise TypeError("model_params must be a dictionary or None")
+        if not isinstance(optimizer_name, str):
+            raise TypeError("optimizer_name must be a string")
+        
+        # Validate device before creating torch.device
+        if isinstance(device, str):
+            if device not in ["cpu", "cuda"]:
+                raise ValueError(f"device must be 'cpu' or 'cuda', got '{device}'")
+            if device == "cuda" and not check_gpu_available():
+                raise RuntimeError(
+                    "CUDA device requested but no GPU detected. "
+                    "Please ensure CUDA is properly installed and a GPU is available, or use device='cpu'."
+                )
         
         # Main parameters -------------------------------------------------------------------------------------------------#
         self.model_type       = model_type.lower()
         self.in_features      = in_features
         self.model_params     = model_params if model_params is not None else {}
-        self.optimizer_name   = optimizer_name.lower() if optimizer_name is not None else None
+        self.optimizer_name   = optimizer_name.lower()
         self.optimizer_params = optimizer_params if optimizer_params is not None else {}
         self.scheduler_name   = scheduler_name.lower() if scheduler_name is not None else None
-        self.scheduler_params = scheduler_params if scheduler_params is not None else None
+        self.scheduler_params = scheduler_params if scheduler_params is not None else {}
         self.n_jobs           = n_jobs
         self.verbose          = verbose
         self.is_fitted        = False
         self.feature_names    = feat_names
-        self.device           = torch.device(device)
+        self.device           = torch.device(device) if isinstance(device, str) else device
         self.use_amp          = use_amp
         self.history          = {}
+        self.best_model_state = None  
         
         # Validate model type ---------------------------------------------------------------------------------------------#
-        supported_models = ["mlp"]
-        if self.model_type  not in supported_models:
-            raise ValueError(f"Unsupported model type: {self.model_type }. Supported types: {supported_models}")
+        if self.model_type not in SUPPORTED_MODELS:
+            raise ValueError(f"Unsupported model type: {self.model_type}. Supported types: {SUPPORTED_MODELS}")
         
         # Validate optimizer ----------------------------------------------------------------------------------------------#
-        supported_models = ["adam", "sgd"]
-        if self.optimizer_name is not None and self.optimizer_name.lower() not in supported_models:
-            raise ValueError(f"Unsupported optimizer: {self.optimizer_name}. Supported optimizers: {supported_models}")
+        if self.optimizer_name not in SUPPORTED_OPTIMIZERS:
+            raise ValueError(f"Unsupported optimizer: {self.optimizer_name}. Supported optimizers: {SUPPORTED_OPTIMIZERS}")
         
         # Create the class element ----------------------------------------------------------------------------------------#
         if self.verbose: logger.info(f"Initializing {self.model_type} model (device={self.device})...")
@@ -127,24 +137,28 @@ class DLTabularRegressor:
             
             if self.verbose: logger.success(f"Successfully initialized {self.model_type} architecture")
             
-            if self.optimizer_name is not None:
-                
-                self._init_optimizer()
+            # Optimizer is now mandatory
+            self._init_optimizer()
             
-                if self.verbose: logger.success(f"Successfully initialized {self.optimizer_name} optimizer")
+            if self.verbose: logger.success(f"Successfully initialized {self.optimizer_name} optimizer")
             
             if self.use_amp:
-                self.scaler = torch.amp.GradScaler()
+                self.scaler = torch.amp.GradScaler(self.device.type)
                 if self.verbose: logger.success("Enabled Automatic Mixed Precision (AMP) for training")
+            
+            # Initialize Predictor, Evaluator, and CheckpointManager
+            self.predictor          = Predictor(model=self.model, device=self.device, use_amp=self.use_amp)
+            self.evaluator          = Evaluator(predictor=self.predictor, verbose=self.verbose)
+            self.checkpoint_manager = CheckpointManager(verbose=self.verbose)
         
-        except Exception as e:
-            raise ValueError(f"Error initializing model: {e}")
+        except (TypeError, KeyError, ImportError, AttributeError, RuntimeError) as e:
+            raise ValueError(f"Error initializing model: {e}") from e
          
     # Main fitting function -----------------------------------------------------------------------------------------------#        
     def fit(self, train_loader: DataLoader, val_loader: Optional[DataLoader]=None, epochs: int=100, loss_fn: str='mse', 
             loss_params             : Optional[Dict[str, Any]] = None,
             early_stopping_patience : Optional[int] = None, 
-            verbose_epoch           : int           = 10,
+            verbose_epoch           : int           = DEFAULT_VERBOSE_EPOCH,
             checkpoint_path         : Optional[str] = None, 
             save_best_only          : bool          = True):
         """
@@ -152,111 +166,53 @@ class DLTabularRegressor:
         Train the model on the provided dataset.
         ____________________________________________________________________________________________________________________
         Parameters:
-            - train_loader             (DataLoader) : DataLoader containing training batches
-            - val_loader               (DataLoader) : Optional DataLoader containing validation batches
-            - epochs                   (int)        : Number of training epochs
-            - loss_fn                  (str)        : Loss function name ('mse', 'l1', 'smooth_l1', 'huber')
-            - loss_params              (dict)       : Optional dictionary of additional loss function parameters
-            - early_stopping_patience  (int)        : Epochs to wait before stopping if no improvement
-            - verbose_epoch            (int)        : Print training info every N epochs
-            - checkpoint_path          (str)        : Optional path to save model checkpoints during training
-            - save_best_only           (bool)       : If True, only save checkpoint when validation loss improves
+        -> train_loader             (DataLoader) : DataLoader containing training batches
+        -> val_loader               (DataLoader) : Optional DataLoader containing validation batches
+        -> epochs                   (int)        : Number of training epochs
+        -> loss_fn                  (str)        : Loss function name ('mse', 'l1', 'smooth_l1', 'huber')
+        -> loss_params              (dict)       : Optional dictionary of additional loss function parameters
+        -> early_stopping_patience  (int)        : Epochs to wait before stopping if no improvement
+        -> verbose_epoch            (int)        : Print training info every N epochs
+        -> checkpoint_path          (str)        : Optional path to save model checkpoints during training
+        -> save_best_only           (bool)       : If True, only save checkpoint when validation loss improves
         ____________________________________________________________________________________________________________________
         """
-        # Setup loss function and move model to device --------------------------------------------------------------------#
-        criterion = get_loss_function(loss_fn, **(loss_params or {})).to(self.device)
-        
-        # Validate early stopping configuration ---------------------------------------------------------------------------#
-        if early_stopping_patience is not None and val_loader is None:
-            raise ValueError("val_loader must be provided when early_stopping_patience is set")
-        
-        # Initialize early stopping callback ------------------------------------------------------------------------------#
-        early_stopper = None
-        
-        if early_stopping_patience is not None:
-            early_stopper = EarlyStopping(patience=early_stopping_patience, mode='min')
-        
-        # Training history ------------------------------------------------------------------------------------------------#
-        history       = {'train_loss': [], 'val_loss': [], 'epochs': []}
-        best_val_loss = float('inf')
-        should_stop   = False
-
-        # Training loop ---------------------------------------------------------------------------------------------------#
-        if self.verbose:
-            logger.info(f"Starting training for {epochs} epochs (model={self.model_type}, opt={self.optimizer_name})")
-            logger.info(f"Loss function : {loss_fn}")
-            logger.info(f"Device        : {self.device}")
-        
-        # Start loop
-        for epoch in range(epochs):
-            # Train one epoch
-            train_loss = self.train_one_epoch(train_loader, criterion)
-            history['train_loss'].append(train_loss)
-            
-            # Validate one epoch
-            val_loss = self.val_one_epoch(val_loader, criterion)
-            history['val_loss'].append(val_loss)
-            history['epochs'].append(epoch + 1)
-            
-            # Update history before any checkpoint saving
-            self.history = history
-            
-            # Handle checkpointing and early stopping
-            if early_stopper is not None:
-                stop, is_best = early_stopper.step(val_loss)
-                
-                if is_best:
-                    self.is_fitted = True
-                    best_val_loss  = val_loss
-                    
-                    # Save checkpoint if best model and checkpoint path provided
-                    if checkpoint_path is not None and save_best_only:
-                        self.save_model(checkpoint_path)
-                        if self.verbose:
-                            logger.info(f"Model saved: Best val loss = {best_val_loss:.6f}")
-                
-                if stop:
-                    should_stop    = True
-                    self.is_fitted = True
-
+        # Create checkpoint callback if path provided
+        checkpoint_callback = None
+        if checkpoint_path is not None:
+            def _checkpoint_fn(epoch, is_best, val_loss):
+                # Save if best_only and is_best, or if not best_only
+                should_save = (save_best_only and is_best) or (not save_best_only)
+                if should_save:
+                    self.save_model(checkpoint_path)
                     if self.verbose:
-                        logger.info(f"Early stopping triggered at epoch {epoch + 1}")
-                        logger.info(f"No improvement for {early_stopping_patience} epochs")
-            
-            # Save checkpoint every epoch if not save_best_only (regardless of early stopping)
-            if checkpoint_path is not None and not save_best_only:
-                self.save_model(checkpoint_path)
-                if self.verbose:
-                    logger.info(f"Checkpoint saved at epoch {epoch + 1}")
-            
-            # Break if early stopping triggered
-            if should_stop:
-                break
-            
-            # Update learning rate scheduler if available
-            if hasattr(self, 'sched') and self.sched is not None:
-                if isinstance(self.sched, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    self.sched.step(val_loss if val_loss is not None else train_loss)
-                else:
-                    self.sched.step()
-            
-            # Verbose logging
-            if self.verbose and (epoch + 1) % verbose_epoch == 0:
-                msg = f"Epoch [{epoch + 1:4d}/{epochs}] - Train Loss: {train_loss:.6f}"
-                if val_loss is not None:
-                    msg += f" - Val Loss: {val_loss:.6f}"
-                logger.info(msg)
+                        if is_best:
+                            logger.info(f"Model saved: Best val loss = {val_loss:.6f}")
+                        else:
+                            logger.info(f"Checkpoint saved at epoch {epoch}")
+            checkpoint_callback = _checkpoint_fn
         
-        # Mark model as fitted after successful training
-        self.is_fitted = True
-        self.history = history
+        # Create trainer instance
+        trainer = Trainer(model=self.model, optimizer=self.opt, device=self.device, use_amp=self.use_amp, 
+                          scheduler = self.sched if hasattr(self, 'sched') else None, 
+                          scaler    = self.scaler if self.use_amp else None,
+                          verbose   = self.verbose)
         
+        # Run training
         if self.verbose:
-            logger.success("Training completed!")
-            logger.success(f"Final train loss: {history['train_loss'][-1]:.6f}")
-            if history['val_loss']:
-                logger.success(f"Final val loss : {history['val_loss'][-1]:.6f}")
-                logger.success(f"Best val loss  : {best_val_loss:.6f}")
+            logger.info(f"Model: {self.model_type}, Optimizer: {self.optimizer_name}")
+        
+        result = trainer.train(train_loader=train_loader, val_loader=val_loader, epochs=epochs, loss_fn=loss_fn,
+                               loss_params             = loss_params,
+                               early_stopping_patience = early_stopping_patience,
+                               verbose_epoch           = verbose_epoch,
+                               checkpoint_callback     = checkpoint_callback
+                               )
+        
+        # Update instance state
+        self.history          = result['history']
+        self.best_model_state = result['best_model_state']
+        self.is_fitted        = True
         
         return self
     
@@ -276,26 +232,8 @@ class DLTabularRegressor:
         if not self.is_fitted:
             raise ValueError("Model must be fitted before making predictions")
         
-        if X is None:
-            raise ValueError("X cannot be None")
-        
-        self.model.eval()
-        
-        # Check if input is a DataLoader for batch prediction
-        if isinstance(X, DataLoader):
-            return self._predict_dataloader(X)
-        
-        # Standard prediction for arrays/tensors Prepare input data
-        if not isinstance(X, torch.Tensor):
-            X = torch.FloatTensor(X)
-        
-        X = X.to(self.device)
-        
-        # Make predictions
-        with torch.no_grad():
-            predictions = self.model(X)
-        
-        return predictions.detach().cpu().numpy()
+        # Delegate to predictor
+        return self.predictor.predict(X)
     
     # Saving of models ----------------------------------------------------------------------------------------------------#
     def save_model(self, path: str) -> None:
@@ -313,66 +251,21 @@ class DLTabularRegressor:
             All tensors are moved to CPU before saving to ensure compatibility.
         ____________________________________________________________________________________________________________________
         """
-        # Input validation ------------------------------------------------------------------------------------------------#
-        if not isinstance(path, str):
-            raise TypeError("path must be a string")
+        # Delegate to checkpoint manager
+        optimizer = self.opt if hasattr(self, 'opt') else None
+        scheduler = self.sched if hasattr(self, 'sched') else None
         
-        if not self.is_fitted:
-            logger.warning("Saving model although `is_fitted` is False")
-        
-        # Save model to checkpoint ----------------------------------------------------------------------------------------#
-        try:
-            # Create directory if it doesn't exist
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
-            
-            # Prepare save data
-            save_data = {
-                "model_type"       : self.model_type,
-                "model_params"     : self.model_params.copy(),
-                "model_state_dict" : _to_cpu_state_dict(self.model.state_dict()),
-                "optimizer_name"   : self.optimizer_name,
-                "optimizer_params" : self.optimizer_params.copy(),
-                "is_fitted"        : self.is_fitted,
-                "feature_names"    : self.feature_names,
-                "device"           : 'cpu',
-                "history"          : self.history.copy(),
-            }
-            
-            # Save optimizer state if available
-            optimizer = self.opt if hasattr(self, 'opt') else None
-            
-            if optimizer:
-                # Create a deep copy to avoid modifying the original optimizer state
-                opt_sd = copy.deepcopy(optimizer.state_dict())
-                if "state" in opt_sd and isinstance(opt_sd["state"], dict):
-                    for st_key, st_val in opt_sd["state"].items():
-                        for inner_k, inner_v in list(st_val.items()):
-                            if isinstance(inner_v, torch.Tensor):
-                                st_val[inner_k] = inner_v.cpu()
-                save_data["optimizer_state_dict"] = opt_sd
-            
-            # Save scheduler state and params if available
-            scheduler = self.sched if hasattr(self, 'sched') else None
-            
-            if scheduler:
-                # Create a deep copy to avoid modifying the original scheduler state
-                sched_sd = copy.deepcopy(scheduler.state_dict())
-                if isinstance(sched_sd, dict):
-                    for k, v in list(sched_sd.items()):
-                        if isinstance(v, torch.Tensor):
-                            sched_sd[k] = v.cpu()
-                save_data["scheduler_name"]       = self.scheduler_name
-                save_data["scheduler_params"]     = self.scheduler_params
-                save_data["scheduler_state_dict"] = sched_sd        
-            
-            # Save using torch
-            torch.save(save_data, path)
-            
-            if self.verbose:
-                logger.success(f"Model saved successfully to: {path}")
-            
-        except Exception as e:
-            raise ValueError(f"Error saving model: {e}")
+        self.checkpoint_manager.save(path=path, model=self.model, model_type=self.model_type, 
+                                     model_params     = self.model_params,
+                                     optimizer_name   = self.optimizer_name,
+                                     optimizer_params = self.optimizer_params,
+                                     is_fitted        = self.is_fitted,
+                                     feature_names    = self.feature_names,
+                                     history          = self.history,
+                                     optimizer        = optimizer,
+                                     scheduler        = scheduler,
+                                     scheduler_name   = self.scheduler_name,
+                                     scheduler_params = self.scheduler_params)
     
     # Load of training weights --------------------------------------------------------------------------------------------#
     @classmethod
@@ -394,18 +287,11 @@ class DLTabularRegressor:
             - FileNotFoundError, ValueError, OSError
         ____________________________________________________________________________________________________________________
         """
-        # Input validation ------------------------------------------------------------------------------------------------#
-        if not isinstance(path, str):
-            raise TypeError("path must be a string")
+        # Use CheckpointManager to load
+        checkpoint_manager = CheckpointManager(verbose=verbose)
+        checkpoint         = checkpoint_manager.load(path)
         
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Model file not found: {path}")
-        
-        # Load model from checkpoint --------------------------------------------------------------------------------------#
         try:
-            # Load data from checkpoint
-            checkpoint = torch.load(path, map_location='cpu')
-            
             # Determine device
             target_device = device if device is not None else checkpoint.get("device", "cpu")
             
@@ -447,8 +333,8 @@ class DLTabularRegressor:
             
             return instance
             
-        except Exception as e:
-            raise ValueError(f"Error loading model: {e}")
+        except (KeyError, RuntimeError) as e:
+            raise ValueError(f"Error loading model: {e}") from e
     
     # Evaluation of model -------------------------------------------------------------------------------------------------#
     def evaluate(self, X: Union[np.ndarray, torch.Tensor, DataLoader], y: Union[np.ndarray, torch.Tensor],
@@ -469,67 +355,30 @@ class DLTabularRegressor:
             - ValueError
         ____________________________________________________________________________________________________________________
         """
-        # Model and input validation
+        # Model validation
         if not self.is_fitted:
             raise ValueError("Model must be fitted before evaluation")
         
-        if X is None or y is None:
-            raise ValueError("X and y cannot be None")
-        
-        if metrics is None:
-            metrics = ["mse", "rmse", "mae", "r2"]
-        
-        try:
-            # Get predictions
-            y_pred = self.predict(X)
-            
-            # Convert y to numpy if needed
-            if isinstance(y, torch.Tensor):
-                y = y.cpu().numpy()
-            elif not isinstance(y, np.ndarray):
-                y = np.array(y)
-            
-            # Flatten predictions and targets if needed
-            y_pred = y_pred.flatten()
-            y = y.flatten()
-            
-            # Check dimensions match
-            if len(y_pred) != len(y):
-                raise ValueError(f"Prediction length ({len(y_pred)}) doesn't match target length ({len(y)})")
-            
-            results = {}
-            
-            # Compute metrics and store in dictionary
-            for metric in metrics:
-                if   (metric.lower() == "mse")  : results["mse"]  = mean_squared_error(y, y_pred)
-                elif (metric.lower() == "rmse") : results["rmse"] = root_mean_squared_error(y, y_pred)
-                elif (metric.lower() == "mae")  : results["mae"]  = mean_absolute_error(y, y_pred)
-                elif (metric.lower() == "r2")   : results["r2"]   = r2_score(y, y_pred)
-                else:
-                    if self.verbose: print(f"Warning: Unknown metric '{metric}' ignored")
-            
-            return results
-            
-        except Exception as e:
-            raise ValueError(f"Error evaluating model: {e}")
+        # Delegate to evaluator
+        return self.evaluator.evaluate(X, y, metrics)
     
     # [Helper] Architecture Selection -------------------------------------------------------------------------------------#
-    def _init_model(self) -> torch.nn.Module:
+    def _init_model(self) -> None:
         """
         ____________________________________________________________________________________________________________________
         Initialize the underlying model with appropriate default parameters.
         ____________________________________________________________________________________________________________________
-        Returns:
-            - model : Initialized model instance (MLPRegressor).
-        ____________________________________________________________________________________________________________________
         """
+        # Get config path relative to this file
+        config_path = Path(__file__).parent / "config" / "arch" / "mlp.yaml"
+        
         params = self.model_params.copy()
         
         # Custom Multilayer Perceptron Regressor --------------------------------------------------------------------------#
         if self.model_type == "mlp":
             
             # Retrieve default parameters and update the dictionary
-            default_params = load_yaml_dict(path= "./src/models/dltab/config/arch/mlp.yaml")
+            default_params = load_yaml_dict(path=str(config_path))
             default_params.update(params)
             
             # Set input features - first layer
@@ -565,130 +414,42 @@ class DLTabularRegressor:
                                         optimizer_params = opt_params,
                                         scheduler_name   = None,
                                         scheduler_params = None)
-
     
+    # Get current learning rate -------------------------------------------------------------------------------------------#
+    def get_current_lr(self) -> List[float]:
+        """
+        ____________________________________________________________________________________________________________________
+        Get the current learning rate(s) from the optimizer.
+        ____________________________________________________________________________________________________________________
+        Returns:
+            - list : List of current learning rates for each parameter group
+        ____________________________________________________________________________________________________________________
+        """
+        if not hasattr(self, 'opt'):
+            raise RuntimeError("Optimizer not initialized")
+        return [group['lr'] for group in self.opt.param_groups]
     
+    # Load best model weights ---------------------------------------------------------------------------------------------#
+    def load_best_weights(self) -> None:
+        """
+        ____________________________________________________________________________________________________________________
+        Load the best model weights stored during training.
+        ____________________________________________________________________________________________________________________
+        Raises:
+            - RuntimeError if best weights were not saved
+        ____________________________________________________________________________________________________________________
+        """
+        if self.best_model_state is None:
+            raise RuntimeError("No best model weights available. Train with early stopping first.")
+        self.model.load_state_dict(self.best_model_state)
+        if self.verbose:
+            logger.info("Loaded best model weights")
     
     # [Helper] Prediction with DataLoader ---------------------------------------------------------------------------------#
-    def _predict_dataloader(self, dataloader: DataLoader) -> np.ndarray:
-        """
-        ____________________________________________________________________________________________________________________
-        Make predictions using a DataLoader for memory-efficient batch processing.
-        ____________________________________________________________________________________________________________________
-        Parameters:
-            - dataloader (DataLoader) : DataLoader containing batches to predict on
-        ____________________________________________________________________________________________________________________
-        Returns:
-            - predictions (np.ndarray) : Concatenated predictions from all batches
-        ____________________________________________________________________________________________________________________
-        """
-        all_predictions = []
-        
-        with torch.no_grad():
-            
-            for batch in dataloader:
-                batch_X = batch[0] if isinstance(batch, (list,tuple)) else batch
-                batch_X = batch_X.to(self.device, non_blocking=True)
-                
-                with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
-                    preds = self.model(batch_X)
-                    all_predictions.append(preds.detach().cpu())
-                    
-        return torch.cat(all_predictions, dim=0).numpy()
-    
-    # [Helper] Training loop for one epoch --------------------------------------------------------------------------------#
-    def train_one_epoch(self, train_loader: DataLoader, criterion: torch.nn.Module) -> float:
-        """
-        ____________________________________________________________________________________________________________________
-        Train the model for one epoch.
-        ____________________________________________________________________________________________________________________
-        Parameters:
-            - train_loader (DataLoader) : DataLoader containing training batches
-            - criterion    (nn.Module)  : Loss function
-        ____________________________________________________________________________________________________________________
-        Returns:
-            - avg_loss (float) : Average training loss for the epoch
-        ____________________________________________________________________________________________________________________
-        """
-        
-        # Set up training mode and counters  
-        self.model.train()
-        epoch_loss = 0.0
-        n_batches  = 0
-        
-        for batch_X, batch_y in train_loader:
-            # Move data to device
-            batch_X = batch_X.to(self.device, non_blocking=True)
-            batch_y = batch_y.to(self.device, non_blocking=True)
-            
-            # Zero gradients
-            self.opt.zero_grad(set_to_none=True)
-            
-            # Forward pass (enabled AMP if specified)
-            with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
-                preds = self.model(batch_X)
-                loss  = criterion(preds, batch_y)
 
-            # Backward pass and optimization
-            if self.use_amp:
-                self.scaler.scale(loss).backward()
-                self.scaler.step(self.opt)
-                self.scaler.update()
-                
-            else:
-                loss.backward()
-                self.opt.step()
-                    
-            # Accumulate loss
-            epoch_loss += loss.item()
-            n_batches  += 1
-        
-        # Return average loss for the epoch
-        avg_loss = epoch_loss / n_batches 
-        
-        return avg_loss
     
-    # [Helper] Validation loop for one epoch ------------------------------------------------------------------------------#
-    def val_one_epoch(self, val_loader: DataLoader, criterion: torch.nn.Module) -> float:
-        """
-        ____________________________________________________________________________________________________________________
-        Validate the model for one epoch.
-        ____________________________________________________________________________________________________________________
-        Parameters:
-            - val_loader (DataLoader) : DataLoader containing validation batches
-            - criterion  (nn.Module)  : Loss function
-        ____________________________________________________________________________________________________________________
-        Returns:
-            - avg_loss (float) : Average validation loss for the epoch
-        ____________________________________________________________________________________________________________________
-        """
-        self.model.eval()
-        epoch_loss = 0.0
-        n_batches  = 0
-        
-        with torch.no_grad():
-            for batch_X, batch_y in val_loader:
-                # Move data to device (non_blocking for async transfer)
-                batch_X = batch_X.to(self.device, non_blocking=True)
-                batch_y = batch_y.to(self.device, non_blocking=True)
-                
-                # Forward pass
-                predictions = self.model(batch_X)
-                loss = criterion(predictions, batch_y)
-                
-                # Accumulate loss
-                epoch_loss += loss.item()
-                n_batches += 1
-        
-        # Return average loss for the epoch
-        if n_batches == 0:
-            raise ValueError("Validation set is empty or DataLoader returned no batches")
-        
-        avg_loss = epoch_loss / n_batches
-        return avg_loss
-    
-    # [Helper] Get model information --------------------------------------------------------------------------------------#
-    def _get_model_info(self) -> Dict[str, Any]:
+    # Get model information (public method) -------------------------------------------------------------------------------#
+    def get_model_info(self) -> Dict[str, Any]:
         """
         ____________________________________________________________________________________________________________________
         Get comprehensive information about the model.
@@ -718,6 +479,27 @@ class DLTabularRegressor:
                 info["final_val_loss"] = self.history["val_loss"][-1]
                 info["best_val_loss"]  = min(self.history["val_loss"])
         
+        # Add current learning rate if optimizer exists
+        if hasattr(self, 'opt'):
+            try:
+                info["current_lr"] = self.get_current_lr()
+            except RuntimeError:
+                pass
+        
         return info
+    
+    # String representation for debugging ---------------------------------------------------------------------------------#
+    def __repr__(self) -> str:
+        """
+        ____________________________________________________________________________________________________________________
+        Return a string representation of the DLTabularRegressor instance.
+        ____________________________________________________________________________________________________________________
+        Returns:
+            - str : String representation
+        ____________________________________________________________________________________________________________________
+        """
+        fitted_str = "fitted" if self.is_fitted else "not fitted"
+        n_features_str = f", in_features={self.in_features}"
+        return f"DLTabularRegressor(model_type='{self.model_type}', {fitted_str}, device='{self.device}'{n_features_str})"
 
 #--------------------------------------------------------------------------------------------------------------------------#
