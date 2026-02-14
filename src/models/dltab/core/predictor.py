@@ -72,15 +72,19 @@ class Predictor:
         Make predictions on numpy arrays or torch tensors.
         ____________________________________________________________________________________________________________________
         Parameters:
-        -> X (array-like) : Input features
+        -> X (array-like) : Input features (numpy array, torch tensor, pandas DataFrame, or list)
         ____________________________________________________________________________________________________________________
         Returns:
         -> predictions (np.ndarray) : Model predictions
         ____________________________________________________________________________________________________________________
         """
-        # Convert to tensor if needed
+        # Convert to tensor if needed (handles numpy, pandas, lists)
         if not isinstance(X, torch.Tensor):
-            X = torch.FloatTensor(X)
+            X = torch.FloatTensor(np.asarray(X, dtype=np.float32))
+        
+        # Ensure 2D input (add batch dimension for single samples)
+        if X.dim() == 1:
+            X = X.unsqueeze(0)
         
         # Move to device
         X = X.to(self.device)

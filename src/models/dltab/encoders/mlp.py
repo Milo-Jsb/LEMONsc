@@ -15,7 +15,6 @@ class MLPRegressor(nn.Module):
                  dropout       : Optional[float] = 0.2, 
                  normalization : str             = 'batch',
                  bias          : bool            = True):
-        super().__init__()
         """
         ___________________________________________________________________________________________________________________
         MultiLayer Perceptron Regressor for DLTabularRegressor.
@@ -36,6 +35,8 @@ class MLPRegressor(nn.Module):
         - Implementation in PyTorch.
         ___________________________________________________________________________________________________________________
         """
+        super().__init__()
+        
         # Input validation ------------------------------------------------------------------------------------------------#
         if in_features <= 0:
             raise ValueError(f"in_features must be positive, got {in_features}")
@@ -82,14 +83,18 @@ class MLPRegressor(nn.Module):
         # Compile sequential model 
         self.mlp = nn.Sequential(*layers)
 
-        # Initialize weights ----------------------------------------------------------------------------------------------#
-        self._initialize_weights()
+        # Initialize weights based on activation function -----------------------------------------------------------------#
+        self._initialize_weights(activation=activation)
 
-    def _initialize_weights(self) -> None:
-        """Initialize layer weights using Xavier uniform initialization."""
+    def _initialize_weights(self, activation: str = 'relu') -> None:
+        """Initialize layer weights using appropriate initialization based on activation function."""
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
+                if activation == 'selu':
+                    # LeCun normal initialization for self-normalizing networks
+                    nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='linear')
+                else:
+                    nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.BatchNorm1d):

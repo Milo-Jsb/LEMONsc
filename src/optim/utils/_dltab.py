@@ -72,16 +72,19 @@ def normalize_partitions_dl(partitions: List[Dict]) -> List[Dict]:
 def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: optuna.trial.Trial,
                           logger : logging.Logger,
                           config : Any,
-                          loss_fn : str='huber') -> float:
+                          ) -> float:
     """Train and evaluate DL model with epoch-wise pruning to prevent state leakage."""
     
     train_loader = partition['train_loader']
     val_loader   = partition['val_loader']
     scaler       = partition.get('scaler', None)
     
-    # Get loss function from trial user_attrs (stored in __create_model)
+    # Get loss function name from config (default to 'huber')
+    loss_fn = getattr(config, 'dl_loss_fn', 'huber')
+    
+    # Build criterion with appropriate parameters
     if loss_fn == 'huber':
-        delta   = trial.user_attrs.get('delta', 1.0)
+        delta     = trial.user_attrs.get('delta', 1.0)
         criterion = get_loss_function(loss_fn, delta=delta).to(model.device)
     else:
         criterion = get_loss_function(loss_fn).to(model.device)
@@ -95,7 +98,7 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
         train_loss = model.train_one_epoch(train_loader, criterion)
         
         # Validate one epoch
-        val_loss   = model.val_one_epoch(val_loader, criterion)
+        val_loss = model.validate_one_epoch(val_loader, criterion)
         
         # Track best validation loss
         if val_loss < best_val_loss:
@@ -116,6 +119,9 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
             if config.verbose:
                 logger.info(f"Trial {trial.number}: Early stopping at epoch {epoch}")
             break
+    
+    # Mark model as fitted so predict() works
+    model.is_fitted = True
     
     # Final evaluation with scorer metric
     y_pred = model.predict(val_loader)

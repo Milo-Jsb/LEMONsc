@@ -146,17 +146,24 @@ class SpaceSearch:
             # Store loss params for later use
             trial.set_user_attr("delta", merge_loss.get("delta", 1.0))
             
-            # Extract optimizer name from config (default to 'adam')
-            optimizer_name = merge_opt.get("optimizer_name", "adam")
+            # Extract optimizer name from config and remove from merge_opt to avoid passing as kwarg
+            optimizer_name = merge_opt.pop("optimizer_name", "adam")
+            
+            # Extract use_amp from model params (training flag, not architecture param)
+            use_amp = merge_model.pop("use_amp", False)
+            
+            # Infer in_features from feature names
+            in_features = len(features_names)
             
             # Construct the Regressor with the given params
-            model = DLTabularRegressor(model_type       = self.model_type, 
+            model = DLTabularRegressor(model_type       = self.model_type,
+                                       in_features      = in_features,
                                        model_params     = merge_model,
                                        optimizer_name   = optimizer_name,
                                        optimizer_params = merge_opt,
                                        feat_names       = features_names,
                                        device           = self.config.device,
-                                       use_amp          = merge_model.get("use_amp", False),
+                                       use_amp          = use_amp,
                                        verbose          = self.config.verbose)
         
         # Route for tree-based models
@@ -247,7 +254,7 @@ class SpaceSearch:
                         model = self.__create_model(trial, features_names=partition['features_names'])
                         
                         # Evaluate partition
-                        score = self.__evaluate_partition(model, partition, scorer)
+                        score = self.__evaluate_partition(model, partition, scorer, trial=trial)
                         scores.append(score)
                         
                         # Report intermediate values for CV

@@ -103,6 +103,12 @@ class DLTabularRegressor:
                     "CUDA device requested but no GPU detected. "
                     "Please ensure CUDA is properly installed and a GPU is available, or use device='cpu'."
                 )
+        elif isinstance(device, torch.device):
+            if device.type == "cuda" and not check_gpu_available():
+                raise RuntimeError(
+                    "CUDA device requested but no GPU detected. "
+                    "Please ensure CUDA is properly installed and a GPU is available, or use device='cpu'."
+                )
         
         # Main parameters -------------------------------------------------------------------------------------------------#
         self.model_type       = model_type.lower()
@@ -195,7 +201,7 @@ class DLTabularRegressor:
         # Create trainer instance
         trainer = Trainer(model=self.model, optimizer=self.opt, device=self.device, use_amp=self.use_amp, 
                           scheduler = self.sched if hasattr(self, 'sched') else None, 
-                          scaler    = self.scaler if self.use_amp else None,
+                          scaler    = getattr(self, 'scaler', None),
                           verbose   = self.verbose)
         
         # Run training
@@ -260,6 +266,7 @@ class DLTabularRegressor:
                                      optimizer_name   = self.optimizer_name,
                                      optimizer_params = self.optimizer_params,
                                      is_fitted        = self.is_fitted,
+                                     in_features      = self.in_features,
                                      feature_names    = self.feature_names,
                                      history          = self.history,
                                      optimizer        = optimizer,
@@ -298,9 +305,10 @@ class DLTabularRegressor:
             # Create instance with saved parameters
             instance = cls(
                 model_type       = checkpoint["model_type"],
-                model_params     = checkpoint["model_params"],
-                optimizer_name   = checkpoint.get("optimizer_name"),
-                optimizer_params = checkpoint.get("optimizer_params"),
+                in_features      = checkpoint.get("in_features", 5),
+                model_params     = checkpoint.get("model_params", {}),
+                optimizer_name   = checkpoint.get("optimizer_name", "adam"),
+                optimizer_params = checkpoint.get("optimizer_params", {}),
                 scheduler_name   = checkpoint.get("scheduler_name"),
                 scheduler_params = checkpoint.get("scheduler_params"),
                 feat_names       = checkpoint.get("feature_names"),
@@ -310,11 +318,15 @@ class DLTabularRegressor:
             
             # Load model state
             instance.model.load_state_dict(checkpoint["model_state_dict"])
-            instance.model.to(target_device)
+            instance.model.to(instance.device)
             
-            # Load optimizer state if available
+            # Load optimizer state if available and move to correct device
             if "optimizer_state_dict" in checkpoint and hasattr(instance, 'opt'):
                 instance.opt.load_state_dict(checkpoint["optimizer_state_dict"])
+                for state in instance.opt.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(instance.device)
             
             # Load scheduler state if available
             if "scheduler_state_dict" in checkpoint and hasattr(instance, 'sched'):
@@ -398,9 +410,9 @@ class DLTabularRegressor:
         ____________________________________________________________________________________________________________________
         """
         opt_params = self.optimizer_params.copy()
-        sch_params = self.scheduler_params.copy() if self.scheduler_params is not None else None
         
-        if self.scheduler_name is not None:
+        if self.scheduler_name is not None and self.scheduler_params:
+            sch_params = self.scheduler_params.copy()
             
             self.opt, self.sched = select_optimizer(name             = self.optimizer_name,
                                                     model            = self.model,
@@ -445,8 +457,59 @@ class DLTabularRegressor:
         if self.verbose:
             logger.info("Loaded best model weights")
     
-    # [Helper] Prediction with DataLoader ---------------------------------------------------------------------------------#
-
+    # [Helper] Lazy Trainer access for epoch-level control ----------------------------------------------------------------#
+    def _get_or_create_trainer(self) -> Trainer:
+        """
+        ____________________________________________________________________________________________________________________
+        Get or lazily create a Trainer instance for epoch-level training control.
+        Used by SpaceSearch for Optuna pruning integration.
+        ____________________________________________________________________________________________________________________
+        """
+        if not hasattr(self, '_trainer') or self._trainer is None:
+            self._trainer = Trainer(
+                model     = self.model, 
+                optimizer = self.opt, 
+                device    = self.device, 
+                use_amp   = self.use_amp,
+                scheduler = self.sched if hasattr(self, 'sched') else None,
+                scaler    = getattr(self, 'scaler', None),
+                verbose   = self.verbose
+            )
+        return self._trainer
+    
+    # Epoch-level training (for optimization loops) -----------------------------------------------------------------------#
+    def train_one_epoch(self, train_loader: DataLoader, criterion: torch.nn.Module) -> float:
+        """
+        ____________________________________________________________________________________________________________________
+        Train the model for one epoch. Exposes epoch-level control for Optuna pruning integration.
+        ____________________________________________________________________________________________________________________
+        Parameters:
+            - train_loader (DataLoader)  : DataLoader containing training batches
+            - criterion    (nn.Module)   : Loss function
+        ____________________________________________________________________________________________________________________
+        Returns:
+            - avg_loss (float) : Average training loss for the epoch
+        ____________________________________________________________________________________________________________________
+        """
+        trainer = self._get_or_create_trainer()
+        return trainer.train_one_epoch(train_loader, criterion)
+    
+    # Epoch-level validation (for optimization loops) ---------------------------------------------------------------------#
+    def validate_one_epoch(self, val_loader: DataLoader, criterion: torch.nn.Module) -> float:
+        """
+        ____________________________________________________________________________________________________________________
+        Validate the model for one epoch. Exposes epoch-level control for Optuna pruning integration.
+        ____________________________________________________________________________________________________________________
+        Parameters:
+            - val_loader (DataLoader)  : DataLoader containing validation batches
+            - criterion  (nn.Module)   : Loss function
+        ____________________________________________________________________________________________________________________
+        Returns:
+            - avg_loss (float) : Average validation loss for the epoch
+        ____________________________________________________________________________________________________________________
+        """
+        trainer = self._get_or_create_trainer()
+        return trainer.validate_one_epoch(val_loader, criterion)
     
     # Get model information (public method) -------------------------------------------------------------------------------#
     def get_model_info(self) -> Dict[str, Any]:

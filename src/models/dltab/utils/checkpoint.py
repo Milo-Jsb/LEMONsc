@@ -38,6 +38,7 @@ class CheckpointManager:
     
     def save(self, path: str, model: torch.nn.Module, model_type: str, model_params: dict,
              optimizer_name: str, optimizer_params: dict, is_fitted: bool,
+             in_features: int = 5,
              feature_names: Optional[list] = None, history: Optional[dict] = None,
              optimizer: Optional[torch.optim.Optimizer] = None,
              scheduler: Optional[Any] = None, scheduler_name: Optional[str] = None,
@@ -54,6 +55,7 @@ class CheckpointManager:
         -> optimizer_name   (str)       : Name of optimizer used
         -> optimizer_params (dict)      : Optimizer hyperparameters
         -> is_fitted        (bool)      : Whether model is fitted
+        -> in_features      (int)       : Number of input features for the model
         -> feature_names    (list)      : Optional. Feature names used
         -> history          (dict)      : Optional. Training history
         -> optimizer        (Optimizer) : Optional. Optimizer instance
@@ -82,6 +84,7 @@ class CheckpointManager:
                                                 optimizer_name   = optimizer_name,
                                                 optimizer_params = optimizer_params,
                                                 is_fitted        = is_fitted,
+                                                in_features      = in_features,
                                                 feature_names    = feature_names,
                                                 history          = history,
                                                 optimizer        = optimizer,
@@ -136,7 +139,7 @@ class CheckpointManager:
     
     def _prepare_save_data(self, model: torch.nn.Module, model_type: str, model_params: dict,
                           optimizer_name: str, optimizer_params: dict, is_fitted: bool,
-                          feature_names: Optional[list], history: Optional[dict],
+                          in_features: int, feature_names: Optional[list], history: Optional[dict],
                           optimizer: Optional[torch.optim.Optimizer],
                           scheduler: Optional[Any], scheduler_name: Optional[str],
                           scheduler_params: Optional[dict]) -> Dict[str, Any]:
@@ -160,6 +163,7 @@ class CheckpointManager:
             "optimizer_name"   : optimizer_name,
             "optimizer_params" : optimizer_params.copy(),
             "is_fitted"        : is_fitted,
+            "in_features"      : in_features,
             "feature_names"    : feature_names,
             "device"           : 'cpu',  # Always save as CPU for portability
             "history"          : history.copy() if history else {},

@@ -15,8 +15,9 @@ OPTIMIZER_REGISTRY = {
 
 # Scheduler Registry ------------------------------------------------------------------------------------------------------#
 SCHEDULER_REGISTRY = {
-    'step'   : torch.optim.lr_scheduler.StepLR,
-    'cosine' : torch.optim.lr_scheduler.CosineAnnealingLR,
+    'step'              : torch.optim.lr_scheduler.StepLR,
+    'cosine'            : torch.optim.lr_scheduler.CosineAnnealingLR,
+    'reduce_on_plateau' : torch.optim.lr_scheduler.ReduceLROnPlateau,
     }
 
 # Optimizer Selection -----------------------------------------------------------------------------------------------------#
@@ -51,6 +52,7 @@ def select_optimizer(name: str,model: Module, optimizer_params: Optional[Dict[st
     
     
     # Create optimizer ----------------------------------------------------------------------------------------------------#
+    optimizer_params = optimizer_params or {}
     try:
         optimizer = OPTIMIZER_REGISTRY[optimizer_lower](model.parameters(), **optimizer_params)
     
@@ -88,6 +90,7 @@ def create_scheduler(optimizer: Optimizer, scheduler_name: str, scheduler_params
         raise ValueError(f"Scheduler '{scheduler_name}' is not supported. Choose from {list(SCHEDULER_REGISTRY.keys())}.")
 
     # Create scheduler ----------------------------------------------------------------------------------------------------#
+    scheduler_params = scheduler_params or {}
     try:
         scheduler = SCHEDULER_REGISTRY[scheduler_name](optimizer, **scheduler_params)
     except TypeError as e:

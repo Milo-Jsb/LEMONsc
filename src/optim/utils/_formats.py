@@ -52,6 +52,7 @@ class SpaceSearchConfig:
     huber_delta     : float                    = 1.0               
     max_epochs      : Optional[int]            = 100               
     dl_patience     : Optional[int]            = 10                
+    dl_loss_fn      : str                      = 'huber'           
     dl_architecture : Optional[Dict[str, Any]] = None              
     
     def __post_init__(self):

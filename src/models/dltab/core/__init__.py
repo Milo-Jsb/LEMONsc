@@ -4,6 +4,3 @@ from .predictor import Predictor
 from .evaluator import Evaluator
 
 __all__ = ["Trainer", "Predictor", "Evaluator"]
-from .trainer import Trainer
-
-__all__ = ['Trainer']
