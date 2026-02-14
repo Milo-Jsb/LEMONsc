@@ -62,7 +62,7 @@ def plot_partial_correlation_bars(df: pd.DataFrame, features: list, target: str,
     -> ifshow         (bool)         : Whether to show the plot. Default is False.
     _______________________________________________________________________________________________________________________
     Returns:
-        None. The function saves the plot as a .jpg file and optionally displays it.
+        None. The function saves the plot as a .png file and optionally displays it.
     _______________________________________________________________________________________________________________________
     Notes:
         - Computes partial correlation by regressing out other features from both Xi and y.
@@ -237,7 +237,7 @@ def plot_partial_correlation_bars(df: pd.DataFrame, features: list, target: str,
     fig.tight_layout()
     
     # Save and show plot --------------------------------------------------------------------------------------------------#
-    file_path = os.path.join(path_save, f"partial_corr_{name_file}.jpg")
+    file_path = os.path.join(path_save, f"partial_corr_{name_file}.png")
     
     if ifsave:
         try:
@@ -267,7 +267,7 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
         model_name  (str)        : Name of the model for annotation. Mandatory.
     _______________________________________________________________________________________________________________________
     Returns:
-        None. The function saves the plot as a .jpg file and displays it.
+        None. The function saves the plot as a .png file and displays it.
     _______________________________________________________________________________________________________________________
     Notes:
         - Calculates R²-Score between predictions and true values.
@@ -344,10 +344,10 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
         ax.set_yscale(scale)
 
     # Save and show plot -------------------------------------------------------------------------------------------------#
-    file_path = os.path.join(path_save, f"corr_plot_{name_file}.jpg")
+    file_path = os.path.join(path_save, f"corr_plot_{name_file}.png")
     try:
         os.makedirs(path_save, exist_ok=True)  
-        plt.savefig(file_path, bbox_inches="tight", dpi=900)
+        plt.savefig(file_path, bbox_inches="tight", dpi=600)
     except Exception as e:
         raise OSError(f"Could not save plot to {file_path}: {e}")
     
@@ -371,7 +371,7 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
         model_name  (str)        : Name of the model for annotation. Mandatory.
     ________________________________________________________________________________________________________________________
     Returns:
-        None. The function saves the plot as a .jpg file and displays it.
+        None. The function saves the plot as a .png file and displays it.
     ________________________________________________________________________________________________________________________
     Notes:
         - Calculates residuals as (true - predicted) values
@@ -447,10 +447,10 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
         ax.set_xscale(scale)
 
     # Save and show plot -------------------------------------------------------------------------------------------------#
-    file_path = os.path.join(path_save, f"resid_plot_{name_file}.jpg")
+    file_path = os.path.join(path_save, f"resid_plot_{name_file}.png")
     try:
         os.makedirs(path_save, exist_ok=True)  
-        plt.savefig(file_path, bbox_inches="tight", dpi=900)
+        plt.savefig(file_path, bbox_inches="tight", dpi=600)
     except Exception as e:
         raise OSError(f"Could not save plot to {file_path}: {e}")
     
@@ -484,7 +484,7 @@ def boxplot_features_with_points(features: np.ndarray, feature_names: list, path
         ncols         (int)        : Number of columns in the subplot grid. Default is 4.
     _______________________________________________________________________________________________________________________
     Returns:
-        None. The function saves the plot as a .jpg file and displays it.
+        None. The function saves the plot as a .png file and displays it.
     _______________________________________________________________________________________________________________________
     Notes:
         - Creates boxplots for each feature showing distribution statistics.
@@ -596,7 +596,7 @@ def boxplot_features_with_points(features: np.ndarray, feature_names: list, path
 
     fig.tight_layout(rect=[0, 0, 1, 0.95])
 
-    file_path = os.path.join(path_save, f"boxplot_analysis_{name_file}.jpg")
+    file_path = os.path.join(path_save, f"boxplot_analysis_{name_file}.png")
     
     if ifsave:
         try:
@@ -638,7 +638,7 @@ def violinplot_features(features: np.ndarray, feature_names: list, path_save: st
         ifshow        (bool)       : Whether to show the plot. Default is False.
     _______________________________________________________________________________________________________________________
     Returns:
-        None. The function saves the plot as a .jpg file and optionally displays it.
+        None. The function saves the plot as a .png file and optionally displays it.
     _______________________________________________________________________________________________________________________
     Notes:
         - Creates violin plots for each feature showing distribution shape.
@@ -754,7 +754,7 @@ def violinplot_features(features: np.ndarray, feature_names: list, path_save: st
 
     fig.tight_layout(rect=[0, 0, 1, 0.95])
 
-    file_path = os.path.join(path_save, f"violinplot_analysis_{name_file}.jpg")
+    file_path = os.path.join(path_save, f"violinplot_analysis_{name_file}.png")
     
     if ifsave:
         try:
@@ -787,7 +787,7 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
         labels        (list)         : Custom labels for axis ticks. If None, uses column names. Optional.
     _______________________________________________________________________________________________________________________
     Returns:
-        None. The function optionally saves the plot as a .jpg file and displays it.
+        None. The function optionally saves the plot as a .png file and displays it.
     _______________________________________________________________________________________________________________________
     Notes:
         - Computes correlation matrix using the specified method.
@@ -919,7 +919,7 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
     
     # Save and show plot -------------------------------------------------------------------------------------------------#
     if path_save is not None and name_file is not None:
-        file_path = os.path.join(path_save, f"correlogram_{method}_{name_file}.jpg")
+        file_path = os.path.join(path_save, f"correlogram_{method}_{name_file}.png")
         try:
             os.makedirs(path_save, exist_ok=True)
             plt.savefig(file_path, bbox_inches="tight", dpi=600)
@@ -1015,7 +1015,7 @@ def plot_simulation_example(df: pd.DataFrame, y_var: str = "massNew[Msun](10)",
 
     try:
         plt.tight_layout()
-        plt.savefig(f"{save_path}evol_sim_example.jpg", dpi=600)
+        plt.savefig(f"{save_path}evol_sim_example.png", dpi=600)
         if show: plt.show()
         plt.close(fig)
 
@@ -1149,7 +1149,7 @@ def dataset_2Dhist_comparison(x_base: np.ndarray, y_base: np.ndarray, x_aug : np
     # Save and display ----------------------------------------------------------------------------------------------------#
     if savepath:
         try:
-            plt.savefig(f"{savepath}2dhist_comparison_{name}.jpg", dpi=600, bbox_inches="tight")
+            plt.savefig(f"{savepath}2dhist_comparison_{name}.png", dpi=600, bbox_inches="tight")
         except Exception as e:
             raise OSError(f"Error saving plot to {savepath}: {e}")
     
@@ -1246,7 +1246,7 @@ def dataset_2Dhist(x_values: np.ndarray, y_values: np.ndarray, name : Optional[s
     # Save and display ----------------------------------------------------------------------------------------------------#
     if savepath:
         try:
-            plt.savefig(f"{savepath}2dhist_{name}.jpg", dpi=600, bbox_inches="tight")
+            plt.savefig(f"{savepath}2dhist_{name}.png", dpi=600, bbox_inches="tight")
         except Exception as e:
             raise OSError(f"Error saving plot to {savepath}: {e}")
     
@@ -1327,7 +1327,7 @@ def plot_feature_distributions(feats_raw: pd.DataFrame, feats_processed: pd.Data
         ax.legend()
 
         # Save figure
-        save_path = os.path.join(path, f"feature{idx}.jpg")
+        save_path = os.path.join(path, f"feature{idx}.png")
         fig.tight_layout()
         fig.savefig(save_path, dpi=600, bbox_inches="tight")
         plt.close(fig)
@@ -1549,11 +1549,144 @@ def plot_efficiency_mass_ratio_dataset(
 
     # Save / Show ---------------------------------------------------------------------------------------------------------#
     if savepath:
-        namefile = f"efficiency_vs_mass_ratio_{cmap_name}.jpg" if cmap_name else "efficiency_vs_mass_ratio.jpg"
-        plt.savefig(savepath + namefile, dpi=700, bbox_inches="tight")
+        namefile = f"efficiency_vs_mass_ratio_{cmap_name}.png" if cmap_name else "efficiency_vs_mass_ratio.png"
+        plt.savefig(savepath + namefile, dpi=600, bbox_inches="tight")
 
     if show: plt.show()
 
+    plt.close(fig)
+
+# Feature Importance Plot with error bars ---------------------------------------------------------------------------------#
+def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: str, name_file: str, model_name: str,
+                            features_names  : Optional[List[str]] = None,
+                            bar_color       : str   = 'steelblue',
+                            bar_edgecolor   : str   = 'black',
+                            bar_width       : float = 0.6,
+                            figsize         : tuple = (12, 6),
+                            rotation        : int   = 45,
+                            top_n           : Optional[int] = None,
+                            ifsave          : bool  = True,
+                            ifshow          : bool  = False):
+    """
+    _______________________________________________________________________________________________________________________
+    Plot feature importance with error bars across cross-validation folds.
+    _______________________________________________________________________________________________________________________
+    Parameters:
+    -> importances_dict (dict)  : Dictionary mapping feature names to arrays of importance values across folds. Mandatory.
+    -> path_save        (str)   : Directory path to save the plot. Mandatory.
+    -> name_file        (str)   : Name for the saved plot file (without extension). Mandatory.
+    -> model_name       (str)   : Name of the model for the plot title. Mandatory.
+    -> features_names   (list)  : Optional list of feature display names. Default is None.
+    -> bar_color        (str)   : Color for the bars. Default is 'steelblue'.
+    -> bar_edgecolor    (str)   : Edge color for the bars. Default is 'black'.
+    -> bar_width        (float) : Width of the bars. Default is 0.6.
+    -> figsize          (tuple) : Figure size (width, height). Default is (12, 6).
+    -> rotation         (int)   : Rotation angle for x-axis labels. Default is 45.
+    -> top_n            (int)   : Optional. Show only top N most important features. Default is None (show all).
+    -> ifsave           (bool)  : Whether to save the plot. Default is True.
+    -> ifshow           (bool)  : Whether to show the plot. Default is False.
+    _______________________________________________________________________________________________________________________
+    Returns:
+        None. The function saves the plot as a .png file and optionally displays it.
+    _______________________________________________________________________________________________________________________
+    Notes:
+        - Computes mean and standard deviation of feature importances across folds.
+        - Error bars represent standard deviation across cross-validation folds.
+        - Features are sorted by mean importance (descending).
+        - If top_n is specified, only the top N features are displayed.
+    _______________________________________________________________________________________________________________________
+    Raises:
+        ValueError, TypeError, OSError
+    _______________________________________________________________________________________________________________________
+    """
+    # Input validation ----------------------------------------------------------------------------------------------------#
+    if not isinstance(importances_dict, dict):
+        raise TypeError("importances_dict must be a dictionary.")
+    
+    if len(importances_dict) == 0:
+        raise ValueError("importances_dict cannot be empty.")
+    
+    if not all(isinstance(arg, str) for arg in [path_save, name_file, model_name]):
+        raise TypeError("path_save, name_file, and model_name must be strings.")
+    
+    # Compute mean and std for each feature ------------------------------------------------------------------------------#
+    feature_names    = list(importances_dict.keys())
+    mean_importances = np.array([np.mean(importances_dict[feat]) for feat in feature_names])
+    std_importances  = np.array([np.std(importances_dict[feat]) for feat in feature_names])
+    
+    # Sort by mean importance (descending)
+    sorted_indices   = np.argsort(mean_importances)[::-1]
+    feature_names    = [feature_names[i] for i in sorted_indices]
+    mean_importances = mean_importances[sorted_indices]
+    std_importances  = std_importances[sorted_indices]
+    
+    # Apply top_n filter if specified
+    if top_n is not None and top_n > 0:
+        feature_names    = feature_names[:top_n]
+        mean_importances = mean_importances[:top_n]
+        std_importances  = std_importances[:top_n]
+    
+    # Use custom feature names if provided
+    if features_names is not None:
+        display_names = []
+        for fname in feature_names:
+            # Find matching custom name or use original
+            try:
+                idx = feature_names.index(fname)
+                if idx < len(features_names):
+                    display_names.append(features_names[idx])
+                else:
+                    display_names.append(fname)
+            except:
+                display_names.append(fname)
+        feature_names = display_names
+    
+    # Create Plot ---------------------------------------------------------------------------------------------------------#
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    x_pos = np.arange(len(feature_names))
+    
+    # Create bars with error bars
+    bars = ax.bar(x_pos, mean_importances, yerr=std_importances, width=bar_width, color=bar_color, edgecolor=bar_edgecolor,
+                  capsize   = 5, 
+                  linewidth = 1.2, 
+                  alpha     = 0.85, 
+                  error_kw  = {'linewidth': 1.8})
+    
+    # Customize axes
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(feature_names, rotation=rotation, ha='right', fontsize=11)
+    
+    ax.set_ylabel("Feature Importance", fontsize=13, fontweight='bold')
+    ax.set_xlabel("Features", fontsize=13, fontweight='bold')
+    ax.set_title(f"{model_name} - Feature Importance (Mean ± Std across folds)", 
+                 fontsize=14, fontweight='bold', pad=15)
+    ax.tick_params(axis='y', labelsize=11)
+    ax.tick_params(axis='x', labelsize=10)
+    
+    # Add grid for better readability
+    ax.set_axisbelow(True)
+    
+    # Add value labels on top of bars (only if not too many features)
+    if len(feature_names) <= 20:
+        for i, (val, err) in enumerate(zip(mean_importances, std_importances)):
+            y_pos = val + err + 0.01 * np.max(mean_importances)
+            ax.text(i, y_pos, f'{val:.3f}', ha='center', va='bottom', fontsize=8, fontweight='bold', rotation=0)
+    
+    fig.tight_layout()
+    
+    # Save and show plot --------------------------------------------------------------------------------------------------#
+    file_path = os.path.join(path_save, f"feature_importance_{name_file}.png")
+    
+    if ifsave:
+        try:
+            os.makedirs(path_save, exist_ok=True)
+            plt.savefig(file_path, bbox_inches="tight", dpi=600)
+        except Exception as e:
+            raise OSError(f"Could not save plot to {file_path}: {e}")
+    
+    if ifshow: plt.show()
+    
     plt.close(fig)
     
 #--------------------------------------------------------------------------------------------------------------------------#

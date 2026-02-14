@@ -1,11 +1,10 @@
 # Default hyperparameters for cuML Support Vector Regressor (SVR) model
 kernel: "rbf"
 degree: 3
-gamma: "scale"
+gamma: 1.0
 coef0: 0.0
 tol: 0.001
 C: 1.0
 epsilon: 0.1
-shrinking: true
 cache_size: 200
 max_iter: -1

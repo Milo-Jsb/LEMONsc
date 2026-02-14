@@ -20,13 +20,14 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 # Directory
 from src.utils.directory import PathManagerTrainOptPipeline, load_yaml_dict
 
-from src.processing.features      import tabular_features
+# Computation of features
+from src.processing.features import tabular_features
 
-# Optimization
-from src.optim.optimizer          import SpaceSearchConfig, SpaceSearch
+# Optimization of hyperparameters
+from src.optim.optimizer import SpaceSearchConfig, SpaceSearch
 
 # Vizualization
-from src.utils.visualize          import correlation_plot, residual_plot
+from src.processing.modules.plots import PlotGenerator
 
 # Model Wrapper
 from src.models.mltrees.regressor import MLTreeRegressor
@@ -108,12 +109,13 @@ def get_args():
 
     return parser.parse_args()
     
-# Pipeline Modes -----------------------------------------------------------------------------------------------------------#
-def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: list,  out_path: str, n_folds: int = 3):
-    """Run the the optimization mode pipeline."""
+# Pipeline Modes [Hyperparameter Optimization] ----------------------------------------------------------------------------#
+def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: list, out_path: str, 
+                     model_type: str, n_folds: int = 3):
+    """Run the optimization mode pipeline."""
     
     logger.info(110*"_")
-    logger.info(f"Space search of the params for the mltree {args.model} regressor using {n_folds}-fold cross-validation")
+    logger.info(f"Space search of the params for the mltree {model_type} regressor using {n_folds}-fold cross-validation")
     logger.info(110*"_")
 
     # Load and prepare data partitions
@@ -178,7 +180,7 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
 
     # Initialize optimizer
     logger.info("Initializing optimizer...")
-    config = SpaceSearchConfig(model_type = args.model, n_jobs = CONFIG.n_jobs, n_trials = CONFIG.n_trials, 
+    config = SpaceSearchConfig(model_type = model_type, n_jobs = CONFIG.n_jobs, n_trials = CONFIG.n_trials, 
                                device = CONFIG.device, 
                                seed   = CONFIG.seed)
     optimizer = SpaceSearch(config)
@@ -189,7 +191,7 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     study_path = Path(out_path) / "optim"
     
     logger.info(f"Starting optimization: {study_name}")
-    logger.info(f"  - Model            : {args.model}")
+    logger.info(f"  - Model            : {model_type}")
     logger.info(f"  - Device           : {CONFIG.device}")
     logger.info(f"  - Trials           : {CONFIG.n_trials}")
     logger.info(f"  - Direction        : {CONFIG.direction}")
@@ -220,7 +222,7 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         summary_path = study_path / study_name / "optimization_summary.yaml"
         summary_data = {
             'study_name'  : study_name,
-            'model_type'  : args.model,
+            'model_type'  : model_type,
             'n_folds'     : n_folds,
             'n_trials'    : results.n_trials,
             'best_score'  : float(results.best_score),
@@ -252,12 +254,17 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         
     return results
 
-def run_training(feats_path: str, contfeats: list, catfeats: list, target: list, out_path: str, n_folds: int = 3):
-    """Run the the training mode pipeline."""
+# Pipeline Modes [Training and Evaluation] --------------------------------------------------------------------------------#
+def run_training(feats_path: str, contfeats: list, catfeats: list, target: list, out_path: str,
+                 model_type: str, fig_path: str, n_folds: int = 3):
+    """Run the training mode pipeline."""
+    
+    # Create the plot generator
+    plot_generator = PlotGenerator(config=None, cmap="magma_r")
     
     try:
         # Find latest optimization study
-        optimization_path = Path(out_path)  / "optim"
+        optimization_path = Path(out_path) / "optim"
         study_dirs        = [d for d in optimization_path.glob("cv_study_*fold_*") if d.is_dir()]
         
         if study_dirs:
@@ -267,18 +274,18 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
             logger.info(f"Using optimized parameters from: {latest_study.name}")
         else:
             # Load default parameters
-            default_params_path = Path(f"./src/models/mltrees/model_params/{args.model}.yaml")
+            default_params_path = Path(f"./src/models/mltrees/model_params/{model_type}.yaml")
             model_params        = load_yaml_dict(default_params_path)
             logger.info("Using default model parameters")
             
     except Exception as e:
         logger.warning(f"Error loading parameters: {e}")
         logger.warning("Falling back to default parameters")
-        default_params_path = f"./src/models/mltrees/model_params/{args.model}.yaml"
+        default_params_path = f"./src/models/mltrees/model_params/{model_type}.yaml"
         model_params        = load_yaml_dict(default_params_path)
     
     logger.info(110*"_")
-    logger.info(f"MLTree {args.model} regressor traning and evaluation using {n_folds}-fold cross-validation")
+    logger.info(f"MLTree {model_type} regressor training and evaluation using {n_folds}-fold cross-validation")
     logger.info(110*"_")
 
     # Load and prepare data partitions
@@ -292,23 +299,28 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     # Get test features and target
     feature_names = contfeats + catfeats + target
     
-    feats_test, feats_names = tabular_features(test_df, names=feature_names, return_names=True)
+    feats_test = tabular_features(test_df, names=feature_names, return_names=False)
 
-    # Identify continuous and categorical and target columns   
+    # Identify continuous, categorical, and target columns   
     cont_columns   = [col for col in feats_test.columns if col in contfeats]
     cat_columns    = [col for col in feats_test.columns if any(col.startswith(cf+"_") for cf in catfeats)]
     target_columns = [col for col in feats_test.columns if col in target]
+    feature_cols   = cont_columns + cat_columns
 
     # Extract numpy arrays
-    X_test      = feats_test[cont_columns+cat_columns].astype(np.float32).to_numpy()
-    y_test      = feats_test[target_columns].astype(np.float32).to_numpy().flatten()  
+    X_test      = feats_test[feature_cols].astype(np.float32).to_numpy()
+    y_test      = feats_test[target_columns].astype(np.float32).to_numpy().flatten()
 
-    scaler_test =test_df["M_tot"].astype(np.float32).to_numpy().flatten() if "M_tot" in test_df.columns else None
+    scaler_test = test_df["M_tot"].astype(np.float32).to_numpy().flatten() if "M_tot" in test_df.columns else None
+    
+    # Scale test target once (same for all folds)
+    y_test_scaled = y_test * scaler_test if scaler_test is not None else y_test
     
     # Initialize lists to store results
-    results        = []
-    predictions    = []
-    trained_models = []
+    results             = []
+    predictions         = []
+    trained_models      = []
+    feature_importances = []
 
     for fold in range(n_folds):
         logger.info(f"Processing fold {fold + 1}/{n_folds}")
@@ -320,21 +332,30 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         train_df = pd.read_csv(train_path, index_col=False)
 
         # Extract features and target for train
-        feats_train, _ = tabular_features(train_df, names=feature_names, return_names=True)
+        feats_train = tabular_features(train_df, names=feature_names, return_names=False)
 
-        X_train = feats_train[cont_columns+cat_columns].astype(np.float32).to_numpy()
-        y_train = feats_train[target].astype(np.float32).to_numpy().flatten()
+        X_train = feats_train[feature_cols].astype(np.float32).to_numpy()
+        y_train = feats_train[target_columns].astype(np.float32).to_numpy().flatten()
 
         # Initialize and train model
-        model = MLTreeRegressor(model_type   = args.model,
+        model = MLTreeRegressor(model_type   = model_type,
                                 model_params = model_params,
                                 device       = CONFIG.device,
-                                feat_names   = cont_columns+cat_columns,
+                                feat_names   = feature_cols,
                                 n_jobs       = CONFIG.n_jobs)
 
         logger.info(f"Training model on {len(X_train)} samples...")
         model.fit(X_train, y_train)
         trained_models.append(model)
+        
+        # Extract feature importance
+        try:
+            feat_importance = model.get_feature_importance()
+            feature_importances.append(feat_importance)
+            logger.info(f"Feature importance extracted for fold {fold + 1}")
+        except Exception as e:
+            logger.warning(f"Could not extract feature importance for fold {fold + 1}: {e}")
+            feature_importances.append(None)
 
         # Generate predictions
         y_pred = model.predict(X_test)
@@ -342,10 +363,8 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         # Scale predictions if necessary
         if scaler_test is not None:
             y_pred_scaled = np.clip(y_pred * scaler_test, 0, None)
-            y_test_scaled = y_test * scaler_test
         else:
             y_pred_scaled = np.clip(y_pred, 0, None)
-            y_test_scaled = y_test
         
         # Calculate metrics
         fold_metrics = {
@@ -395,7 +414,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     summary = {
         'timestamp'   : timestamp,
         'n_folds'     : n_folds,
-        'model_type'  : args.model,
+        'model_type'  : model_type,
         'model_params': model_params,
         'features': {
             'continuous' : cont_columns,
@@ -419,6 +438,44 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     # Save trained models
     for fold, model in enumerate(trained_models):
         model.save_model(str(results_path / f"model_fold_{fold}.joblib"))
+    
+    # Process and save feature importances
+    if any(fi is not None for fi in feature_importances):
+        # Filter out None values
+        valid_importances = [fi for fi in feature_importances if fi is not None]
+        
+        if valid_importances:
+            # Organize importances by feature (collect values across folds)
+            all_features = list(valid_importances[0].keys())
+            importances_by_feature = {feat: [] for feat in all_features}
+            
+            for fold_importance in valid_importances:
+                for feat, val in fold_importance.items():
+                    importances_by_feature[feat].append(val)
+            
+            # Convert to numpy arrays
+            importances_by_feature = {k: np.array(v) for k, v in importances_by_feature.items()}
+            
+            # Calculate mean and std for each feature
+            importance_stats = {
+                feat: {
+                    'mean': float(np.mean(values)),
+                    'std': float(np.std(values)),
+                    'values': values.tolist()
+                }
+                for feat, values in importances_by_feature.items()
+            }
+            
+            # Save feature importance summary
+            with open(results_path / "feature_importance.yaml", 'w') as f:
+                yaml.dump(importance_stats, f, default_flow_style=False)
+            
+            logger.info("Feature importances saved successfully")
+            logger.info(f"Top 5 most important features:")
+            sorted_features = sorted(importance_stats.items(), 
+                                   key=lambda x: x[1]['mean'], reverse=True)[:5]
+            for feat, stats in sorted_features:
+                logger.info(f"  - {feat}: {stats['mean']:.4f} ± {stats['std']:.4f}")
 
     logger.info("Training completed successfully!")
     logger.info("Aggregate metrics:")
@@ -426,32 +483,25 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         logger.info(f"  - {metric}: {value:.6f}")
     logger.info(f"Results saved to: {results_path}")
 
-    # Create visualization directory
-    viz_path = results_path / "figures"
+    # Create visualization directory using the configured figure path
+    viz_path = Path(fig_path)
     viz_path.mkdir(parents=True, exist_ok=True)
 
-    # Generate correlation plot
+    # Generate correlation plot and residual plot for mean predictions across folds
     model_title    = {"xgboost": "XGBoost", "lightgbm": "LightGBM", "rf": "RF"}
     predictions_df = predictions_df.sample(frac=0.3, random_state=CONFIG.seed).reset_index(drop=True)  
     
-    correlation_plot(predictions = predictions_df[["y_pred_fold_0", "y_pred_fold_1", "y_pred_fold_2"]].mean(axis=1),
-                     true_values = predictions_df["y_true"],
-                     path_save   = str(viz_path),
-                     name_file   = f"{args.model}_mean_preds",
-                     model_name  = f"{model_title[args.model]}",
-                     cmap        = "magma_r",
-                     scale       = None,
-                     show        = False)
-
-    # Generate residual plot
-    residual_plot(predictions = predictions_df[["y_pred_fold_0", "y_pred_fold_1", "y_pred_fold_2"]].mean(axis=1),
-                  true_values = predictions_df["y_true"],
-                  path_save   = str(viz_path),
-                  name_file   = f"{args.model}_mean_preds",
-                  model_name  = f"{model_title[args.model]}",
-                  cmap        = "magma_r",
-                  scale       = None,
-                  show        = False)
+    # Take the mean of all folds (dynamically based on n_folds)
+    fold_columns = [f"y_pred_fold_{fold}" for fold in range(n_folds)]
+    df_results   = predictions_df[fold_columns].mean(axis=1)
+    
+    # Generate plots using the plot generator
+    plot_generator.create_ml_results_plots(predictions_df_mean = df_results,
+                                           true_values_df      = predictions_df["y_true"],
+                                           feature_importances = feature_importances,
+                                           out_path            = viz_path,
+                                           model_name          = model_type,
+                                           model_title         = model_title)
                   
     return trained_models, summary
     
@@ -471,20 +521,23 @@ def run_pipeline(args):
     
     # Run appropriate mode
     if args.mode == "optim":
-        run_optimization(feats_path = path_manager.data_path,
-                         contfeats  = TabFeats["cont_feats"],
-                         catfeats   = TabFeats["cat_feats"], 
-                         target     = TabFeats["target_feat"],
-                         out_path   = path_manager.base_out,
-                         n_folds    = CONFIG.n_folds)
+        run_optimization(feats_path  = path_manager.data_path,
+                         contfeats   = TabFeats["cont_feats"],
+                         catfeats    = TabFeats["cat_feats"], 
+                         target      = TabFeats["target_feat"],
+                         out_path    = path_manager.base_out,
+                         model_type  = args.model,
+                         n_folds     = CONFIG.n_folds)
     
     elif args.mode == "train":
-        run_training(feats_path = path_manager.data_path,
-                     contfeats  = TabFeats["cont_feats"],
-                     catfeats   = TabFeats["cat_feats"],
-                     target     = TabFeats["target_feat"],
-                     out_path   = path_manager.base_out,  
-                     n_folds    = CONFIG.n_folds)
+        run_training(feats_path  = path_manager.data_path,
+                     contfeats   = TabFeats["cont_feats"],
+                     catfeats    = TabFeats["cat_feats"],
+                     target      = TabFeats["target_feat"],
+                     out_path    = path_manager.base_out,
+                     model_type  = args.model,
+                     fig_path    = path_manager.fig_path,
+                     n_folds     = CONFIG.n_folds)
     
     elif args.mode == "predict":
         run_prediction()

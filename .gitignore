@@ -1,5 +1,6 @@
 datasets/
 figures/
+jobs/__pycache__/
 logs/
 notebooks/.ipynb_checkpoints/
 output/

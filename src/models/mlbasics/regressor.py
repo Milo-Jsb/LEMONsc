@@ -140,10 +140,7 @@ class MLBasicRegressor:
             # Remove unsupported parameters
             clean_params = default_params.copy()
             clean_params.pop("device", None)
-            
-            # Set n_jobs if provided (ElasticNet supports n_jobs for coordinate descent)
-            if self.n_jobs is not None:
-                clean_params["n_jobs"] = self.n_jobs
+            clean_params.pop("n_jobs", None)
             
             return ElasticNet(**clean_params)
         
@@ -154,10 +151,11 @@ class MLBasicRegressor:
             default_params = load_yaml_dict(path=str(default_model_params_path / "svr.yaml"))
             default_params.update(params)
             
-            # Remove unsupported parameters
+            # Remove unsupported parameters for cuML SVR
             clean_params = default_params.copy()
             clean_params.pop("device", None)
-            clean_params.pop("n_jobs", None)  
+            clean_params.pop("n_jobs", None)
+            clean_params.pop("shrinking", None)
 
             if self.verbose:
                 print("Using cuML SVR for GPU acceleration")

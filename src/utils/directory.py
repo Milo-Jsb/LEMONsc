@@ -6,6 +6,11 @@ import json
 import numpy  as np
 import pandas as pd
 
+# External funtions and utilities -----------------------------------------------------------------------------------------#
+from typing         import List, Dict, Optional
+from pathlib        import Path
+from loguru._logger import Logger
+
 # Path Management for dataset preparation ---------------------------------------------------------------------------------#
 class PathManagerDatasetPipeline:
     """Centralized path management for the pipeline of feature building in the experiment."""
@@ -87,8 +92,11 @@ def load_yaml_dict(path: str, verbose: bool = False):
     ________________________________________________________________________________________________________________________
     """
     # Input validation ----------------------------------------------------------------------------------------------------#
+    if isinstance(path, Path):
+        path = str(path)
+    
     if not isinstance(path, str):
-        raise TypeError("path must be a string")
+        raise TypeError("path must be a string or Path object")
     
     if not os.path.exists(path):
         raise FileNotFoundError(f"File not found: {path}")
@@ -115,6 +123,25 @@ def load_yaml_dict(path: str, verbose: bool = False):
         raise
     except Exception as e:
         print(f"Error loading configuration: {e}")
+        raise
+
+# Save a pandas DataFrame as a CSV file -----------------------------------------------------------------------------------#
+def save_dataset_to_csv(data: np.ndarray, columns: List[str], target_data: np.ndarray, target_name: str, filepath: str, 
+                        additional_columns : Optional[Dict]   = None,
+                        logger             : Optional[Logger] = None) -> None:
+    """Save dataset to CSV file efficiently."""
+    try:
+        df = pd.DataFrame(data=data, columns=columns, index=None)
+        df[target_name] = target_data
+        
+        if additional_columns:
+            for col_name, col_data in additional_columns.items():
+                df[col_name] = col_data
+        
+        df.to_csv(filepath, index=False)
+        logger.info(f"Dataset saved to: {filepath}")
+    except Exception as e:
+        logger.error(f"Failed to save dataset to {filepath}: {e}")
         raise
     
 #--------------------------------------------------------------------------------------------------------------------------#

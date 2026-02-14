@@ -1,9 +1,11 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
-import numpy  as np
+from venv import logger
+import numpy             as np
+import pandas            as pd
 import matplotlib.pyplot as plt
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing import List, Optional
+from typing import List, Optional, Union
 
 # Custom plotting functions ------------------------------------------------------------------------------------------------#
 
@@ -19,6 +21,9 @@ from src.utils.visualize import plot_partial_correlation_bars, classic_correlogr
 
 # Physical interpretation functions
 from src.utils.visualize import plot_simulation_example, plot_efficiency_mass_ratio_dataset
+
+# ML results functions
+from src.utils.visualize import correlation_plot, residual_plot, feature_importance_plot
 
 # Set matplotlib configuration ---------------------------------------------------------------------------------------------#
 plt.rcParams.update({
@@ -41,7 +46,7 @@ class PlotGenerator:
     def __init__(self, config, cmap:Optional[str] = None):
         
         self.config     = config
-        self.cmap_trunc = truncate_colormap("gist_stern_r" if cmap is None else cmap)
+        self.cmap_trunc = truncate_colormap("magma_r" if cmap is None else cmap)
     
     # Create an example plot of one simulation ----------------------------------------------------------------------------#
     def simulation_example(self, imbh_df: np.ndarray, ifeats: dict, out_figs : str):
@@ -227,4 +232,64 @@ class PlotGenerator:
                                            show                    = True,
                                            savepath                = out_figs)
 
+    # Create ML training results plots ------------------------------------------------------------------------------------#
+    @staticmethod
+    def create_ml_results_plots(predictions_df_mean : Union[np.ndarray, pd.DataFrame], 
+                                true_values_df      : Union[np.ndarray, pd.DataFrame],
+                                feature_importances : Optional[Union[np.ndarray, pd.DataFrame]], 
+                                out_path    : str,
+                                model_name  : str,
+                                model_title : dict,):
+        
+        # Generate correlation plot between predictions and true values (using the mean of the predictions across folds)
+        correlation_plot(predictions = predictions_df_mean,
+                     true_values = true_values_df,
+                     path_save   = str(out_path),
+                     name_file   = f"{model_name}_mean_preds",
+                     model_name  = f"{model_title[model_name]}",
+                     cmap        = "magma_r",
+                     scale       = None,
+                     show        = False)
+
+        # Generate residual plot between predictions and true values (using the mean of the predictions across folds)
+        residual_plot(predictions = predictions_df_mean,
+                    true_values = true_values_df,
+                    path_save   = str(out_path),
+                    name_file   = f"{model_name}_mean_preds",
+                    model_name  = f"{model_title[model_name]}",
+                    cmap        = "magma_r",
+                    scale       = None,
+                    show        = False)
+        
+        # Generate feature importance plot
+        if any(fi is not None for fi in feature_importances):
+            valid_importances = [fi for fi in feature_importances if fi is not None]
+            if valid_importances:
+                # Organize importances by feature (collect values across folds)
+                all_features = list(valid_importances[0].keys())
+                importances_by_feature = {feat: [] for feat in all_features}
+                
+                for fold_importance in valid_importances:
+                    for feat, val in fold_importance.items():
+                        importances_by_feature[feat].append(val)
+                
+                # Convert to numpy arrays
+                importances_by_feature = {k: np.array(v) for k, v in importances_by_feature.items()}
+                
+                try:
+                    feature_importance_plot(importances_dict = importances_by_feature,
+                                            path_save        = str(out_path),
+                                            name_file        = f"{model_name}_mean_preds",
+                                            model_name       = f"{model_title[model_name]}",
+                                            bar_color        = 'steelblue',
+                                            bar_edgecolor    = 'lightblue',
+                                            figsize          = (10, 6),
+                                            top_n            = None,  
+                                            ifsave           = True,
+                                            ifshow           = False)
+                
+                except Exception as e:
+                
+                    raise RuntimeError(f"Error generating feature importance plot: {e}")
+        
 #--------------------------------------------------------------------------------------------------------------------------#

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 # Custom functions --------------------------------------------------------------------------------------------------------#
 
 # Directory
-from src.utils.directory import PathManagerDatasetPipeline
+from src.utils.directory import PathManagerDatasetPipeline, save_dataset_to_csv
 
 # Data processing
 from src.processing.features import tabular_features
@@ -66,7 +66,7 @@ def create_processing_config(dataset: str):
     class ProcessingFeaturesConfig(BaseConfig):
         """Configuration class for the processing of get_features() parameters."""
         dataset_name         : str               = dataset
-        points_per_sim       : Union[int, float] = 0.9 
+        points_per_sim       : Union[int, float] = 0.8 
         n_virtual            : int               = 10 
         train_split          : float             = 0.7
         val_split            : float             = 0.2
@@ -273,7 +273,10 @@ def run_feats_mode(data_path: str, out_path: str, folds: int, augment: bool, dow
         else:
             raise NotImplementedError(f"Feature generation not implemented for dataset: {config.dataset_name}")
         
-        save_dataset_to_csv(xtrain_info[0], xtrain_info[1], ytrain_info[0], ytrain_info[1], f"{fold_path}train.csv")
+        save_dataset_to_csv(data=xtrain_info[0], columns=xtrain_info[1], target_data=ytrain_info[0], 
+                            target_name = ytrain_info[1], 
+                            filepath    = f"{fold_path}train.csv", 
+                            logger      = logger)
         
         logger.info(f"Fold {fold} Train - Stored at {fold_path}")
         
@@ -290,7 +293,10 @@ def run_feats_mode(data_path: str, out_path: str, folds: int, augment: bool, dow
         else:
             raise NotImplementedError(f"Feature generation not implemented for dataset: {config.dataset_name}")
         
-        save_dataset_to_csv(xval_info[0], xval_info[1], yval_info[0], yval_info[1], f"{fold_path}val.csv")
+        save_dataset_to_csv(data=xval_info[0], columns=xval_info[1], target_data=yval_info[0], 
+                            target_name = yval_info[1], 
+                            filepath    = f"{fold_path}val.csv", 
+                            logger      = logger)
         
         logger.info(f"Fold {fold} Val - Stored at {fold_path}")
     
@@ -309,8 +315,11 @@ def run_feats_mode(data_path: str, out_path: str, folds: int, augment: bool, dow
             
     additional_columns = {"or_sim_path": sim_paths, "tag": f"{config.dataset_name}"}
     
-    save_dataset_to_csv(xtest_info[0], xtest_info[1], ytest_info[0], ytest_info[1], f"{out_path}test.csv", 
-                        additional_columns)
+    save_dataset_to_csv(data=xtest_info[0], columns=xtest_info[1], target_data=ytest_info[0], 
+                        target_name        = ytest_info[1], 
+                        filepath           = f"{out_path}test.csv", 
+                        additional_columns = additional_columns,
+                        logger             = logger)
     
     logger.success("Features generation completed")
     logger.info(110*"_")
@@ -530,24 +539,7 @@ def run_pipeline(args):
                       config    = dataconfig)
     else:
         logger.error(f"Unknown mode: {args.mode}. Please choose from 'study', 'feats', 'plot', or 'dist'.")
-
-# [Helper] Dataset Generation ----------------------------------------------------------------------------------------------#
-def save_dataset_to_csv(data: np.ndarray, columns: List[str], target_data: np.ndarray, target_name: str, filepath: str, 
-                        additional_columns: Optional[Dict] = None) -> None:
-    """Save dataset to CSV file efficiently."""
-    try:
-        df = pd.DataFrame(data=data, columns=columns, index=None)
-        df[target_name] = target_data
-        
-        if additional_columns:
-            for col_name, col_data in additional_columns.items():
-                df[col_name] = col_data
-        
-        df.to_csv(filepath, index=False)
-        logger.info(f"Dataset saved to: {filepath}")
-    except Exception as e:
-        logger.error(f"Failed to save dataset to {filepath}: {e}")
-        raise
+        raise ValueError(f"Unknown mode: {args.mode}")
     
 # Run the full Job --------------------------------------------------------------------------------------------------------#
 if __name__ == "__main__":
