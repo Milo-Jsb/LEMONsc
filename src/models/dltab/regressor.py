@@ -19,7 +19,8 @@ from src.utils.directory import load_yaml_dict
 from src.utils.callbacks import check_gpu_available
 
 # DLTabular specific imports: Encoder architecture
-from src.models.dltab.encoders.mlp import MLPRegressor
+from src.models.dltab.encoders.mlp  import MLPRegressor
+from src.models.dltab.encoders.node import NODERegressor
 
 # DLTabular specific imports: Trainer, Predictor, Evaluator, CheckpointManager
 from src.models.dltab.core.trainer     import Trainer
@@ -34,7 +35,7 @@ from src.models.dltab.utils.optimizers import select_optimizer
 from src.models.dltab.utils.handling import _setup_logger
 
 # Constants ---------------------------------------------------------------------------------------------------------------#
-SUPPORTED_MODELS      = ["mlp"]
+SUPPORTED_MODELS      = ["mlp", "node"]
 SUPPORTED_OPTIMIZERS  = ["adam", "sgd"]
 DEFAULT_METRICS       = ["mse", "rmse", "mae", "r2"]
 DEFAULT_VERBOSE_EPOCH = 10
@@ -47,6 +48,7 @@ class DLTabularRegressor:
     ________________________________________________________________________________________________________________________
     Models supported:
     -> MultiLayer Perceptron Network (MLPRegressor) [custom implementation - pytorch]
+    -> Neural Oblivious Decision Ensembles (NODERegressor) [custom implementation - pytorch]
     ________________________________________________________________________________________________________________________
     """
     def __init__(self, model_type : str='mlp', in_features: int = 5, model_params: Optional[dict]=None, 
@@ -65,7 +67,7 @@ class DLTabularRegressor:
         Initialize the DLTabularRegressor with specified model type and parameters.
         ____________________________________________________________________________________________________________________
         Parameters:
-        -> model_type       (str)  : Mandatory. Type of model to use ('mlp').
+        -> model_type       (str)  : Mandatory. Type of model to use ('mlp', 'node').
         -> in_features      (int)  : Mandatory. Number of input features for the model.
         -> model_params     (dict) : Optional. Dictionary containing model-specific hyperparameters.
         -> optimizer_name   (str)  : Mandatory. Name of the optimizer to use ('adam', 'sgd'). Default: 'adam'.
@@ -381,22 +383,23 @@ class DLTabularRegressor:
         Initialize the underlying model with appropriate default parameters.
         ____________________________________________________________________________________________________________________
         """
-        # Get config path relative to this file
-        config_path = Path(__file__).parent / "config" / "arch" / "mlp.yaml"
-        
         params = self.model_params.copy()
-        
+
         # Custom Multilayer Perceptron Regressor --------------------------------------------------------------------------#
         if self.model_type == "mlp":
-            
-            # Retrieve default parameters and update the dictionary
+            config_path    = Path(__file__).parent / "config" / "arch" / "mlp.yaml"
             default_params = load_yaml_dict(path=str(config_path))
             default_params.update(params)
-            
-            # Set input features - first layer
             default_params['in_features'] = self.in_features
-
             self.model = MLPRegressor(**default_params).to(self.device)
+
+        # Neural Oblivious Decision Ensembles Regressor -------------------------------------------------------------------#
+        elif self.model_type == "node":
+            config_path    = Path(__file__).parent / "config" / "arch" / "node.yaml"
+            default_params = load_yaml_dict(path=str(config_path))
+            default_params.update(params)
+            default_params['in_features'] = self.in_features
+            self.model = NODERegressor(**default_params).to(self.device)
     
     # [Helper] Optimizer selection ----------------------------------------------------------------------------------------#
     def _init_optimizer(self) -> None:

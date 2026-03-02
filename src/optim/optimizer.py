@@ -21,7 +21,7 @@ from src.models.mltrees.regressor  import MLTreeRegressor
 from src.models.dltab.regressor    import DLTabularRegressor
 
 # Grid of hyperparams to optimize
-from src.optim.grid import ElasticNetGrid, SVRGrid, RandomForestGrid, LightGBMGrid, XGBoostGrid, MLPGrid
+from src.optim.grid import ElasticNetGrid, SVRGrid, RandomForestGrid, LightGBMGrid, XGBoostGrid, MLPGrid, NODEGrid
 
 # Import helper functions for each type of regressor framework
 from src.optim.utils._ml    import validate_data_ml, normalize_partitions_ml, evaluate_partition_ml
@@ -43,7 +43,7 @@ class SpaceSearch:
     SpaceSearch: A comprehensive hyperparameter optimization class using Optuna for Supervised Regression
     ________________________________________________________________________________________________________________________
     Features:
-    -> Support for multiple model types (ElasticNet, SVR, LightGBM, XGBoost, Random Forest, MultiLayer Perceptron)
+    -> Support for multiple model types (ElasticNet, SVR, LightGBM, XGBoost, Random Forest, MultiLayer Perceptron, NODE)
     -> Customizable search spaces and objective functions
     -> Advanced visualization and analysis tools
     -> Study persistence and loading
@@ -68,7 +68,7 @@ class SpaceSearch:
         self.model_grid_map = {
             "mlbasic": ["elasticnet", "svr"],
             "mltrees": ["rf", "lightgbm", "xgboost"],
-            "dltab"  : ["mlp"]}
+            "dltab"  : ["mlp", "node"]}
         
         # Config already normalizes model_type in __post_init__, so we can use it directly
         self.model_type = config.model_type
@@ -86,7 +86,8 @@ class SpaceSearch:
             "rf"         : RandomForestGrid,
             "lightgbm"   : LightGBMGrid,
             "xgboost"    : XGBoostGrid,
-            "mlp"        : MLPGrid
+            "mlp"        : MLPGrid,
+            "node"       : NODEGrid
                               }
         
         # Custom metrics registry
