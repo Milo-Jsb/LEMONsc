@@ -8,10 +8,16 @@ rawdata/
 scripts/__pycache__/
 scripts/.ipynb_checkpoints/
 src/models/__pycache__/
+src/models/mlbasics/__pycache__/
+src/models/dltab/__pycache__/
+src/models/dltab/core/__pycache__/
+src/models/dltab/encoders/__pycache__/
+src/models/dltab/utils/__pycache__/
 src/models/mltrees/__pycache__/
 src/models/mltrees/.ipynb_checkpoints/
 src/optim/__pycache__/
 src/optim/.ipynb_checkpoints/
+src/optim/utils/__pycache__/
 src/processing/.ipynb_checkpoints/
 src/processing/__pycache__/
 src/utils/__pycache__/
