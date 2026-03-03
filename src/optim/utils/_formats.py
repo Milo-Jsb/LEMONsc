@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from optuna.study    import Study
 
 # Definitions -------------------------------------------------------------------------------------------------------------#
-ModelType  = Literal["elasticnet", "svr", "rf", "lightgbm", "xgboost", "mlp"]
+ModelType  = Literal["elasticnet", "linearsvr", "rf", "lightgbm", "xgboost", "mlp"]
 DeviceType = Literal["cpu", "cuda"]
 
 # Configuration dataclass -------------------------------------------------------------------------------------------------#
@@ -25,32 +25,34 @@ class SpaceSearchConfig:
     Configuration settings for SpaceSearch optimization
     ________________________________________________________________________________________________________________________
     Parameters:
-    - model_type      : Type of model to optimize (e.g., "elasticnet", "svr", "rf", "lightgbm", "xgboost", "mlp")
-    - n_jobs          : Number of parallel jobs for optimization (default: 10)
-    - n_trials        : Number of optimization trials to run (default: 100)
-    - device          : Device to use for computation ("cpu" or "cuda", default: "cuda" if available)
-    - verbose         : Whether to print verbose output during optimization (default: True)
-    - seed            : Random seed for reproducibility (default: 42)
-    - sampler         : Optional custom Optuna sampler (default: None, uses TPESampler)
-    - storage         : Optional storage URL for Optuna study persistence (default: None)
-    - load_if_exists  : Whether to load existing study if it exists (default: False)
-    - huber_delta     : Delta parameter for Huber loss (default: 1.0)
-    - max_epochs      : Maximum epochs for deep learning models (default: 100)
-    - dl_patience     : Patience for early stopping in deep learning models (default: 10)
-    - dl_architecture : Optional dictionary of parameters to create a deep learning model (default: None)
+    -> model_type      : Type of model to optimize (e.g., "elasticnet", "linearsvr", "rf", "lightgbm", "xgboost", "mlp")
+    -> n_jobs          : Number of parallel jobs for optimization (default: 10)
+    -> n_trials        : Number of optimization trials to run (default: 100)
+    -> device          : Device to use for computation ("cpu" or "cuda", default: "cuda" if available)
+    -> verbose         : Whether to print verbose output during optimization (default: True)
+    -> seed            : Random seed for reproducibility (default: 42)
+    -> sampler         : Optional custom Optuna sampler (default: None, uses TPESampler)
+    -> storage         : Optional storage URL for Optuna study persistence (default: None)
+    -> load_if_exists  : Whether to load existing study if it exists (default: False)
+    -> huber_delta     : Delta parameter for Huber loss (default: 1.0)
+    -> max_epochs      : Maximum epochs for deep learning models (default: 100)
+    -> use_scaler      : Whether to use feature scaling for MLBasicRegressor (default: True)
+    -> dl_patience     : Patience for early stopping in deep learning models (default: 10)
+    -> dl_architecture : Optional dictionary of parameters to create a deep learning model (default: None)
     ________________________________________________________________________________________________________________________
     """
     model_type      : ModelType
     n_jobs          : int                      = 10                
     n_trials        : int                      = 100               
     device          : DeviceType               = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
-    verbose         : bool                     = True              
+    verbose         : bool                     = False              
     seed            : int                      = 42                
     sampler         : Optional[BaseSampler]    = None              
     storage         : Optional[str]            = None              
     load_if_exists  : bool                     = False             
     huber_delta     : float                    = 1.0               
-    max_epochs      : Optional[int]            = 100               
+    max_epochs      : Optional[int]            = 100
+    use_scaler      : Optional[bool]           = False               
     dl_patience     : Optional[int]            = 10                
     dl_loss_fn      : str                      = 'huber'           
     dl_architecture : Optional[Dict[str, Any]] = None              

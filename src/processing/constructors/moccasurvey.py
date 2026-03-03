@@ -61,7 +61,7 @@ class MoccaSurveyExperimentConfig:
     """
     feature_names        : List[str]      = field(default_factory=lambda: DEFAULT_FEATURE_NAMES.copy())
     expected_order       : List[str]      = field(default_factory=lambda: DEFAULT_EXPECTED_ORDER.copy())
-    target_name          : str            = "M"                
+    target_name          : str            = "M_MMO"                
     min_points_threshold : int            = 1000                   
     requires_temp_evol   : bool           = False                 
     sample_window        : bool           = True                   
@@ -166,7 +166,7 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
                                     noise            : bool                        = False, 
                                     n_virtual        : int                         = 1
                                     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Function to preprocess one simulation elements from moccasurvey dataset"""
+    """Function to preprocess one simulation elements from moccasurvey dataset."""
 
     # Validate the number of input points and determine sampling size only if augmentation is enabled
     n_points    = len(imbh_df)
@@ -191,7 +191,7 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
     else:
         raise TypeError(f"points_per_sim must be int or float, got {type(points_per_sim)}")
     
-    # Sort input dataframes and calculate the total evolution time 
+    # Sort input dataframes and calculate the total evolution time
     imbh_df   = imbh_df.sort_values(config.time_column_imbh).reset_index(drop=True)
     system_df = system_df.sort_values(config.time_column_system).reset_index(drop=True)
     
@@ -223,15 +223,12 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
 
     # This creates a sampled of points from a given number of elements
     def sample_window() -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
+        
         # If sample_size is None, use all available points
         if sample_size is None or sample_size >= n_points:
-            sidx = np.arange(n_points)
+            sidx           = np.arange(n_points)
             df_sampled     = imbh_df.copy()
             system_sampled = system_df.copy()
-            
-            # Reset physical time to zero
-            df_sampled[config.time_column_imbh]       -= df_sampled[config.time_column_imbh].iloc[0]
-            system_sampled[config.time_column_system] -= system_sampled[config.time_column_system].iloc[0]
             
             return df_sampled, system_sampled, sidx
         

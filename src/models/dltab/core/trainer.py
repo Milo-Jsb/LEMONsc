@@ -145,6 +145,9 @@ class Trainer:
                 # Forward pass with autocast for consistency
                 with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
                     predictions = self.model(batch_X)
+                    # Squeeze predictions to match target shape for regression
+                    if predictions.dim() > 1 and predictions.size(-1) == 1:
+                        predictions = predictions.squeeze(-1)
                     loss = criterion(predictions, batch_y)
                 
                 # Accumulate loss
@@ -284,6 +287,10 @@ class Trainer:
         """Forward pass with optional AMP."""
         with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
             preds = self.model(batch_X)
+            # Squeeze predictions to match target shape for regression
+            # Converts [batch_size, 1] -> [batch_size]
+            if preds.dim() > 1 and preds.size(-1) == 1:
+                preds = preds.squeeze(-1)
             loss  = criterion(preds, batch_y)
         return loss
     

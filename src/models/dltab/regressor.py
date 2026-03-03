@@ -16,7 +16,7 @@ from loguru           import logger
 from src.utils.directory import load_yaml_dict
 
 # Check GPU availability
-from src.utils.callbacks import check_gpu_available
+from src.utils.resources import check_gpu_available
 
 # DLTabular specific imports: Encoder architecture
 from src.models.dltab.encoders.mlp import MLPRegressor
@@ -50,34 +50,34 @@ class DLTabularRegressor:
     ________________________________________________________________________________________________________________________
     """
     def __init__(self, model_type : str='mlp', in_features: int = 5, model_params: Optional[dict]=None, 
-                 optimizer_name   : str            = 'adam',
-                 optimizer_params : Optional[dict] = None,
-                 scheduler_name   : Optional[str]  = None,
-                 scheduler_params : Optional[dict] = None,
-                 feat_names       : Optional[list] = None, 
-                 n_jobs           : Optional[int]  = None, 
-                 device           : Union[str, torch.device] = 'cuda',
-                 use_amp          : bool           = False,
-                 log_file         : Optional[str]  = None,
-                 verbose          : bool           = False):
+                 optimizer_name    : str                      = 'adam',
+                 optimizer_params  : Optional[dict]           = None,
+                 scheduler_name    : Optional[str]            = None,
+                 scheduler_params  : Optional[dict]           = None,
+                 feat_names        : Optional[list]           = None, 
+                 n_jobs            : Optional[int]            = None, 
+                 device            : Union[str, torch.device] = 'cuda',
+                 use_amp           : bool                     = False,
+                 log_file          : Optional[str]            = None,
+                 verbose           : bool                     = True):
         """    
         ____________________________________________________________________________________________________________________
         Initialize the DLTabularRegressor with specified model type and parameters.
         ____________________________________________________________________________________________________________________
         Parameters:
-        -> model_type       (str)  : Mandatory. Type of model to use ('mlp').
-        -> in_features      (int)  : Mandatory. Number of input features for the model.
-        -> model_params     (dict) : Optional. Dictionary containing model-specific hyperparameters.
-        -> optimizer_name   (str)  : Mandatory. Name of the optimizer to use ('adam', 'sgd'). Default: 'adam'.
-        -> optimizer_params (dict) : Optional. Dictionary containing optimizer-specific hyperparameters.
-        -> scheduler_name   (str)  : Optional. Name of the learning rate scheduler to use.
-        -> scheduler_params (dict) : Optional. Dictionary containing scheduler-specific hyperparameters.
-        -> feat_names       (list) : Optional. List of feature names.
-        -> device           (str)  : Optional. 'cpu' or 'cuda' for GPU CUDA driven acceleration. Default: 'cuda'.
-        -> n_jobs           (int)  : Optional. Number of cores to use during computation.
-        -> log_file         (str)  : Optional. Path to log file. If None, only console logging.
-        -> use_amp          (bool) : Optional. Enable Automatic Mixed Precision training. Default: False.
-        -> verbose          (bool) : Optional. Enable verbose logging for debugging purposes.
+        -> model_type        (str)  : Mandatory. Type of model to use ('mlp').
+        -> in_features       (int)  : Mandatory. Number of input features for the model.
+        -> model_params      (dict) : Optional. Dictionary containing model-specific hyperparameters.
+        -> optimizer_name    (str)  : Mandatory. Name of the optimizer to use ('adam', 'sgd'). Default: 'adam'.
+        -> optimizer_params  (dict) : Optional. Dictionary containing optimizer-specific hyperparameters.
+        -> scheduler_name    (str)  : Optional. Name of the learning rate scheduler to use.
+        -> scheduler_params  (dict) : Optional. Dictionary containing scheduler-specific hyperparameters.
+        -> feat_names        (list) : Optional. List of feature names.
+        -> device            (str)  : Optional. 'cpu' or 'cuda' for GPU CUDA driven acceleration. Default: 'cuda'.
+        -> n_jobs            (int)  : Optional. Number of cores to use during computation.
+        -> log_file          (str)  : Optional. Path to log file. If None, only console logging.
+        -> use_amp           (bool) : Optional. Enable Automatic Mixed Precision training. Default: False.
+        -> verbose           (bool) : Optional. Enable verbose logging for debugging purposes.
         ____________________________________________________________________________________________________________________
         Raises:
         -> TypeError, KeyError, ImportError, AttributeError, RuntimeError for invalid inputs or issues during initialization
@@ -86,7 +86,7 @@ class DLTabularRegressor:
         # Setup logger first -----------------------------------------------------------------------------------------------#
         _setup_logger(log_file)
         
-        # Input validation ------------------------------------------------------------------------------------------------#
+        # Input validation -------------------------------------------------------------------------------------------------#
         if not isinstance(model_type, str):
             raise TypeError("model_type must be a string")
         if model_params is not None and not isinstance(model_params, dict):
@@ -111,21 +111,21 @@ class DLTabularRegressor:
                 )
         
         # Main parameters -------------------------------------------------------------------------------------------------#
-        self.model_type       = model_type.lower()
-        self.in_features      = in_features
-        self.model_params     = model_params if model_params is not None else {}
-        self.optimizer_name   = optimizer_name.lower()
-        self.optimizer_params = optimizer_params if optimizer_params is not None else {}
-        self.scheduler_name   = scheduler_name.lower() if scheduler_name is not None else None
-        self.scheduler_params = scheduler_params if scheduler_params is not None else {}
-        self.n_jobs           = n_jobs
-        self.verbose          = verbose
-        self.is_fitted        = False
-        self.feature_names    = feat_names
-        self.device           = torch.device(device) if isinstance(device, str) else device
-        self.use_amp          = use_amp
-        self.history          = {}
-        self.best_model_state = None  
+        self.model_type        = model_type.lower()
+        self.in_features       = in_features
+        self.model_params      = model_params if model_params is not None else {}
+        self.optimizer_name    = optimizer_name.lower()
+        self.optimizer_params  = optimizer_params if optimizer_params is not None else {}
+        self.scheduler_name    = scheduler_name.lower() if scheduler_name is not None else None
+        self.scheduler_params  = scheduler_params if scheduler_params is not None else {}
+        self.n_jobs            = n_jobs
+        self.verbose           = verbose
+        self.is_fitted         = False
+        self.feature_names     = feat_names
+        self.device            = torch.device(device) if isinstance(device, str) else device
+        self.use_amp           = use_amp
+        self.history           = {}
+        self.best_model_state  = None  
         
         # Validate model type ---------------------------------------------------------------------------------------------#
         if self.model_type not in SUPPORTED_MODELS:
@@ -163,10 +163,10 @@ class DLTabularRegressor:
     # Main fitting function -----------------------------------------------------------------------------------------------#        
     def fit(self, train_loader: DataLoader, val_loader: Optional[DataLoader]=None, epochs: int=100, loss_fn: str='mse', 
             loss_params             : Optional[Dict[str, Any]] = None,
-            early_stopping_patience : Optional[int] = None, 
-            verbose_epoch           : int           = DEFAULT_VERBOSE_EPOCH,
-            checkpoint_path         : Optional[str] = None, 
-            save_best_only          : bool          = True):
+            early_stopping_patience : Optional[int]            = None, 
+            verbose_epoch           : int                      = DEFAULT_VERBOSE_EPOCH,
+            checkpoint_path         : Optional[str]            = None, 
+            save_best_only          : bool                     = True):
         """
         ____________________________________________________________________________________________________________________
         Train the model on the provided dataset.

@@ -21,9 +21,9 @@ LEMONsc/
     │_ requirements.txt        # python libraries to run the experiments.
     |_ README.md               # main changes and comments.
     |_ .gitignore              # elements to ignore.
-```
+``` 
+Further information regarding the different pipelines provided, the models evaluated or the datasets integrated can be found on their respective `./src/*/README.md` files. We also provide interactive jupyter-notebooks to test the different custom functions.
 
-Further information regarding the different pipelines provided,  the models evaluated or the datasets integrated can be found on their respective `./src/*/README.md` files. We also provide interactive jupyter-notebooks to test the different custom functions.
 ---
 
 ## :question: **Installation:**

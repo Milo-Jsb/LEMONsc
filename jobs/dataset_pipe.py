@@ -9,8 +9,8 @@ import pandas as pd
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from loguru      import logger
 from scipy.stats import ks_2samp, wasserstein_distance
-from typing      import Any, Dict, List, Optional, Union
-from dataclasses import dataclass
+from typing      import Any, List, Optional, Union
+from dataclasses import dataclass, field
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
 
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from src.utils.directory import PathManagerDatasetPipeline, save_dataset_to_csv
 
 # Data processing
-from src.processing.features import tabular_features
+from src.processing.features import filter_simulation_artifacts, tabular_features
 
 # Specifics to dataset
 from src.processing.retriever                import moccasurvey_dataset
@@ -30,9 +30,6 @@ from src.processing.modules.processor    import DataProcessor
 from src.processing.modules.partitions   import DataPartitioner
 from src.processing.modules.plots        import PlotGenerator
 from src.processing.modules.downsampling import DownsamplingProcessor
-
-# Visualization
-from src.utils.visualize import plot_feature_distributions
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
@@ -48,45 +45,13 @@ logger.add("./logs/moccaset_pipe.log",
            retention = "10 days",  
            encoding  = "utf-8")
 
-# Configuration -----------------------------------------------------------------------------------------------------------#
-def get_config_class(dataset: str):
-    """Factory function to get the appropriate config class based on the dataset type."""
-    config_map = {
-        'moccasurvey': MoccaSurveyExperimentConfig}
-
-    return config_map.get(dataset, MoccaSurveyExperimentConfig)
-
-def create_processing_config(dataset: str):
-    """Create a configuration dataclass for processing features based on the dataset type."""
-    # Define base config class
-    BaseConfig = get_config_class(dataset)
-    
-    # Set default parameters for preprocessing
-    @dataclass
-    class ProcessingFeaturesConfig(BaseConfig):
-        """Configuration class for the processing of get_features() parameters."""
-        dataset_name         : str               = dataset
-        points_per_sim       : Union[int, float] = 0.8 
-        n_virtual            : int               = 10 
-        train_split          : float             = 0.7
-        val_split            : float             = 0.2
-        test_split           : float             = 0.1
-        min_points_threshold : int               = 1000
-        histogram_bins       : int               = 200
-        downsample_min_count : int               = 10
-        downsample_max_count : int               = 150
-        requires_temp_evol   : bool              = False
-        sample_window        : bool              = False
-    
-    return ProcessingFeaturesConfig()
-
 # Global Arguments --------------------------------------------------------------------------------------------------------#
 def get_args():
     parser = argparse.ArgumentParser(description="Preparation of the simulated dataset")
     
     # Main mode of the script
     parser.add_argument("--mode", type=str, default="study",
-                        choices=["study", "feats", "plot", "dist"],
+                        choices=["study", "comp", "feats", "plot", "dist"],
                         help="Pipeline stage to implement.")
 
     # Directories
@@ -112,18 +77,56 @@ def get_args():
 
     return parser.parse_args()
 
-# List of tabular features to compute for the dataset (can be extended for other datasets if needed) ----------------------#
-TabFeats = {
-    "cont_feats"  : ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", "log(t_coll)", 
-                     "log(M_tot/M_crit)", 
-                     "log(R_h/R_core)", "log(R_tid/R_core)",
-                     "log(rho(R_h))"],
-    "cat_feats"   : ["type_sim"],
-    
-    "target_feat" : ["M_MMO/M_tot"],
-            }
+# List of tabular features to compute for the dataset  --------------------------------------------------------------------#
+CONT_FEATS  = ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", "log(t_coll)", 
+               "log(M_tot/M_crit)", 
+               "log(R_h/R_core)", "log(R_tid/R_core)", 
+               "log(rho(R_h))"]
 
-# Pipeline Modes (Study original dataset) ---------------------------------------------------------------------------------#
+CAT_FEATS   = ["type_sim"]
+
+TARGET_FEAT = ["log(M_MMO/M_tot)"]
+
+# Configuration -----------------------------------------------------------------------------------------------------------#
+def get_config_class(dataset: str):
+    """Factory function to get the appropriate config class based on the dataset type."""
+    config_map = {
+        'moccasurvey': MoccaSurveyExperimentConfig}
+
+    return config_map.get(dataset, MoccaSurveyExperimentConfig)
+
+def create_processing_config(dataset: str):
+    """Create a configuration dataclass for processing features based on the dataset type."""
+    # Define base config class
+    BaseConfig = get_config_class(dataset)
+    
+    # Set default parameters for preprocessing
+    @dataclass
+    class ProcessingFeaturesConfig(BaseConfig):
+        """Configuration class for the processing of get_features() parameters."""
+        dataset_name         : str                 = dataset
+        points_per_sim       : Union[int, float]   = 0.97
+        n_virtual            : int                 = 10 
+        train_split          : float               = 0.7
+        val_split            : float               = 0.2
+        test_split           : float               = 0.1
+        min_points_threshold : int                 = 1000
+        histogram_bins       : int                 = 200
+        downsample_max_count : int                 = 150
+        downsample_auto_bins : bool                = True
+        requires_temp_evol   : bool                = False
+        sample_window        : bool                = True
+        cont_feats           : List[str]           = field(default_factory = lambda:CONT_FEATS.copy())
+        cat_feats            : Optional[List[str]] = field(default_factory = lambda:CAT_FEATS.copy())
+        target_feat          : List[str]           = field(default_factory = lambda:TARGET_FEAT.copy())
+        min_dem_threshold    : float               = 1e-10
+        eps_target           : float               = 0
+        eps_feats            : float               = 1e-6
+    
+    
+    return ProcessingFeaturesConfig()
+
+# Pipeline Modes [Study original dataset] ---------------------------------------------------------------------------------#
 def run_study_mode(data_path: str, out_figs: str, config: Any, root_dir: str, dataset: str):
     """Optimized study mode pipeline."""
     
@@ -140,18 +143,20 @@ def run_study_mode(data_path: str, out_figs: str, config: Any, root_dir: str, da
     # Initialize processors
     processor              = SimulationProcessor(config)
     data_processor         = DataProcessor(config)
-    downsampling_processor = DownsamplingProcessor(config)
-    plot_generator         = PlotGenerator(config)
+    plot_generator         = PlotGenerator(config, cmap="cubehelix_r")
     
     # Load simulations
-    simulations = processor.load_simulation_data(data_path)
+    simulations = processor.load_simulation_data(data_path, root_dir=f"{root_dir}{dataset}/", load_all_sims=True)
     
     # Single simulation example
     imbh_df, system_df, sim_path, iconds_dict = processor.load_single_simulation_example(simulations)
     
     # Retrieve initial conditions for one simulation
     if config.dataset_name == "moccasurvey":
-        ifeats = compute_mocca_cluster_features(system_df, imbh_df, iconds_dict, noise=False)
+        ifeats = compute_mocca_cluster_features(system_df, imbh_df, iconds_dict, 
+                                                noise     = False,
+                                                sim_env   = None,
+                                                temp_evol = False)
     else:
         raise NotImplementedError(f"Initial conditions retrieval not implemented for dataset: {config.dataset_name}")
     
@@ -178,20 +183,68 @@ def run_study_mode(data_path: str, out_figs: str, config: Any, root_dir: str, da
     
     # Plot efficiency vs mass ratio filter results
     filtered_info["valid_sims"]['marker']    = 'o'
-    filtered_info["valid_sims"]['color']     = 'navy'
+    filtered_info["valid_sims"]['color']     = 'maroon'
     filtered_info["valid_sims"]['edgecolor'] = 'white'
     filtered_info["valid_sims"]['s']         = 20
     
     plot_generator.create_efficiency_plot(data     = {config.dataset_name: filtered_info["valid_sims"]}, 
-                                          config   = {'cmap': None, 'cmap_label': None, 'cmap_name': None, 'norm_mode': None,
+                                          config   = {'cmap'              : None, 
+                                                      'cmap_label'        : None, 
+                                                      'cmap_name'         : None, 
+                                                      'norm_mode'         : None,
                                                       'include_fit_curve' : True},            
                                           out_figs = out_figs)
     
-    # Update the simulations and labels to only valid ones
-    simulations = filtered_info["valid_sims"]["paths"]
-    labels      = filtered_info["valid_sims"]["labels"]
+    # Final logging
+    logger.success("Study mode completed")
+    logger.info(110*"_")
+
+# Pipeline Modes [Compare Datasets Processings] --------------------------------------------------------------------------#
+def run_comparison_mode(root_dir : str, data_path: str, out_figs: str, config: Any, 
+                        path_manager: PathManagerDatasetPipeline):
+    """Run the comparison mode pipeline."""
     
-    # Process simulations
+    # Initialize processors
+    partitioner            = DataPartitioner(config)
+    processor              = SimulationProcessor(config)
+    data_processor         = DataProcessor(config)
+    downsampling_processor = DownsamplingProcessor(config)
+    plot_generator         = PlotGenerator(config, cmap="cubehelix_r")
+    
+    # Load simulations
+    simulations = processor.load_simulation_data(data_path, root_dir=root_dir, load_all_sims=False)
+    
+    # Classify and save simulations by environment type
+    simulations_by_type = processor.classify_simulations_by_environment(simulations, 
+                                                                        cache_dir=root_dir)
+    
+    # Create a mapping from simulation paths to their corresponding environment types
+    path_to_label = {path: env_type
+                    for env_type, paths in simulations_by_type.items()
+                    for path in paths
+                    }
+
+    # Store labels in the same order as simulations for later use
+    labels = [path_to_label.get(path, np.nan) for path in simulations]
+
+    # Save the classified simulation paths by environment type for future reference if the file does not exist
+    processor.save_simulation_paths_by_type(simulations_by_type, root_dir)
+    
+    # Try stratified partitioning first
+    stratified_partitions = partitioner.create_stratified_partitions(path_manager, simulations)
+    
+    if stratified_partitions is not None:
+        train_data, _, _ = stratified_partitions  
+        train_simulations, train_labels = train_data
+        
+        logger.info("Using stratified partitioning based on environment type")
+    else:
+        train_simulations, _, _ = partitioner.create_random_partitions(simulations)
+        train_labels = None
+
+        logger.info("Using random partitioning (stratified files not found)")
+    
+    # Process original simulations only with window sampling, no noise, no downsampling 
     t_base, m_base, phy_base, _ = data_processor.process_simulations(simulations, labels,
                                                                      augmentation = False, 
                                                                      apply_noise  = False, 
@@ -199,15 +252,15 @@ def run_study_mode(data_path: str, out_figs: str, config: Any, root_dir: str, da
                                                                      verbose      = True,
                                                                      study_mode   = False)
     
-    # Augment simulations
-    t_augm, m_augm, phy_augm, _ = data_processor.process_simulations(simulations, labels,
+    # Augment training simulations, applying noise and window sampling, but no downsampling
+    t_augm, m_augm, phy_augm, _ = data_processor.process_simulations(train_simulations, train_labels,
                                                                      augmentation = True, 
                                                                      apply_noise  = True, 
                                                                      n_virtual    = config.n_virtual, 
                                                                      verbose      = True,
                                                                      study_mode   = False)
     
-    # Downsampling analysis
+    # Donwsample the augmented dataset by 2D histogram selection
     t_down, m_down, phy_down = downsampling_processor.perform_downsampling(t_augm, m_augm, phy_augm)
     
     # Create all comparison plots
@@ -216,12 +269,8 @@ def run_study_mode(data_path: str, out_figs: str, config: Any, root_dir: str, da
                                                    t_down, m_down, phy_down, 
                                                    out_figs)
     
-    # Final logging
-    logger.success("Study mode completed")
-    logger.info(110*"_")
-
-# Pipeline Modes (Feature generation) ------------------------------------------------------------------------------------#
-def run_feats_mode(data_path: str, out_path: str, folds: int, augment: bool, downsampled: bool, config: Any, 
+# Pipeline Modes [Feature generation] ------------------------------------------------------------------------------------#
+def run_feats_mode(root_dir : str, data_path: str, out_path: str, folds: int, augment: bool, downsampled: bool, config: Any, 
                    path_manager: PathManagerDatasetPipeline):
     """Generate tabular features for the configured dataset."""
     # Validate data path to ensure it exists before processing
@@ -238,7 +287,7 @@ def run_feats_mode(data_path: str, out_path: str, folds: int, augment: bool, dow
     partitioner = DataPartitioner(config)
     
     # Load simulations
-    simulations = processor.load_simulation_data(data_path)
+    simulations = processor.load_simulation_data(data_path, root_dir=root_dir, load_all_sims=False)
     
     # Try stratified partitioning first
     stratified_partitions = partitioner.create_stratified_partitions(path_manager, simulations)
@@ -263,13 +312,14 @@ def run_feats_mode(data_path: str, out_path: str, folds: int, augment: bool, dow
         
         # Training data 
         if config.dataset_name == "moccasurvey":
-            xtrain_info, ytrain_info = moccasurvey_dataset(simulations_path = train_simulations, 
-                                                           simulations_type = train_labels,
-                                                           augmentation     = augment, 
-                                                           logger           = logger, 
-                                                           points_per_sim   = config.points_per_sim,
-                                                           n_virtual        = config.n_virtual, 
-                                                           downsampled      = downsampled)
+            xtrain_info, ytrain_info = moccasurvey_dataset(simulations_path  = train_simulations, 
+                                                           experiment_config = config,
+                                                           simulations_type  = train_labels,
+                                                           augmentation      = augment, 
+                                                           logger            = logger, 
+                                                           points_per_sim    = config.points_per_sim,
+                                                           n_virtual         = config.n_virtual, 
+                                                           downsampled       = downsampled)
         else:
             raise NotImplementedError(f"Feature generation not implemented for dataset: {config.dataset_name}")
         
@@ -282,14 +332,15 @@ def run_feats_mode(data_path: str, out_path: str, folds: int, augment: bool, dow
         
         # Validation data
         if config.dataset_name == "moccasurvey":
-            xval_info, yval_info, _ = moccasurvey_dataset(simulations_path = val_simulations, 
-                                                          simulations_type = val_labels,
-                                                          augmentation     = False, 
-                                                          logger           = logger,
-                                                          test_partition   = True, 
-                                                          noise            = False,
-                                                          points_per_sim   = config.points_per_sim,
-                                                          downsampled      = False)
+            xval_info, yval_info, _ = moccasurvey_dataset(simulations_path  = val_simulations, 
+                                                          experiment_config = config,
+                                                          simulations_type  = val_labels,
+                                                          augmentation      = False, 
+                                                          logger            = logger,
+                                                          test_partition    = True, 
+                                                          noise             = False,
+                                                          points_per_sim    = config.points_per_sim,
+                                                          downsampled       = False)
         else:
             raise NotImplementedError(f"Feature generation not implemented for dataset: {config.dataset_name}")
         
@@ -302,14 +353,15 @@ def run_feats_mode(data_path: str, out_path: str, folds: int, augment: bool, dow
     
     # Testing data
     if config.dataset_name == "moccasurvey":
-        xtest_info, ytest_info, sim_paths = moccasurvey_dataset(simulations_path = test_simulations, 
-                                                                simulations_type = test_labels,
-                                                                augmentation     = False,
-                                                                logger           = logger,
-                                                                test_partition   = True, 
-                                                                noise            = False,
-                                                                points_per_sim   = config.points_per_sim,
-                                                                downsampled      = False)
+        xtest_info, ytest_info, sim_paths = moccasurvey_dataset(simulations_path  = test_simulations, 
+                                                                experiment_config = config,
+                                                                simulations_type  = test_labels,
+                                                                augmentation      = False,
+                                                                logger            = logger,
+                                                                test_partition    = True, 
+                                                                noise             = False,
+                                                                points_per_sim    = config.points_per_sim,
+                                                                downsampled       = False)
     else:
         raise NotImplementedError(f"Feature generation not implemented for dataset: {config.dataset_name}")
             
@@ -345,12 +397,20 @@ def run_plot_mode(datafile: str, contfeats: list, catfeats: list, target: list, 
     except Exception as e:
         logger.error(f"Error loading data file: {e}")
         raise
-
+    
+    # Filter possible numerical effects and times equal to zero
+    filter_tab_df = filter_simulation_artifacts(raw_df = tab_data_df,
+                                                min_denominator_threshold = config.min_dem_threshold,
+                                                filter_initial_state      = True,
+                                                verbose                   = True)
+    
     # Retrieve input features to compute 
-    tab_feats_df, labels = tabular_features(process_df   = tab_data_df, 
-                                            names        = contfeats + target + catfeats, 
-                                            return_names = True,
-                                            onehot       = False) 
+    tab_feats_df, labels = tabular_features(process_df                 = filter_tab_df, 
+                                            names                      = contfeats + target + catfeats, 
+                                            return_names               = True,
+                                            onehot                     = False,
+                                            eps_logscale_all_range     = config.eps_feats,
+                                            eps_logscale_limited_range = config.eps_target) 
     
     labels_names = [labels[name] for name in contfeats + target]
 
@@ -366,14 +426,16 @@ def run_plot_mode(datafile: str, contfeats: list, catfeats: list, target: list, 
                                              experiment = "full", 
                                              out_figs   = out_figs)
 
-    # Plot tabular feats by envirioment
+    # Plot tabular feats by environment
     for channel_code, env_name in [(0., 'fast'), (1., 'slow')]:
         
+        # Check if the channel code exists in the dataset to avoid empty plots
         mask = tab_feats_df[catfeats[0]] == channel_code
         
         if not np.any(mask):
-            return
+            continue
         
+        # Plot elements by environment type
         plot_generator.create_features_analysis(feats      = tab_feats_df[mask][contfeats+target],
                                                 names      = labels_names, 
                                                 dataset    = dataset, 
@@ -383,8 +445,10 @@ def run_plot_mode(datafile: str, contfeats: list, catfeats: list, target: list, 
     logger.info(110*"_")
 
 # Pipeline Modes (Distribution analysis) ---------------------------------------------------------------------------------#
-def run_dist_mode(root_dir: str, dataset: str, data_path: str, aug_path: str, contfeats: list, catfeats: list, target: list,
-                  figs_path: str, config: Any):
+def run_dist_mode(root_dir: str, dataset: str, data_path: str, aug_path: str, contfeats: list, catfeats: list, 
+                  target    : list,
+                  figs_path : str, 
+                  config    : Any):
     """Run the distribution analysis mode pipeline."""
     
     logger.info(110*"_")
@@ -427,6 +491,12 @@ def run_dist_mode(root_dir: str, dataset: str, data_path: str, aug_path: str, co
     columns = config.feature_names + [config.target_name]
     raw_df  = pd.DataFrame(data= np.column_stack((t_base, phy_base, m_base)), columns= columns)
     
+    # Filter numerical artifacts and t=0 rows before log-scale feature engineering
+    raw_df = filter_simulation_artifacts(raw_df, 
+                                         min_denominator_threshold = config.min_dem_threshold,
+                                         filter_initial_state      = True,
+                                         verbose                   = True)
+    
     # Retrieve input features to compute statistical test
     feats_raw, raw_names = tabular_features(raw_df, names=feature_names, return_names=True, onehot=False)
 
@@ -442,6 +512,12 @@ def run_dist_mode(root_dir: str, dataset: str, data_path: str, aug_path: str, co
     except Exception as e:
         logger.error(f"Error loading augmented data file: {e}")
         raise
+    
+    # Filter numerical artifacts and t=0 rows before log-scale feature engineering
+    processed_df = filter_simulation_artifacts(processed_df,
+                                               min_denominator_threshold = config.min_dem_threshold,
+                                               filter_initial_state      = True,
+                                               verbose                   = True)
         
     feats_processed, feats_names = tabular_features(processed_df, names=feature_names, return_names=True, onehot=False)
     
@@ -454,7 +530,7 @@ def run_dist_mode(root_dir: str, dataset: str, data_path: str, aug_path: str, co
 
     for sim_type in feats_processed[catfeats[0]].unique():
         
-        logger.info(f"Envirioment type: {sim_type}")
+        logger.info(f"Environment type: {sim_type}")
         
         raw  = feats_raw[feats_raw[catfeats[0]] == sim_type]
         proc = feats_processed[feats_processed[catfeats[0]] == sim_type]
@@ -509,8 +585,16 @@ def run_pipeline(args):
                        root_dir  = args.root_dir,
                        dataset   = args.dataset)
     
+    elif args.mode == "comp":
+        run_comparison_mode(root_dir     = args.root_dir + args.dataset + "/",
+                            data_path    = path_manager.data_path, 
+                            out_figs     = path_manager.out_figs, 
+                            config       = dataconfig, 
+                            path_manager = path_manager)
+        
     elif args.mode == "feats":
-        run_feats_mode(data_path    = path_manager.data_path, 
+        run_feats_mode(root_dir     = args.root_dir + args.dataset + "/",
+                       data_path    = path_manager.data_path, 
                        out_path     = path_manager.out_path, 
                        folds        = args.folds, 
                        augment      = args.aug, 
@@ -520,9 +604,9 @@ def run_pipeline(args):
     
     elif args.mode == "plot":
         run_plot_mode(datafile  = f"{path_manager.out_path}0_fold/train.csv",
-                      contfeats = TabFeats["cont_feats"],
-                      catfeats  = TabFeats["cat_feats"], 
-                      target    = TabFeats["target_feat"],
+                      contfeats = dataconfig.cont_feats,
+                      catfeats  = dataconfig.cat_feats, 
+                      target    = dataconfig.target_feat,
                       out_figs  = path_manager.out_figs,
                       config    = dataconfig,
                       dataset   = args.dataset)
@@ -532,9 +616,9 @@ def run_pipeline(args):
                       dataset   = args.dataset,
                       data_path = path_manager.data_path,
                       aug_path  = f"{path_manager.out_path}0_fold/train.csv",
-                      contfeats = TabFeats["cont_feats"],
-                      catfeats  = TabFeats["cat_feats"], 
-                      target    = TabFeats["target_feat"],
+                      contfeats = dataconfig.cont_feats,
+                      catfeats  = dataconfig.cat_feats, 
+                      target    = dataconfig.target_feat,
                       figs_path = path_manager.out_figs,
                       config    = dataconfig)
     else:

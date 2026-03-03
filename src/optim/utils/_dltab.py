@@ -1,4 +1,5 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
+import copy
 import logging
 import torch
 import optuna
@@ -73,7 +74,21 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
                           logger : logging.Logger,
                           config : Any,
                           ) -> float:
-    """Train and evaluate DL model with epoch-wise pruning to prevent state leakage."""
+    """
+    ________________________________________________________________________________________________________________________
+    Train and evaluate DL model with epoch-wise pruning and best model checkpointing.
+    ________________________________________________________________________________________________________________________
+    This function implements:
+    
+    1. Epoch-wise training loop with Optuna pruning integration
+    2. Best model state checkpointing (saves model when validation loss improves)
+    3. Automatic restoration of best model before final evaluation
+    4. Early stopping based on validation loss plateau
+    
+    The model is evaluated using the BEST checkpoint, not the final epoch state,
+    preventing overfitting issues and ensuring optimal performance.
+    ________________________________________________________________________________________________________________________
+    """
     
     train_loader = partition['train_loader']
     val_loader   = partition['val_loader']
@@ -89,8 +104,9 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
     else:
         criterion = get_loss_function(loss_fn).to(model.device)
             
-    # Training loop with pruning
+    # Training loop with pruning and best model checkpoint
     best_val_loss     = float('inf')
+    best_model_state  = None  # Store the best model state
     epochs_no_improve = 0
     
     for epoch in range(config.max_epochs):
@@ -100,10 +116,14 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
         # Validate one epoch
         val_loss = model.validate_one_epoch(val_loader, criterion)
         
-        # Track best validation loss
+        # Track best validation loss AND save model state
         if val_loss < best_val_loss:
             best_val_loss     = val_loss
             epochs_no_improve = 0
+            # Save a deep copy of the best model state
+            best_model_state = copy.deepcopy(model.model.state_dict())
+            if config.verbose:
+                logger.debug(f"Trial {trial.number}, Epoch {epoch}: New best val_loss = {best_val_loss:.6f}")
         else:
             epochs_no_improve += 1
         
@@ -117,8 +137,17 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
         # Early stopping (internal)
         if config.dl_patience is not None and epochs_no_improve >= config.dl_patience:
             if config.verbose:
-                logger.info(f"Trial {trial.number}: Early stopping at epoch {epoch}")
+                logger.info(f"Trial {trial.number}: Early stopping at epoch {epoch} (best val_loss={best_val_loss:.6f})")
             break
+    
+    # Restore the BEST model state before evaluation
+    if best_model_state is not None:
+        model.model.load_state_dict(best_model_state)
+        if config.verbose:
+            logger.debug(f"Trial {trial.number}: Loaded best model state (val_loss={best_val_loss:.6f})")
+    else:
+        if config.verbose:
+            logger.warning(f"Trial {trial.number}: No best model state found, using final epoch state")
     
     # Mark model as fitted so predict() works
     model.is_fitted = True
@@ -130,15 +159,25 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
     all_targets = []
     for batch_X, batch_y in val_loader:
         all_targets.append(batch_y.cpu())
-    y_val = torch.cat(all_targets, dim=0).squeeze().numpy()
+    y_val = torch.cat(all_targets, dim=0).numpy()
     
-    # Apply scaler if provided
+    # Ensure arrays are properly flattened to 1D to prevent pairwise distance computation
+    y_pred = y_pred.ravel()
+    y_val = y_val.ravel()
+    
+    # Apply scaler if provided (unified logic with _ml.py for consistency)
     if scaler is not None:
-        y_pred = y_pred * scaler
-        y_val  = y_val  * scaler
+        # Check if scaler is an object with inverse_transform method (e.g., TargetLogScaler)
+        if hasattr(scaler, 'inverse_transform') and callable(getattr(scaler, 'inverse_transform')):
+            y_pred = scaler.inverse_transform(y_pred)
+            y_val  = scaler.inverse_transform(y_val)
+        # Or if its just a numeric factor (e.g., standard deviation for scaling)
+        else:
+            y_pred = y_pred * scaler
+            y_val  = y_val  * scaler
     
-    # Compute final score with user's metric
-    score = float(scorer(y_true=y_val, y_pred=y_pred))
+    # Compute final score with user's metric (use positional args for sklearn compatibility)
+    score = float(scorer(y_val, y_pred))
     
     return score
 #---------------------------------------------------------------------------------------------------------------------------#

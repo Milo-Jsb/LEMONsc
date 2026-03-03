@@ -63,10 +63,9 @@ def safe_downsampling_of_points(feats: np.ndarray, mass: np.ndarray, logger) -> 
         if len(time_feat) > 0:
 
             H1, xedges, yedges = np.histogram2d(time_feat, mass_feat, bins=[def_config.bingrid, def_config.bingrid])
-            idxs = filter_and_downsample_hist2d(time_feat, mass_feat, H1, xedges, yedges, 
-                                                min_count = def_config.min_acc, 
+            idxs = filter_and_downsample_hist2d(time_feat, mass_feat, H1, xedges, yedges,
                                                 max_count = def_config.max_acc,
-                                                seed      = def_config.randseed)   
+                                                seed      = def_config.randseed)
 
             if len(idxs) > 0:
                 return feats_temp[idxs], mass_temp[idxs]
@@ -79,9 +78,8 @@ def safe_downsampling_of_points(feats: np.ndarray, mass: np.ndarray, logger) -> 
             return None
 
 # Filter and downsize a dataset based in a 2D histogram -------------------------------------------------------------------#
-def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray, 
-                                 min_count: int           = def_config.min_acc, 
-                                 max_count: int           = def_config.max_acc, 
+def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray,
+                                 max_count: int           = def_config.max_acc,
                                  seed     : Optional[int] = def_config.randseed
                                 ) -> np.ndarray:
     """
@@ -94,33 +92,27 @@ def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xe
         - H          (np.ndarray)        : 2D histogram array. Mandatory.
         - xedges     (np.ndarray)        : X-axis bin edges. Mandatory.
         - yedges     (np.ndarray)        : Y-axis bin edges. Mandatory.
-        - min_count  (int)               : Minimum count threshold. Points in bins with fewer points are discarded. 
         - max_count  (int)               : Maximum count threshold. Points in bins with more points are downsampled.
-        - seed       (Optional[int])     : Random seed for reproducible downsampling. 
+        - seed       (Optional[int])     : Random seed for reproducible downsampling.
     ________________________________________________________________________________________________________________________
     Returns:
         - selected_indices (np.ndarray) : Array of indices corresponding to the selected points.
     ________________________________________________________________________________________________________________________
     Notes:
-        Points in bins with accumulation < min_count are discarded. For bins with accumulation > max_count, random 
-        downsampling is performed. Between min_count and max_count, all points are kept.
+        All points are kept unless their bin exceeds max_count, in which case random downsampling is applied.
     ________________________________________________________________________________________________________________________
     """
     # Input validation ----------------------------------------------------------------------------------------------------#
     if len(x) != len(y):
         raise ValueError("x and y must have the same length.")
-    if min_count < 0:
-        raise ValueError("min_count must be non-negative.")
     if max_count <= 0:
         raise ValueError("max_count must be positive.")
-    if min_count >= max_count:
-        raise ValueError("min_count must be less than max_count.")
-    
+
     # Set random seed if provided
     if seed is not None:
         np.random.seed(seed)
 
-    # Assign each point to their respective bin----------------------------------------------------------------------------#
+    # Assign each point to their respective bin ---------------------------------------------------------------------------#
     x_bin = np.digitize(x, xedges) - 1
     y_bin = np.digitize(y, yedges) - 1
 
@@ -134,18 +126,13 @@ def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xe
 
     selected_indices = []
 
-    for bin_id, indices in bin_points.items():
-        count = len(indices)
-        if count < min_count:
-            continue 
-        elif count > max_count:
-            sampled = np.random.choice(indices, size=max_count, replace=False)
-            selected_indices.extend(sampled)
+    for indices in bin_points.values():
+        if len(indices) > max_count:
+            selected_indices.extend(np.random.choice(indices, size=max_count, replace=False))
         else:
             selected_indices.extend(indices)
 
-    selected_indices = np.array(selected_indices)
-    return selected_indices
+    return np.array(selected_indices)
 
 # Filter simulations based on the efficiency and  mass ratio relationship -------------------------------------------------#
 def efficiency_mass_ratio_relation(mmo_mass        : Union[List[float], np.ndarray], 

@@ -128,7 +128,8 @@ def load_yaml_dict(path: str, verbose: bool = False):
 # Save a pandas DataFrame as a CSV file -----------------------------------------------------------------------------------#
 def save_dataset_to_csv(data: np.ndarray, columns: List[str], target_data: np.ndarray, target_name: str, filepath: str, 
                         additional_columns : Optional[Dict]   = None,
-                        logger             : Optional[Logger] = None) -> None:
+                        logger             : Optional[Logger] = None
+                        ) -> None:
     """Save dataset to CSV file efficiently."""
     try:
         df = pd.DataFrame(data=data, columns=columns, index=None)

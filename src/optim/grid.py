@@ -7,14 +7,11 @@ def ElasticNetGrid(trial):
     
     return param_grid
 
-# Support Vector Regressor grid to optimize search -------------------------------------------------------------------------#
-def SVRGrid(trial):
+# Linear Support Vector Regressor grid to optimize search -----------------------------------------------------------------#
+def LinearSVRGrid(trial):
     param_grid = {
-        "kernel"    : trial.suggest_categorical("kernel", ["rbf", "linear", "poly"]),
-        "C"         : trial.suggest_float("C", 1e-3, 100.0, log=True),
-        "gamma"     : trial.suggest_float("gamma", 1e-4, 1.0, log=True),
-        "epsilon"   : trial.suggest_float("epsilon", 0.01, 1.0, log=True),
-                 }
+        "C"         : trial.suggest_float("C", 1e-3, 10.0, log=True),
+        "epsilon"   : trial.suggest_float("epsilon", 0.0001, 1.0, log=True)                 }
     
     return param_grid
 
@@ -37,11 +34,11 @@ def XGBoostGrid(trial):
 
     param_grid = {
         "objective"              : "reg:pseudohubererror",
-        "huber_slope"            : trial.suggest_float("huber_slope", 0.2, 3.0, step=0.1),
-        "learning_rate"          : trial.suggest_float("learning_rate", 1e-4, 0.3, log=True),
+        "huber_slope"            : trial.suggest_float("huber_slope", 2.0, 4.0, step=0.1),
+        "learning_rate"          : trial.suggest_float("learning_rate", 1e-3, 0.05, log=True),
         "min_child_samples"      : trial.suggest_int("min_child_samples", 5, 100),
         "bagging_fraction"       : trial.suggest_float("bagging_fraction", 0.4, 1.0),
-        "n_estimators"           : trial.suggest_int("n_estimators", 100, 2000, step=100),
+        "n_estimators"           : trial.suggest_int("n_estimators", 800, 2200, step=100),
         "lambda_l1"              : trial.suggest_float("lambda_l1", 0.0, 5.0),
                  }
 
@@ -71,8 +68,8 @@ def LightGBMGrid(trial):
 def MLPGrid(trial):
     param_grid = { 
         "model_params": { 
-            "dropout"       : trial.suggest_float("dropout", 0.0, 0.5, step=0.1),
-            "activation"    : trial.suggest_categorical("activation", ["relu", "tanh", "elu"]),
+            "dropout"       : trial.suggest_float("dropout", 0.0, 0.5, step=0.05),
+            "activation"    : trial.suggest_categorical("activation", ["relu", "leaky_relu"]),
             "normalization" : trial.suggest_categorical("normalization", ["batch", "layer", None])},
         
         "optimizer_params": {
@@ -80,10 +77,16 @@ def MLPGrid(trial):
             "weight_decay"  : trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)},
         
         "loss_params": {
-            "reduction" : trial.suggest_categorical("reduction", ["mean", "sum"]),
             "delta"     : trial.suggest_float("delta", 0.2, 3.0, step=0.5)}
                  }
     
     return param_grid
+
+# Key groupings for MLP flat Optuna params -> structured best_params (must stay in sync with MLPGrid) --------------------#
+MLP_PARAM_GROUPS = {
+    "architecture_params" : ["dropout", "activation", "normalization"],
+    "optimizer_params"    : ["lr", "weight_decay"],
+    "loss_params"         : ["delta"]
+}
         
 #--------------------------------------------------------------------------------------------------------------------------#

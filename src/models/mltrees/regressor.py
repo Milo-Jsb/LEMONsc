@@ -12,12 +12,12 @@ from typing              import Optional, Dict, List, Union, Any
 from lightgbm            import LGBMRegressor
 from xgboost             import XGBRegressor
 from cuml.ensemble       import RandomForestRegressor
-from sklearn.metrics     import mean_squared_error, mean_absolute_error, root_mean_squared_error, r2_score
 from sklearn.exceptions  import NotFittedError
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.utils.directory  import load_yaml_dict
-from src.utils.callbacks  import check_gpu_available   
+from src.utils.eval       import compute_metrics
+from src.utils.resources  import check_gpu_available
 
 # Constants ---------------------------------------------------------------------------------------------------------------#
 SUPPORTED_MODELS        = ["lightgbm", "xgboost", "rf"]
@@ -140,6 +140,7 @@ class MLTreeRegressor:
             # Remove device parameter if present (not supported by cuML RandomForest)
             clean_params = default_params.copy()
             clean_params.pop("device", None)
+            clean_params.pop("n_jobs", None)
 
             # Changing objective to criterion if needed
             if "objective" in clean_params:
@@ -156,10 +157,6 @@ class MLTreeRegressor:
                     # Pop objective for correct name in cuML and set criterion to corresponding value
                     objective = clean_params.pop("objective")
                     clean_params["criterion"] = cuml_objectives[objective]
-            
-            # Set n_jobs if provided
-            if self.n_jobs is not None:
-                clean_params["n_jobs"] = self.n_jobs
 
             return RandomForestRegressor(**clean_params)
         
@@ -432,19 +429,9 @@ class MLTreeRegressor:
             metrics = DEFAULT_METRICS
         
         try:
-            y_pred = self.model.predict(X)
-            results = {}
-            
-            # Compute metrics and store in dictionary
-            for metric in metrics:
-                if   (metric.lower() == "mse")  : results["mse"]  = mean_squared_error(y, y_pred)
-                elif (metric.lower() == "rmse") : results["rmse"] = root_mean_squared_error(y, y_pred)
-                elif (metric.lower() == "mae")  : results["mae"]  = mean_absolute_error(y, y_pred)
-                elif (metric.lower() == "r2")   : results["r2"]   = r2_score(y, y_pred)
-                
-                else:
-                    if self.verbose: print(f"Warning: Unknown metric '{metric}' ignored")
-            
+            y_pred  = self.model.predict(X)
+            results = compute_metrics(y, y_pred, metrics, verbose=self.verbose)
+
             return results
             
         except (TypeError, ValueError) as e:

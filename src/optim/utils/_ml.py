@@ -73,13 +73,27 @@ def evaluate_partition_ml(model: MLTreeRegressor | MLBasicRegressor, partition: 
     # Make predictions
     y_pred = model.predict(X_val)
     
+    # Ensure arrays are properly flattened to 1D
+    y_pred = y_pred.ravel()
+    y_val_flat = y_val.ravel()
+    
     # Apply scaling if provided
     if scaler is not None:
-        y_pred       = y_pred * scaler
-        y_val_scaled = y_val  * scaler
-        score = float(scorer(y_true=y_val_scaled, y_pred=y_pred))
+        # Check if scaler is an object with inverse_transform method (e.g., TargetLogScaler)
+        if hasattr(scaler, 'inverse_transform') and callable(getattr(scaler, 'inverse_transform')):
+            y_pred_scaled = scaler.inverse_transform(y_pred)
+            y_val_scaled  = scaler.inverse_transform(y_val_flat)
+        
+        # Or if its just a numeric factor (e.g., standard deviation for scaling)
+        else:
+            y_pred_scaled = y_pred * scaler
+            y_val_scaled  = y_val_flat * scaler
+        
+        score = float(scorer(y_val_scaled, y_pred_scaled))
+    
+    # If no scaler, evaluate directly on original predictions and true values
     else:
-        score = float(scorer(y_true=y_val, y_pred=y_pred))
+        score = float(scorer(y_val_flat, y_pred))
     
     return score
 

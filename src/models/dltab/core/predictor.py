@@ -93,6 +93,9 @@ class Predictor:
         with torch.no_grad():
             with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
                 predictions = self.model(X)
+                # Squeeze predictions for single-output regression
+                if predictions.dim() > 1 and predictions.size(-1) == 1:
+                    predictions = predictions.squeeze(-1)
         
         return predictions.detach().cpu().numpy()
     
@@ -122,6 +125,9 @@ class Predictor:
                 
                 with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
                     preds = self.model(batch_X)
+                    # Squeeze predictions for single-output regression
+                    if preds.dim() > 1 and preds.size(-1) == 1:
+                        preds = preds.squeeze(-1)
                     all_predictions.append(preds.detach().cpu())
         
         if not all_predictions:

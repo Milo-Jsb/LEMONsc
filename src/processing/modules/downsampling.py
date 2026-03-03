@@ -25,60 +25,90 @@ logger.add("./logs/downsampling_output.log",
 
 # Perfom Downsampling in a full dataset if needed -------------------------------------------------------------------------#
 class DownsamplingProcessor:
-    """Optimized downsampling with channel separation."""
-    
+    """
+    ________________________________________________________________________________________________________________________
+    Optimized downsampling with channel separation for LEMONsc experiments.
+    ________________________________________________________________________________________________________________________
+    Config options recognised:
+    -> downsample_max_count  (int)  : Maximum points per bin (excess is randomly dropped).
+    -> downsample_auto_bins  (bool) : If True (default), bin counts are chosen automatically using the Freedman-Diaconis 
+                                      rule. If False, the fixed value in `histogram_bins` is used for both axes
+                                      (useful when reproducibility or visual consistency matters).
+    -> histogram_bins        (int)  : Fixed bin count used when downsample_auto_bins=False.
+    ________________________________________________________________________________________________________________________
+    """
+    # Initialize with config ----------------------------------------------------------------------------------------------#
     def __init__(self, config):
         self.config = config
     
+    # Freedman-Diaconis binning method ------------------------------------------------------------------------------------#
+    def _freedman_diaconis_bins(self, data: np.ndarray) -> int:
+        """Compute optimal bin count using the Freedman-Diaconis rule."""
+        
+        # Obtain number of data points and IQR
+        n, iqr = len(data), np.percentile(data, 75) - np.percentile(data, 25)
+        
+        # Sturges fallback when IQR is zero (e.g., for small datasets or low variance)
+        if iqr == 0: return max(1, int(np.ceil(np.log2(n))) + 1)
+        
+        # compute normalization factor and data range
+        h           = 2.0 * iqr * (n ** (-1.0 / 3.0))
+        data_range  = data.max() - data.min()
+        
+        # Return the number of bins, ensuring at least 1 bin
+        return max(1, int(np.ceil(data_range / h)))
+
+    #  Perform downsampling with formation channel separation -------------------------------------------------------------#
     def perform_downsampling(self, t_augm: List, m_augm: List, phy_augm: List) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Perform downsampling with formation channel separation."""
-        # Convert to numpy arrays once
+        """Use 2D histogram-based downsampling with separate processing for FAST and SLOW formation channels."""
+        # Convert to numpy arrays 
         t_array   = np.array(t_augm)
         m_array   = np.array(m_augm)
         phy_array = np.array(phy_augm)
         
-        # Initialize results
+        # Initialize storage for downsampled data
         t_parts, m_parts, phy_parts = [], [], []
         
-        # Process each formation channel
-        # Note: Using -1 index for the type_sim feature (last column in phy_array)
+        # Process each formation channel. Note: Using -1 index for the type_sim feature (last column in phy_array)
         for channel_code, channel_name in [(0, 'FAST'), (1, 'SLOW')]:
 
+            # Set mask for current channel
             mask = phy_array[:, -1] == channel_code
 
-            if not np.any(mask):
-                continue
-                
+            # Skip if no data points for this channel
+            if not np.any(mask): continue
+            
             # Extract channel data
             t_channel   = t_array[mask]
             m_channel   = m_array[mask]
             phy_channel = phy_array[mask]
             
-            # Preprocess
-            time_feat = np.log10(t_channel + 1)
-            mass_feat = m_channel
-            
             # Remove inf/nan values
-            valid_mask = np.isfinite(time_feat) & np.isfinite(mass_feat)
+            valid_mask = np.isfinite(t_channel) & np.isfinite(m_channel)
             if not np.all(valid_mask):
-                time_feat   = time_feat[valid_mask]
-                mass_feat   = mass_feat[valid_mask]
                 t_channel   = t_channel[valid_mask]
                 m_channel   = m_channel[valid_mask]
                 phy_channel = phy_channel[valid_mask]
             
-            if len(time_feat) == 0:
+            if len(t_channel) == 0:
                 continue
             
-            # Perform downsampling
-            H1, xedges, yedges = np.histogram2d(time_feat, mass_feat, 
-                                                bins=[self.config.histogram_bins, self.config.histogram_bins])
+            # Perform downsampling: use automatic Freedman-Diaconis bins or fixed bins from config
+            auto_bins = getattr(self.config, 'downsample_auto_bins', True)
+            if auto_bins:
+                bins_x = self._freedman_diaconis_bins(t_channel)
+                bins_y = self._freedman_diaconis_bins(m_channel)
+            else:
+                fixed_bins = getattr(self.config, 'histogram_bins', 200)
+                bins_x     = fixed_bins
+                bins_y     = fixed_bins
             
-            idxs = filter_and_downsample_hist2d(time_feat, mass_feat, H1, xedges, yedges, 
-                                                min_count = self.config.downsample_min_count, 
+            H1, xedges, yedges = np.histogram2d(t_channel, m_channel, 
+                                                bins=[bins_x, bins_y])
+            
+            idxs = filter_and_downsample_hist2d(t_channel, m_channel, H1, xedges, yedges,
                                                 max_count = self.config.downsample_max_count,
-                                                seed      = 42
-                                                )
+                                                seed      = 42)
             
             if len(idxs) > 0:
                 t_parts.append(t_channel[idxs])
