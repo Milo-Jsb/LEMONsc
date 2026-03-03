@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from optuna.study    import Study
 
 # Definitions -------------------------------------------------------------------------------------------------------------#
-ModelType  = Literal["elasticnet", "svr", "rf", "lightgbm", "xgboost", "mlp"]
+ModelType  = Literal["elasticnet", "svr", "rf", "lightgbm", "xgboost", "mlp", "node"]
 DeviceType = Literal["cpu", "cuda"]
 
 # Configuration dataclass -------------------------------------------------------------------------------------------------#
@@ -25,7 +25,7 @@ class SpaceSearchConfig:
     Configuration settings for SpaceSearch optimization
     ________________________________________________________________________________________________________________________
     Parameters:
-    - model_type      : Type of model to optimize (e.g., "elasticnet", "svr", "rf", "lightgbm", "xgboost", "mlp")
+    - model_type      : Type of model to optimize (e.g., "elasticnet", "svr", "rf", "lightgbm", "xgboost", "mlp", "node")
     - n_jobs          : Number of parallel jobs for optimization (default: 10)
     - n_trials        : Number of optimization trials to run (default: 100)
     - device          : Device to use for computation ("cpu" or "cuda", default: "cuda" if available)

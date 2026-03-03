@@ -85,5 +85,25 @@ def MLPGrid(trial):
                  }
     
     return param_grid
+
+# Neural Oblivious Decision Ensembles grid to optimize search -------------------------------------------------------------#
+def NODEGrid(trial):
+    param_grid = {
+        "model_params": {
+            "num_trees"  : trial.suggest_int("num_trees",  64,  512, step=64),
+            "depth"      : trial.suggest_int("depth",       3,    8),
+            "num_layers" : trial.suggest_int("num_layers",  1,    4),
+            "dropout"    : trial.suggest_float("dropout", 0.0, 0.4)},
+
+        "optimizer_params": {
+            "lr"          : trial.suggest_float("lr", 1e-5, 1e-2, log=True),
+            "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)},
+
+        "loss_params": {
+            "reduction" : trial.suggest_categorical("reduction", ["mean", "sum"]),
+            "delta"     : trial.suggest_float("delta", 0.2, 3.0, step=0.5)}
+                 }
+
+    return param_grid
         
 #--------------------------------------------------------------------------------------------------------------------------#
