@@ -53,6 +53,7 @@ class MoccaSurveyExperimentConfig:
     -> min_points_threshold : Minimum number of points per simulation to be used
     -> requires_temp_evol   : Whether some features require time-evolution data
     -> sample_window        : Whether to sample a window of the simulation or use full data
+    -> reset_time_window    : Whether to reset time to zero for the sampled window (if sample_window=True)
     -> mapping_dics_dir     : Directory path to mapping dictionaries
     -> time_column_imbh     : Name of the time column in the IMBH history data
     -> time_column_system   : Name of the time column in the system data
@@ -61,10 +62,11 @@ class MoccaSurveyExperimentConfig:
     """
     feature_names        : List[str]      = field(default_factory=lambda: DEFAULT_FEATURE_NAMES.copy())
     expected_order       : List[str]      = field(default_factory=lambda: DEFAULT_EXPECTED_ORDER.copy())
-    target_name          : str            = "M"                
+    target_name          : str            = "M_MMO"                
     min_points_threshold : int            = 1000                   
     requires_temp_evol   : bool           = False                 
-    sample_window        : bool           = True                   
+    sample_window        : bool           = True  
+    reset_time_window    : bool           = True                 
     mapping_dics_dir     : str            = "./rawdata/moccasurvey/mapping_dicts/"
     time_column_imbh     : str            = "time[Myr]"  
     time_column_system   : Optional[str]  = "tphys"
@@ -222,16 +224,12 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
         )
 
     # This creates a sampled of points from a given number of elements
-    def sample_window() -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
+    def sample_window(reset_time_window: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
         # If sample_size is None, use all available points
         if sample_size is None or sample_size >= n_points:
             sidx = np.arange(n_points)
             df_sampled     = imbh_df.copy()
             system_sampled = system_df.copy()
-            
-            # Reset physical time to zero
-            df_sampled[config.time_column_imbh]       -= df_sampled[config.time_column_imbh].iloc[0]
-            system_sampled[config.time_column_system] -= system_sampled[config.time_column_system].iloc[0]
             
             return df_sampled, system_sampled, sidx
         
@@ -250,9 +248,10 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
         df_sampled     = imbh_df.iloc[sidx].copy()
         system_sampled = system_df.iloc[sidx].copy()
         
-        # Reset physical time to zero for the sampled window
-        df_sampled[config.time_column_imbh]       -= df_sampled[config.time_column_imbh].iloc[0]
-        system_sampled[config.time_column_system] -= system_sampled[config.time_column_system].iloc[0]
+        # Reset physical time to zero for the sampled window if requested
+        if reset_time_window:
+            df_sampled[config.time_column_imbh]       -= df_sampled[config.time_column_imbh].iloc[0]
+            system_sampled[config.time_column_system] -= system_sampled[config.time_column_system].iloc[0]
         
         return df_sampled, system_sampled, sidx
 
@@ -307,7 +306,7 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
     for _ in range(iterations):
         
         if config.sample_window:
-            df_sampled, system_sampled, sidx = sample_window()
+            df_sampled, system_sampled, sidx = sample_window(config.reset_time_window)
         else:
             df_sampled     = imbh_df.copy()
             system_sampled = system_df.copy()

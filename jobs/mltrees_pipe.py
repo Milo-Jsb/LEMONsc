@@ -1,5 +1,4 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
-import os
 import sys
 import argparse
 import yaml
@@ -9,11 +8,11 @@ import numpy  as np
 import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
+from typing          import List, Optional
 from loguru          import logger
 from pathlib         import Path
-from dataclasses     import dataclass
+from dataclasses     import dataclass, field
 from datetime        import datetime
-from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
 
@@ -21,7 +20,7 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from src.utils.directory import PathManagerTrainOptPipeline, load_yaml_dict
 
 # Computation of features
-from src.processing.features import tabular_features
+from src.processing.features import filter_simulation_artifacts, tabular_features, TargetLogScaler
 
 # Optimization of hyperparameters
 from src.optim.optimizer import SpaceSearchConfig, SpaceSearch
@@ -32,21 +31,13 @@ from src.processing.modules.plots import PlotGenerator
 # Model Wrapper
 from src.models.mltrees.regressor import MLTreeRegressor
 
+# Metrics computation
+from src.utils.eval import compute_metrics
+
+
 # Warnings managment ------------------------------------------------------------------------------------------------------#
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
-
-# List of tabular features to compute for the dataset (can be extended for other datasets if needed) ----------------------#
-TabFeats = {
-    "cont_feats"  : ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", "log(t_coll)", 
-                     "log(M_tot/M_crit)", 
-                     "log(R_h/R_core)", "log(R_tid/R_core)",
-                     "log(rho(R_h))",
-                     "Z"],
-    "cat_feats"   : ["type_sim"],
-    
-    "target_feat" : ["M_MMO/M_tot"],
-            }
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
@@ -62,23 +53,7 @@ logger.add("./logs/mltrees_execution.log",
            retention = "10 days",  
            encoding  = "utf-8")
 
-# Configuration -----------------------------------------------------------------------------------------------------------#
-@dataclass
-class TrainingConfig:
-    """Configuration class for the execution of mltrees_training() script."""
-    n_folds        : int   = 3
-    n_trials       : int   = 100
-    n_jobs         : int   = 15
-    device         : str   = "cuda" if torch.cuda.is_available() else "cpu"
-    seed           : int   = 42
-    direction      : str   = "minimize"
-    metric         : str   = "huber"
-    patience       : int   = 20
-    lambda_penalty : float = 0.0
-
-CONFIG = TrainingConfig()
-
-# Arguments ---------------------------------------------------------------------------------------------------------------#
+# Global job arguments ----------------------------------------------------------------------------------------------------#
 def get_args():
     parser = argparse.ArgumentParser(description="Execution of MLTrees models")
     
@@ -108,10 +83,71 @@ def get_args():
                        help="Type of model to use")
 
     return parser.parse_args()
+ 
+# List of tabular features to compute for the dataset  --------------------------------------------------------------------#
+CONT_FEATS  = ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", "log(t_coll)", 
+               "log(M_tot/M_crit)", 
+               "log(R_h/R_core)", "log(R_tid/R_core)", 
+               "log(rho(R_h))",
+               "log(Z)"]
+
+CAT_FEATS   = None
+
+TARGET_FEAT = ["log(M_MMO/M_tot)"]
+
+# Configuration # Specific training configuration --------------------------------------------------------------------------#
+@dataclass
+class TrainingConfig:
+    """
+    ________________________________________________________________________________________________________________________
+    Configuration class for the execution of mlbasics_training() script.
+    ________________________________________________________________________________________________________________________
+    Parameters:
+    -> n_folds        : Number of folds for cross-validation. 
+    -> n_trials       : Optional (needed for --mode optim). Number of trials for hyperparameter optimization. 
+    -> n_jobs         : Number of parallel jobs for training and optimization.
+    -> device         : Device to use for training and optimization.
+    -> seed           : Optional. Random seed for reproducibility.
+    -> cont_feats     : List of continuous feature names to compute.
+    -> cat_feats      : Optional. List of categorical feature names to compute.
+    -> target_feat    : List of target feature names to compute.
+    -> direction      : Optional (needed for --mode optim). Direction for optimization ("minimize" or "maximize").
+    -> metric         : Metric to score predictions (e.g., "huber", "r2", "mae").
+    -> patience       : Optional (needed for --mode optim). Number of trials with no improvement to wait before stopping.
+    -> lambda_penalty : Optional (needed for --mode optim). Penalty factor to apply to the standard deviation of scores 
+                        across folds (default: 0.0, no penalty).
+    -> scale_target   : Whether to apply scaling to the target variable (default: True).
+    -> epsilon_target : Epsilon value to avoid log(0) when scaling the target (default: 1e-6).
+    -> norm_target    : Optional. Column name to use for normalizing the target variable (default: "M_tot").
+    ________________________________________________________________________________________________________________________
+    """
+    n_folds        : int                 = 3
+    n_trials       : int                 = 100
+    n_jobs         : int                 = 15
+    device         : str                 = "cuda" if torch.cuda.is_available() else "cpu"
+    seed           : int                 = 42
+    cont_feats     : List[str]           = field(default_factory=lambda:CONT_FEATS.copy())
+    cat_feats      : Optional[List[str]] = field(default_factory=lambda:CAT_FEATS.copy() if CAT_FEATS is not None else None)
+    target_feat    : List[str]           = field(default_factory=lambda:TARGET_FEAT.copy())
+    direction      : str                 = "minimize"
+    metric         : str                 = "huber"
+    patience       : int                 = 20
+    lambda_penalty : float               = 0.01
+    min_dem_threshold : float               = 1e-10
+    scale_target   : bool                = True
+    epsilon_target : float               = 0
+    norm_target    : str                 = "M_tot"
+
+# Initialize pipeline configuration for optimization and training
+CONFIG = TrainingConfig()
     
 # Pipeline Modes [Hyperparameter Optimization] ----------------------------------------------------------------------------#
-def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: list, out_path: str, 
-                     model_type: str, n_folds: int = 3):
+def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: list, scale_target: bool,
+                     target_norm : str, 
+                     target_eps  : float,
+                     out_path    : str, 
+                     model_type  : str, 
+                     n_folds     : int = 3):
     """Run the optimization mode pipeline."""
     
     logger.info(110*"_")
@@ -120,6 +156,9 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
 
     # Load and prepare data partitions
     logger.info("Loading and preparing data partitions...")
+    
+    # Handle None categorical features
+    catfeats = catfeats if catfeats is not None else []
     
     # Define feature configuration (once for all folds)
     feature_names = contfeats + catfeats + target
@@ -153,8 +192,17 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         train_df = pd.read_csv(train_path, index_col=False)
         val_df   = pd.read_csv(val_path, index_col=False)
         
-        feats_train = tabular_features(train_df, names=feature_names, return_names=False)
-        feats_val   = tabular_features(val_df, names=feature_names, return_names=False)
+        # Filter simulation artifacts
+        filter_train_df = filter_simulation_artifacts(train_df, min_denominator_threshold=CONFIG.min_dem_threshold,
+                                                      filter_null_mass     = True, 
+                                                      filter_initial_state = True)
+        filter_val_df   = filter_simulation_artifacts(val_df, min_denominator_threshold=CONFIG.min_dem_threshold,
+                                                      filter_null_mass     = True, 
+                                                      filter_initial_state = True)
+        
+        # Extract features and target for train and val
+        feats_train = tabular_features(filter_train_df, names=feature_names, return_names=False)
+        feats_val   = tabular_features(filter_val_df, names=feature_names, return_names=False)
         
         # Extract arrays
         X_train = feats_train[feature_cols].astype(np.float32).to_numpy()
@@ -162,9 +210,22 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         X_val   = feats_val[feature_cols].astype(np.float32).to_numpy()
         y_val   = feats_val[target_columns].astype(np.float32).to_numpy().flatten()  
 
-        # Scaling factor (if available)
-        scaler_val = val_df["M_tot"].astype(np.float32).to_numpy().flatten() if "M_tot" in val_df.columns else None
-
+        # Create target scaler (if target_norm available)
+        if scale_target and target_norm in filter_val_df.columns:
+            val_norm   = filter_val_df[target_norm].astype(np.float32).to_numpy().flatten()
+            scaler_val = TargetLogScaler(norm_factor=val_norm, epsilon=target_eps)
+        
+        # If target normalization is requested but the column is missing, create a default scaler with norm_factor=1 
+        elif scale_target and (target_norm not in filter_val_df.columns or target_norm is None):
+            scaler_val = TargetLogScaler(norm_factor=None, epsilon=target_eps)
+            logger.warning(f"Target normalization column '{target_norm}' not found in fold {fold + 1}. "
+                            "A default scaler with no norm_factor will be used.")
+        
+        # No normalization needed
+        else:
+            scaler_val = None
+            logger.warning(f"No scaling will be applied to the target.")
+            
         # Create partition dictionary
         partition = {
             'X_train'        : X_train,
@@ -255,8 +316,13 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     return results
 
 # Pipeline Modes [Training and Evaluation] --------------------------------------------------------------------------------#
-def run_training(feats_path: str, contfeats: list, catfeats: list, target: list, out_path: str,
-                 model_type: str, fig_path: str, n_folds: int = 3):
+def run_training(feats_path: str, contfeats: list, catfeats: list, target: list, scale_target: bool, 
+                 target_norm : str, 
+                 target_eps  : float,
+                 out_path    : str,
+                 model_type  : str, 
+                 fig_path    : str,
+                 n_folds     : int = 3):
     """Run the training mode pipeline."""
     
     # Create the plot generator
@@ -290,16 +356,20 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
 
     # Load and prepare data partitions
     logger.info("Loading and preparing data partitions...")
-    partitions = []
 
     # Load test set (outside the folds, same for all)
-    test_path  = feats_path + "/test.csv"
-    test_df    = pd.read_csv(test_path, index_col=False)
+    test_path = feats_path + "/test.csv"
+    test_df   = pd.read_csv(test_path, index_col=False)
+    
+    # Handle None categorical features
+    catfeats = catfeats if catfeats is not None else []
     
     # Get test features and target
     feature_names = contfeats + catfeats + target
-    
-    feats_test = tabular_features(test_df, names=feature_names, return_names=False)
+    filt_test     = filter_simulation_artifacts(test_df, min_denominator_threshold=CONFIG.min_dem_threshold,
+                                                  filter_null_mass     = True, 
+                                                  filter_initial_state = True)
+    feats_test    = tabular_features(filt_test, names=feature_names, return_names=False)
 
     # Identify continuous, categorical, and target columns   
     cont_columns   = [col for col in feats_test.columns if col in contfeats]
@@ -310,11 +380,29 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     # Extract numpy arrays
     X_test      = feats_test[feature_cols].astype(np.float32).to_numpy()
     y_test      = feats_test[target_columns].astype(np.float32).to_numpy().flatten()
-
-    scaler_test = test_df["M_tot"].astype(np.float32).to_numpy().flatten() if "M_tot" in test_df.columns else None
     
-    # Scale test target once (same for all folds)
-    y_test_scaled = y_test * scaler_test if scaler_test is not None else y_test
+    # Create target scaler (if target_norm available)
+    if scale_target and target_norm in filt_test.columns:
+        test_norm   = filt_test[target_norm].astype(np.float32).to_numpy().flatten()
+        scaler_test = TargetLogScaler(norm_factor=test_norm, epsilon=target_eps)
+       
+        # Transform test target to original scale (m_mmo)
+        y_test_scaled = scaler_test.inverse_transform(y_test)
+    
+    # Scale without normalization if not provided or not found
+    elif scale_target and (target_norm not in filt_test.columns or target_norm is None):
+        scaler_test = TargetLogScaler(norm_factor=None, epsilon=target_eps)
+        logger.warning(f"Target normalization column '{target_norm}' not found in test set. "
+                       "A default scaler with no norm_factor will be used.")
+        
+        # Transform test target to original scale (m_mmo) using the default scaler
+        y_test_scaled = scaler_test.inverse_transform(y_test)
+    
+    # Pass the original test target and no scaler
+    else:
+        scaler_test   = None
+        y_test_scaled = y_test
+        logger.warning(f"No scaling will be applied.")
     
     # Initialize lists to store results
     results             = []
@@ -331,8 +419,13 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         # Load fold data
         train_df = pd.read_csv(train_path, index_col=False)
 
+        # Avoid numerical artifacts
+        filter_train_df = filter_simulation_artifacts(train_df, min_denominator_threshold=CONFIG.min_dem_threshold,
+                                                      filter_null_mass     = True, 
+                                                      filter_initial_state = True)
+        
         # Extract features and target for train
-        feats_train = tabular_features(train_df, names=feature_names, return_names=False)
+        feats_train = tabular_features(filter_train_df, names=feature_names, return_names=False)
 
         X_train = feats_train[feature_cols].astype(np.float32).to_numpy()
         y_train = feats_train[target_columns].astype(np.float32).to_numpy().flatten()
@@ -360,20 +453,16 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         # Generate predictions
         y_pred = model.predict(X_test)
         
-        # Scale predictions if necessary
+        # Transform predictions to original scale (m_mmo)
         if scaler_test is not None:
-            y_pred_scaled = np.clip(y_pred * scaler_test, 0, None)
+            y_pred_scaled = scaler_test.inverse_transform(y_pred)
+        
+        # If no scaler, use predictions as they are just avoiding negative values
         else:
             y_pred_scaled = np.clip(y_pred, 0, None)
         
         # Calculate metrics
-        fold_metrics = {
-                    'fold' : fold,
-                    'r2'   : float(r2_score(y_test_scaled, y_pred_scaled)),
-                    'mae'  : float(mean_absolute_error(y_test_scaled, y_pred_scaled)),
-                    'mse'  : float(mean_squared_error(y_test_scaled, y_pred_scaled)),
-                    'rmse' : float(np.sqrt(mean_squared_error(y_test_scaled, y_pred_scaled)))
-                       }
+        fold_metrics = {'fold': fold, **compute_metrics(y_test_scaled, y_pred_scaled)}
 
         results.append(fold_metrics)
         predictions.append({'fold': fold, 'y_pred': y_pred_scaled, 'y_true': y_test_scaled})
@@ -521,23 +610,29 @@ def run_pipeline(args):
     
     # Run appropriate mode
     if args.mode == "optim":
-        run_optimization(feats_path  = path_manager.data_path,
-                         contfeats   = TabFeats["cont_feats"],
-                         catfeats    = TabFeats["cat_feats"], 
-                         target      = TabFeats["target_feat"],
-                         out_path    = path_manager.base_out,
-                         model_type  = args.model,
-                         n_folds     = CONFIG.n_folds)
+        run_optimization(feats_path   = path_manager.data_path,
+                         contfeats    = CONFIG.cont_feats,
+                         catfeats     = CONFIG.cat_feats, 
+                         target       = CONFIG.target_feat,
+                         scale_target = CONFIG.scale_target,
+                         target_norm  = CONFIG.norm_target,
+                         target_eps   = CONFIG.epsilon_target,
+                         out_path     = path_manager.base_out,
+                         model_type   = args.model,
+                         n_folds      = CONFIG.n_folds)
     
     elif args.mode == "train":
-        run_training(feats_path  = path_manager.data_path,
-                     contfeats   = TabFeats["cont_feats"],
-                     catfeats    = TabFeats["cat_feats"],
-                     target      = TabFeats["target_feat"],
-                     out_path    = path_manager.base_out,
-                     model_type  = args.model,
-                     fig_path    = path_manager.fig_path,
-                     n_folds     = CONFIG.n_folds)
+        run_training(feats_path   = path_manager.data_path,
+                     contfeats    = CONFIG.cont_feats,
+                     catfeats     = CONFIG.cat_feats,
+                     target       = CONFIG.target_feat,
+                     scale_target = CONFIG.scale_target,
+                     target_norm  = CONFIG.norm_target,
+                     target_eps   = CONFIG.epsilon_target,
+                     out_path     = path_manager.base_out,
+                     model_type   = args.model,
+                     fig_path     = path_manager.fig_path,
+                     n_folds      = CONFIG.n_folds)
     
     elif args.mode == "predict":
         run_prediction()

@@ -5,8 +5,7 @@ import numpy as np
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from torch.utils.data import DataLoader
 from typing           import Union, Optional, List, Dict
-from sklearn.metrics  import mean_squared_error, mean_absolute_error, root_mean_squared_error, r2_score
-from loguru           import logger
+from src.utils.eval   import compute_metrics
 
 # Constants ---------------------------------------------------------------------------------------------------------------#
 DEFAULT_METRICS = ["mse", "rmse", "mae", "r2"]
@@ -75,51 +74,18 @@ class Evaluator:
             
             # Flatten predictions and targets if needed
             y_pred = y_pred.flatten()
-            y = y.flatten()
+            y      = y.flatten()
             
             # Check dimensions match
             if len(y_pred) != len(y):
                 raise ValueError(f"Prediction length ({len(y_pred)}) doesn't match target length ({len(y)})")
             
             # Compute metrics
-            results = {}
-            for metric in metrics:
-                metric_value = self._compute_metric(metric, y, y_pred)
-                if metric_value is not None:
-                    results[metric.lower()] = metric_value
+            results = compute_metrics(y, y_pred, metrics, verbose=self.verbose)
             
             return results
             
         except (TypeError, ValueError, RuntimeError) as e:
             raise ValueError(f"Error evaluating model: {e}") from e
-    
-    def _compute_metric(self, metric: str, y_true: np.ndarray, y_pred: np.ndarray) -> Optional[float]:
-        """
-        ____________________________________________________________________________________________________________________
-        Compute a single evaluation metric.
-        ____________________________________________________________________________________________________________________
-        Parameters:
-        -> metric (str)         : Name of the metric to compute
-        -> y_true (np.ndarray)  : True target values
-        -> y_pred (np.ndarray)  : Predicted values
-        ____________________________________________________________________________________________________________________
-        Returns:
-        -> metric_value (float or None) : Computed metric value, or None if metric is unknown
-        ____________________________________________________________________________________________________________________
-        """
-        metric_lower = metric.lower()
-        
-        if metric_lower == "mse":
-            return mean_squared_error(y_true, y_pred)
-        elif metric_lower == "rmse":
-            return root_mean_squared_error(y_true, y_pred)
-        elif metric_lower == "mae":
-            return mean_absolute_error(y_true, y_pred)
-        elif metric_lower == "r2":
-            return r2_score(y_true, y_pred)
-        else:
-            if self.verbose:
-                logger.warning(f"Unknown metric '{metric}' ignored")
-            return None
 
 #--------------------------------------------------------------------------------------------------------------------------#

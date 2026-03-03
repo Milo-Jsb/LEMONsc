@@ -14,7 +14,7 @@ from loguru      import logger
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.processing.modules.simulations import SimulationProcessor
 from src.processing.features            import determine_formation_channel
-from src.processing.filters             import efficiency_mass_ratio_relation
+from src.processing.filters import efficiency_mass_ratio_relation, def_config as filter_def_config
 
 # Import dataset-specific processing functions
 from src.processing.constructors.moccasurvey import process_single_mocca_simulation
@@ -139,9 +139,11 @@ class DataProcessor:
                 imbh_df, system_df, iconds_dict = self._processor.load_single_simulation(path)
                 label = labels[idx] if (labels is not None and idx < len(labels)) else None
                 
-                # Validate simulation has sufficient points
-                if not self._validate_simulation(imbh_df):
+                # Validate simulation and obtain the time-aligned system DataFrame.
+                is_valid, matched_system_df, reject_reason = self._validate_simulation(imbh_df, system_df)
+                if not is_valid:
                     stats.increment_ignored()
+                    logger.warning(f"Ignored [{reject_reason}]: {path}")
                     continue
                 
                 # Determine formation channel and process
@@ -149,7 +151,7 @@ class DataProcessor:
                                                      mass_column_name = self.config.mass_column_imbh,
                                                      time_column_name = self.config.time_column_imbh)
                 
-                feats, masses, idxs = self._process_single(imbh_df, system_df, iconds_dict, self.config, label, 
+                feats, masses, idxs = self._process_single(imbh_df, matched_system_df, iconds_dict, self.config, label, 
                                                            augmentation, 
                                                            apply_noise)
                 
@@ -169,85 +171,138 @@ class DataProcessor:
         return time_list, mass_list, phy_list, path_list
     
     def select_suitable_sims(self, simulations: List[str], simulations_by_type: Dict[str, List[str]], 
-                             out_path: str) -> Dict:
+                             out_path : str, 
+                             verbose  : bool = True) -> Dict:
         """Retrieve suitable simulations based on efficiency-mass ratio filtering"""
         
         # Check if division already exist
         valid_sims_path = os.path.join(out_path, 'valid_simulations.txt')
         outliers_path   = os.path.join(out_path, 'outliers.txt')
-        
-        # If both files exist, load them and skip filtering
-        if os.path.exists(valid_sims_path) and os.path.exists(outliers_path):
-            logger.info("Found existing filter files. Loading from disk...")
-        
-            # Load valid simulations
-            with open(valid_sims_path, 'r') as f:
-                valid_sim_paths = [line.strip() for line in f if line.strip()]
-        
-            # Load outliers
-            with open(outliers_path, 'r') as f:
-                outlier_paths = [line.strip() for line in f if line.strip()]
-                    
-            logger.info(f"Loaded {len(valid_sim_paths)} valid simulations from: {valid_sims_path}")
-            logger.info(f"Loaded {len(outlier_paths)} outliers from: {outliers_path}")
-            
-            simulations = valid_sim_paths
+        cache_exists    = os.path.exists(valid_sims_path) and os.path.exists(outliers_path)
 
-        # If not, proceed with filtering
-        else:
-            logger.info("No existing filter files found. Proceeding with filtering...")
-            
-        # Retrieve labels
+        # Build label lookup (always needed)
         path_to_label = {path: env_type
                         for env_type, paths in simulations_by_type.items()
                         for path in paths
                         }
 
+        if cache_exists:
+            # Load cached paths
+            logger.info("Found existing filter files. Loading from disk...")
+            with open(valid_sims_path, 'r') as f:
+                valid_sim_paths = [line.strip() for line in f if line.strip()]
+            with open(outliers_path, 'r') as f:
+                outlier_paths = [line.strip() for line in f if line.strip()]
+
+            logger.info(f"Loaded {len(valid_sim_paths)} valid simulations from: {valid_sims_path}")
+            logger.info(f"Loaded {len(outlier_paths)} outliers from: {outliers_path}")
+
+            # Process only valid sims to obtain mass_ratio/epsilon for plotting.
+            # Re-running efficiency_mass_ratio_relation would re-compute the outlier
+            # threshold on a different subset, producing a methodologically inconsistent
+            # result. Instead, we compute the quantities directly.
+            valid_labels = [path_to_label.get(p, np.nan) for p in valid_sim_paths]
+            _, m_valid, phy_valid, path_list = self.process_simulations(
+                                                    valid_sim_paths, valid_labels,
+                                                    augmentation = False,
+                                                    apply_noise  = False,
+                                                    n_virtual    = None,
+                                                    study_mode   = True,
+                                                    verbose      = verbose)
+
+            filt_labels   = [path_to_label.get(p, np.nan) for p in path_list]
+            init_totmass  = np.array([e[filter_def_config.sim_pos][filter_def_config.Mtot_pos]   for e in phy_valid])
+            final_totmass = np.array([e[filter_def_config.final_pos][filter_def_config.Mtot_pos] for e in phy_valid])
+            init_mcrit    = np.array([e[filter_def_config.sim_pos][filter_def_config.Mcrit_pos]  for e in phy_valid])
+            final_bhmass  = np.array([mmo[filter_def_config.Mmmo_pos] for mmo in m_valid])
+            mass_ratio    = init_totmass / init_mcrit
+            epsilon       = final_bhmass / (final_totmass - final_bhmass)
+
+            return {
+                "valid_sims": {"paths"      : path_list,
+                               "labels"     : filt_labels,
+                               "mass_ratio" : mass_ratio,
+                               "epsilon"    : epsilon},
+                "outliers"  : {"paths"      : outlier_paths,
+                               "labels"     : [path_to_label.get(p, np.nan) for p in outlier_paths],
+                               "mass_ratio" : np.array([]),
+                               "epsilon"    : np.array([])}
+            }
+
+        # No cache — proceed with full filtering
+        logger.info("No existing filter files found. Proceeding with filtering...")
+
         labels = [path_to_label.get(path, np.nan) for path in simulations]
         
-        # First check which simulations can be retrieved with the actual configuration
+        # Process simulations to retrieve per-simulation time series in study_mode
         t_base, m_base, phy_base, path_list = self.process_simulations(simulations, labels, 
                                                                        augmentation = False, 
                                                                        apply_noise  = False,
                                                                        n_virtual    = None, 
                                                                        study_mode   = True, 
-                                                                       verbose      = False)
+                                                                       verbose      = verbose)
         
         # Update label list
         filt_labels = [path_to_label.get(path, np.nan) for path in path_list]
 
-        # Now filter simulations based on their values of efficiency-mass_ratio
+        # Filter simulations based on their values of efficiency-mass_ratio
         filter_output = efficiency_mass_ratio_relation(mmo_mass        = m_base, 
                                                        physical_params = phy_base, 
                                                        path_list       = path_list,
                                                        labels_list     = filt_labels,
                                                        logger          = logger)
         
-        # Ensure output directory exists
+        # Ensure output directory exists and save results
         os.makedirs(out_path, exist_ok=True)
-        
-        if not os.path.exists(valid_sims_path) and not os.path.exists(outliers_path):
-            
-            # Save filtered simulation paths of usable simulations
-            with open(valid_sims_path, 'w') as f:
-                for sim_path in filter_output['valid_sims']['paths']:
-                    f.write(f"{sim_path}\n")
-            
-            logger.info(f"Filtered simulation paths saved to: {valid_sims_path}")
-            
-            # Save outliers paths (overwrite mode)
-            with open(outliers_path, 'w') as f:
-                for sim_path in filter_output['outliers']['paths']:
-                    f.write(f"{sim_path}\n")
-            
-            logger.info(f"Outliers paths saved to: {out_path+'outliers.txt'}")
+
+        with open(valid_sims_path, 'w') as f:
+            for sim_path in filter_output['valid_sims']['paths']:
+                f.write(f"{sim_path}\n")
+        logger.info(f"Filtered simulation paths saved to: {valid_sims_path}")
+
+        with open(outliers_path, 'w') as f:
+            for sim_path in filter_output['outliers']['paths']:
+                f.write(f"{sim_path}\n")
+        logger.info(f"Outliers paths saved to: {outliers_path}")
         
         return filter_output
     
-    def _validate_simulation(self, imbh_df: pd.DataFrame) -> bool:
-        """Check if simulation has sufficient points for processing."""
-        
-        return len(imbh_df) > self.config.min_points_threshold
+    def _validate_simulation(self, imbh_df: pd.DataFrame, system_df: pd.DataFrame
+                               ) -> Tuple[bool, Optional[pd.DataFrame], Optional[str]]:
+        """Check temporal resolution compatibility and point count for a simulation."""
+        # Align system_df to imbh_df times via nearest-neighbour merge
+        matched_system_df = pd.merge_asof(imbh_df[[self.config.time_column_imbh]], system_df,
+                                          left_on   = self.config.time_column_imbh,
+                                          right_on  = self.config.time_column_system,
+                                          direction = "nearest"
+                                          ).reset_index(drop=True)
+
+        # Check temporal resolution compatibility before accepting the alignment.
+        imbh_dt     = imbh_df[self.config.time_column_imbh].diff().median()
+        match_error = (matched_system_df[self.config.time_column_system]
+                       - imbh_df[self.config.time_column_imbh]).abs().median()
+
+        # Create flags for resolution and point count
+        resolution_flag = (imbh_dt > 0) and (match_error > self.config.max_resolution_ratio * imbh_dt)
+        num_points_flag = len(imbh_df) <= self.config.min_points_threshold
+
+        if resolution_flag and num_points_flag:
+            reason = (f"resolution mismatch (match_error={match_error:.3f} > "
+                      f"{self.config.max_resolution_ratio}*dt={self.config.max_resolution_ratio*imbh_dt:.3f}) "
+                      f"AND insufficient points ({len(imbh_df)} <= {self.config.min_points_threshold})")
+            return False, None, reason
+        if resolution_flag:
+            reason = (f"resolution mismatch (match_error={match_error:.3f} > "
+                      f"{self.config.max_resolution_ratio}*dt={self.config.max_resolution_ratio*imbh_dt:.3f})")
+            return False, None, reason
+        if num_points_flag:
+            reason = f"insufficient points ({len(imbh_df)} <= {self.config.min_points_threshold})"
+            return False, None, reason
+
+        # Overwrite system time column with exact IMBH timestamps
+        matched_system_df[self.config.time_column_system] = imbh_df[self.config.time_column_imbh].values
+
+        return True, matched_system_df, None
     
     def _process_single(self, imbh_df: pd.DataFrame, system_df: pd.DataFrame, iconds_dict: Dict,
                        config      : Any,

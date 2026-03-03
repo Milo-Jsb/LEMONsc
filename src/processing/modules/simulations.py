@@ -89,13 +89,12 @@ class SimulationProcessor:
                 imbh_df     = imbh_history[0].drop_duplicates(subset=self.config.time_column_imbh
                                                               ).sort_values(self.config.time_column_imbh
                                                                             ).reset_index(drop=True)
-                iconds_dict = imbh_history[1]  
-                system_df   = pd.merge_asof(imbh_df[self.config.time_column_imbh], 
-                                            system[0].sort_values(self.config.time_column_system).reset_index(drop=True),
-                                            left_on   = self.config.time_column_imbh,
-                                            right_on  = self.config.time_column_system,
-                                            direction = "nearest"
-                                        )
+                iconds_dict = imbh_history[1]
+                # Store raw system data without pre-alignment: alignment and temporal resolution
+                # validation are handled exclusively by _validate_simulation in processor.py.
+                # Pre-aligning here would cause _validate_simulation to always compute match_error≈0,
+                # silently disabling the resolution_flag check.
+                system_df   = system[0].sort_values(self.config.time_column_system).reset_index(drop=True)
             
             self._cache[cache_key] = (imbh_df, system_df, iconds_dict)
         
@@ -148,8 +147,23 @@ class SimulationProcessor:
             try:
                 imbh_df, system_df, iconds_dict = self.load_single_simulation(path)
                 
-                # Only process if sufficient points
-                if len(imbh_df) <= self.config.min_points_threshold:
+                # Apply same validation as DataProcessor._validate_simulation to ensure
+                # classify_simulations_by_environment and process_simulations agree on
+                # which simulations are usable (both min_points and resolution checks).
+                num_points_flag = len(imbh_df) <= self.config.min_points_threshold
+
+                aligned     = pd.merge_asof(imbh_df[[self.config.time_column_imbh]], system_df,
+                                            left_on   = self.config.time_column_imbh,
+                                            right_on  = self.config.time_column_system,
+                                            direction = "nearest")
+                imbh_dt     = imbh_df[self.config.time_column_imbh].diff().median()
+                match_error = (aligned[self.config.time_column_system]
+                               - imbh_df[self.config.time_column_imbh]).abs().median()
+                resolution_flag = (imbh_dt > 0) and (match_error > self.config.max_resolution_ratio * imbh_dt)
+
+                if num_points_flag or resolution_flag:
+                    logger.warning(f"Skipping classification [{('insufficient points' if num_points_flag else '')} "
+                                   f"{'resolution mismatch' if resolution_flag else ''}]: {path}")
                     continue
                 
                 # Determine formation channel

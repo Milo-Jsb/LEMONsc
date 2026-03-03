@@ -35,8 +35,7 @@ plt.rcParams.update({
     "font.family": "serif",
     "font.serif": ["Computer Modern Roman"],
     "font.sans-serif": ["Computer Modern Sans Serif"],
-    "font.monospace": ["Computer Modern Typewriter"],
-    "font.size": 12,})
+    "font.monospace": ["Computer Modern Typewriter"]})
 
 # Unique class for plot relevant features of the dataset or simulations ----------------------------------------------------#
 class PlotGenerator:
@@ -71,12 +70,16 @@ class PlotGenerator:
         # Normalized time arrays (if needed, here we keep them as they are for better interpretability)
         tb_scaled, ta_scaled, td_scaled = t_base_arr, t_augm_arr, t_down_arr
         
-        # Normalized mass arrays (if needed, here we keep them as they are for better interpretability)
-        m_base_arr, m_augm_arr, m_down_arr = m_base_arr, m_augm_arr, m_down_arr
+        # Normalized mass arrays (here we normalize by initial total mass in the cluster assuming is in the 6th column)
+        mtot_base = phy_base_arr[:,5] 
+        mtot_augm = phy_augm_arr[:,5]
+        mtot_down = phy_down_arr[:,5]
+        
+        m_base_arr, m_augm_arr, m_down_arr = m_base_arr/mtot_base, m_augm_arr/mtot_augm, m_down_arr/mtot_down
 
         # Labels
         xlabel = r"$t$ [Myr]"
-        ylabel = r"M$_{\rm{MMO}}$ [M$_\odot$]"
+        ylabel = r"M$_{\rm{MMO}}$/M$_{\rm{tot}}$"
 
         # Plot of the full dataset comparison
         self._create_single_plot(tb_scaled, m_base_arr, ta_scaled, m_augm_arr, td_scaled, m_down_arr, 
@@ -177,7 +180,7 @@ class PlotGenerator:
         violinplot_features(features = feats, feature_names= names, path_save= out_figs, name_file= experiment, 
                             dataset_name = dataset,
                             figsize      = (9, 12),
-                            violin_color = 'darkcyan',
+                            violin_color = 'goldenrod',
                             nrows        = 3,
                             ncols        = 3,
                             num_points   = 1000,
@@ -209,13 +212,29 @@ class PlotGenerator:
                                       name_file      = experiment,
                                       corr_metric    = 'pearson',
                                       n_bootstrap    = 1000,
-                                      bar_color      = 'steelblue',
-                                      bar_edgecolor  = 'lightblue',
+                                      n_jobs         = 20,
+                                      bar_color      = 'darkred',
+                                      bar_edgecolor  = 'silver',
                                       bar_width      = 0.6,
                                       figsize        = (10, 6),
                                       rotation       = 45,
                                       ifsave         = True,
                                       ifshow         = False) 
+        
+        plot_partial_correlation_bars(df=feats, features=feats_names, target=target_name, path_save=out_figs, 
+                                      features_names = feats_labels,
+                                      target_name    = target_labels,
+                                      name_file      = experiment,
+                                      corr_metric    = 'spearman',
+                                      n_bootstrap    = 1000,
+                                      n_jobs         = 20,
+                                      bar_color      = 'darkred',
+                                      bar_edgecolor  = 'silver',
+                                      bar_width      = 0.6,
+                                      figsize        = (10, 6),
+                                      rotation       = 45,
+                                      ifsave         = True,
+                                      ifshow         = False)
         
     # Create efficiency plot ----------------------------------------------------------------------------------------------#
     @staticmethod
@@ -262,34 +281,35 @@ class PlotGenerator:
                     show        = False)
         
         # Generate feature importance plot
-        if any(fi is not None for fi in feature_importances):
-            valid_importances = [fi for fi in feature_importances if fi is not None]
-            if valid_importances:
-                # Organize importances by feature (collect values across folds)
-                all_features = list(valid_importances[0].keys())
-                importances_by_feature = {feat: [] for feat in all_features}
-                
-                for fold_importance in valid_importances:
-                    for feat, val in fold_importance.items():
-                        importances_by_feature[feat].append(val)
-                
-                # Convert to numpy arrays
-                importances_by_feature = {k: np.array(v) for k, v in importances_by_feature.items()}
-                
-                try:
-                    feature_importance_plot(importances_dict = importances_by_feature,
-                                            path_save        = str(out_path),
-                                            name_file        = f"{model_name}_mean_preds",
-                                            model_name       = f"{model_title[model_name]}",
-                                            bar_color        = 'steelblue',
-                                            bar_edgecolor    = 'lightblue',
-                                            figsize          = (10, 6),
-                                            top_n            = None,  
-                                            ifsave           = True,
-                                            ifshow           = False)
-                
-                except Exception as e:
-                
-                    raise RuntimeError(f"Error generating feature importance plot: {e}")
+        if feature_importances is not None:
+            if any(fi is not None for fi in feature_importances):
+                valid_importances = [fi for fi in feature_importances if fi is not None]
+                if valid_importances:
+                    # Organize importances by feature (collect values across folds)
+                    all_features = list(valid_importances[0].keys())
+                    importances_by_feature = {feat: [] for feat in all_features}
+                    
+                    for fold_importance in valid_importances:
+                        for feat, val in fold_importance.items():
+                            importances_by_feature[feat].append(val)
+                    
+                    # Convert to numpy arrays
+                    importances_by_feature = {k: np.array(v) for k, v in importances_by_feature.items()}
+                    
+                    try:
+                        feature_importance_plot(importances_dict = importances_by_feature,
+                                                path_save        = str(out_path),
+                                                name_file        = f"{model_name}_mean_preds",
+                                                model_name       = f"{model_title[model_name]}",
+                                                bar_color        = 'steelblue',
+                                                bar_edgecolor    = 'lightblue',
+                                                figsize          = (10, 6),
+                                                top_n            = None,  
+                                                ifsave           = True,
+                                                ifshow           = False)
+                    
+                    except Exception as e:
+                    
+                        raise RuntimeError(f"Error generating feature importance plot: {e}")
         
 #--------------------------------------------------------------------------------------------------------------------------#

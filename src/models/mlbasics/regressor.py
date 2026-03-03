@@ -10,50 +10,61 @@ import pandas as pd
 from pathlib                 import Path
 from typing                  import Optional, Dict, List, Union, Any
 from sklearn.linear_model    import ElasticNet
-from cuml.svm                import SVR as cuSVR
-from sklearn.metrics         import mean_squared_error, mean_absolute_error, root_mean_squared_error, r2_score
+from sklearn.preprocessing   import StandardScaler as SklearnStandardScaler
+from cuml.svm                import LinearSVR
+from cuml.preprocessing      import StandardScaler as CumlStandardScaler
 from sklearn.exceptions      import NotFittedError
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.utils.directory import load_yaml_dict
-from src.utils.callbacks  import check_gpu_available
-
+from src.utils.eval      import compute_metrics
+from src.utils.resources import check_gpu_available
 # Constants ---------------------------------------------------------------------------------------------------------------#
-SUPPORTED_MODELS = ["elasticnet", "svr"]
-DEFAULT_METRICS = ["mse", "rmse", "mae", "r2"]
+SUPPORTED_MODELS        = ["elasticnet", "linearsvr"]
+DEFAULT_METRICS         = ["mse", "rmse", "mae", "r2"]
 DEFAULT_IMPORTANCE_TYPE = "coefficients"
 
 # Custom Basic ML Regressor -----------------------------------------------------------------------------------------------#
 class MLBasicRegressor:
     """
     ________________________________________________________________________________________________________________________
-    MLBasicRegressor: A comprehensive machine learning basic regressor wrapper for model comparison
+    MLBasicRegressor: A comprehensive machine learning linear basic regressor wrapper for model comparison
     ________________________________________________________________________________________________________________________
     Models supported:
-        - ElasticNet : sklearn.linear_model.ElasticNet (CPU only)
-        - SVR        : cuml.svm.SVR (GPU CUDA only)
+    -> ElasticNet : sklearn.linear_model.ElasticNet (CPU only)
+    -> LinearSVR  : cuml.svm.LinearSVR (GPU CUDA only)
+    ________________________________________________________________________________________________________________________    
+    Notes:
+        - If needed standarization is made through a hardcoded StandardScaler, which is applied internally to input features 
+          before fitting and prediction.
+            - ElasticNet (CPU) : sklearn.preprocessing.StandardScaler.
+            - LinearSVR (GPU)  : cuml.preprocessing.StandardScaler..
+          
+          The scaler state is persisted together with the model via save_model/load_model.
     ________________________________________________________________________________________________________________________
     """
     
     # Initialization of the Regressor--------------------------------------------------------------------------------------#
     def __init__(self, model_type: str = "elasticnet", model_params: Optional[Dict] = None, 
-                 feat_names: Optional[List] = None, 
-                 n_jobs    : Optional[int] = None,
-                 device    : str           = "cpu", 
-                 verbose   : bool          = False):
+                 feat_names : Optional[List] = None,
+                 use_scaler : bool           = False, 
+                 n_jobs     : Optional[int]  = None,
+                 device     : str            = "cpu", 
+                 verbose    : bool           = False):
         """
         ____________________________________________________________________________________________________________________
         Initialize the MLBasicRegressor with specified model type and parameters.
         ____________________________________________________________________________________________________________________
         Parameters:
-            - model_type   (str)  : Mandatory. Type of model to use ('elasticnet', 'svr').
-            - model_params (dict) : Optional. Dictionary containing model-specific hyperparameters.
-            - feat_names   (List) : Optional. List of feature names.
-            - n_jobs       (int)  : Optional. Number of cores to use during computation (ElasticNet only).
-            - device       (str)  : Optional. 'cpu' (default) or 'cuda' for GPU acceleration.
-                                    Note: SVR (cuML) only supports 'cuda' and will override 'cpu' if specified.
-                                    ElasticNet only supports 'cpu' and will override 'cuda' if specified.
-            - verbose      (bool) : Optional. Enable verbose logging for debugging purposes.
+        -> model_type   (str)  : Mandatory. Type of model to use ('elasticnet', 'linearsvr').
+        -> model_params (dict) : Optional. Dictionary containing model-specific hyperparameters.
+        -> feat_names   (List) : Optional. List of feature names.
+        -> use_scaler   (bool) : Mandatory. If use standard scaler together with the smodel selected.
+        -> n_jobs       (int)  : Optional. Number of cores to use during computation (ElasticNet only).
+        -> device       (str)  : Optional. 'cpu' (default) or 'cuda' for GPU acceleration.
+                                 Note: LinearSVR (cuML) only supports 'cuda' and will override 'cpu' if specified.
+                                 ElasticNet only supports 'cpu' and will override 'cuda' if specified.
+        -> verbose      (bool) : Optional. Enable verbose logging for debugging purposes.
         
         ____________________________________________________________________________________________________________________
         Raises:
@@ -69,17 +80,19 @@ class MLBasicRegressor:
             raise ValueError("device must be either 'cpu' or 'cuda'")
         
         # Main parameters -------------------------------------------------------------------------------------------------#
-        self.model_type          = model_type.lower()
-        self.model_params        = model_params or {}
-        self.n_jobs              = n_jobs
-        self.verbose             = verbose
-        self.feature_names       = feat_names
-        self.device              = device
-        
+        self.model_type    = model_type.lower()
+        self.model_params  = model_params or {}
+        self.n_jobs        = n_jobs
+        self.verbose       = verbose
+        self.feature_names = feat_names
+        self.device        = device
+        self.use_scaler    = use_scaler
+
         # Internal attributes ---------------------------------------------------------------------------------------------#
         self.is_fitted           = False
         self.importance_type     = DEFAULT_IMPORTANCE_TYPE
-        self.feature_importance_ = None            
+        self.feature_importance_ = None
+        self.scaler_             = None             
         
         # Validate model type ---------------------------------------------------------------------------------------------#
         if self.model_type not in SUPPORTED_MODELS:
@@ -91,16 +104,16 @@ class MLBasicRegressor:
                 warnings.warn("ElasticNet does not benefit from GPU acceleration. Using CPU implementation.")
             self.device = "cpu"
         
-        # Validate device for SVR (GPU only) ------------------------------------------------------------------------------#
-        if self.model_type == "svr" and self.device == "cpu":
+        # Validate device for LinearSVR (GPU only) ------------------------------------------------------------------------#
+        if self.model_type == "linearsvr" and self.device == "cpu":
             # Check if GPU is actually available
             if not check_gpu_available():
                 raise RuntimeError(
-                    "cuML SVR requires GPU (CUDA), but no GPU detected. "
+                    "cuML LinearSVR requires GPU (CUDA), but no GPU detected. "
                     "Please ensure CUDA is properly installed and a GPU is available."
                 )
             if self.verbose:
-                warnings.warn("cuML SVR only supports GPU (cuda). Device will be set to 'cuda'.")
+                warnings.warn("cuML LinearSVR only supports GPU (cuda). Device will be set to 'cuda'.")
             self.device = "cuda"
         
         # Create the class element ----------------------------------------------------------------------------------------#
@@ -122,7 +135,7 @@ class MLBasicRegressor:
         Initialize the underlying model with appropriate default parameters.
         ____________________________________________________________________________________________________________________
         Returns:
-            - model : Initialized model instance (ElasticNet or SVR)
+            - model : Initialized model instance (ElasticNet or LinearSVR)
         ____________________________________________________________________________________________________________________
         """
         # Get the default model params path relative to this file
@@ -142,25 +155,43 @@ class MLBasicRegressor:
             clean_params.pop("device", None)
             clean_params.pop("n_jobs", None)
             
+            # Initialize sklearn StandardScaler for CPU-based ElasticNet if required
+            if self.use_scaler: self.scaler_ = SklearnStandardScaler()
+
+            # Verbose
+            if self.verbose: 
+                if self.use_scaler:
+                    print("Using sklearn (StandardScaler|ElasticNet)")
+
+                else:
+                    print("Using sklearn ElasticNet")
+            
             return ElasticNet(**clean_params)
         
-        # Support Vector Regressor ----------------------------------------------------------------------------------------#
-        elif self.model_type == "svr":
+        # Linear Support Vector Regressor ---------------------------------------------------------------------------------#
+        elif self.model_type == "linearsvr":
             
             # Retrieve default parameters and update the dictionary
-            default_params = load_yaml_dict(path=str(default_model_params_path / "svr.yaml"))
+            default_params = load_yaml_dict(path=str(default_model_params_path / "linearsvr.yaml"))
             default_params.update(params)
             
-            # Remove unsupported parameters for cuML SVR
+            # Remove unsupported parameters for cuML LinearSVR
             clean_params = default_params.copy()
             clean_params.pop("device", None)
             clean_params.pop("n_jobs", None)
-            clean_params.pop("shrinking", None)
 
+            # Initialize cuML StandardScaler for GPU-based LinearSVR
+            if self.use_scaler: self.scaler_ = CumlStandardScaler()
+
+            # Verbose
             if self.verbose:
-                print("Using cuML SVR for GPU acceleration")
+                if self.use_scaler:
+                    print("Using cuML (StandardScaler|LinearSVR) for GPU acceleration")
+                
+                else:
+                    print("Using cuML LinearSVR for GPU acceleration")
         
-            return cuSVR(**clean_params)
+            return LinearSVR(**clean_params)
  
     # Fit a given model using data points ---------------------------------------------------------------------------------#
     def fit(self, X_train: Union[np.ndarray, pd.DataFrame], y_train: Union[np.ndarray, pd.Series], 
@@ -225,8 +256,17 @@ class MLBasicRegressor:
             # Prepare parameters
             fit_params = dict_params if dict_params is not None else {}
             
-            # Fit the model and flag as fitted
-            self.model.fit(X_train, y_train, **fit_params)
+            # Fit the scaler and transform training features if required, else pass the original data
+            if self.use_scaler:
+                X_scaled = self.scaler_.fit_transform(X_train)
+                if self.verbose:
+                    print(f"StandardScaler fitted and applied to training features")
+            
+            else:
+                X_scaled = X_train
+
+            # Fit the model on scaled features and flag as fitted
+            self.model.fit(X_scaled, y_train, **fit_params)
             self.is_fitted = True
             
             # Automatically compute and store feature importance after fitting
@@ -264,9 +304,20 @@ class MLBasicRegressor:
         if not self.is_fitted : raise NotFittedError("Model must be fitted before making predictions")
         if X is None          : raise ValueError("X cannot be None")
         
+        # Scale input features using the fitted scaler if required, else pass the original data ---------------------------#
+        if self.use_scaler:
+            try:
+                    X_scaled = self.scaler_.transform(X)
+
+            except Exception as e:
+                raise ValueError(f"Error scaling input features: {e}") from e
+
+        else: 
+            X_scaled = X
+
         # Make predictions ------------------------------------------------------------------------------------------------#
         try:           
-            preds = self.model.predict(X)
+            preds = self.model.predict(X_scaled)
             
             return preds
         
@@ -321,7 +372,8 @@ class MLBasicRegressor:
         ____________________________________________________________________________________________________________________
         Notes:
             - ElasticNet returns absolute coefficients (coef_)
-            - SVR returns absolute coefficients for linear kernel only
+            - LinearSVR returns absolute coefficients (always linear kernel)
+            - Coefficients are in the scaled feature space (after StandardScaler)
             - Results are cached in self.feature_importance_ after first computation
             - importance_type is set to "coefficients" for linear models
         ____________________________________________________________________________________________________________________
@@ -345,21 +397,11 @@ class MLBasicRegressor:
                 coefficients = self.model.coef_
                 importance_dict = self._compute_importance_from_coefficients(coefficients)
                 
-            # SVR with linear kernel has coefficients
-            elif self.model_type == "svr":
-                # Check for linear kernel and coefficients in the model
+            # LinearSVR has coefficients (always linear kernel)
+            elif self.model_type == "linearsvr":
+                # Check for coefficients in the model
                 if not hasattr(self.model, "coef_"):
-                    kernel = getattr(self.model, "kernel", "unknown")
-                    raise AttributeError(
-                        f"SVR with kernel '{kernel}' does not have coefficients. "
-                        "Only linear kernel provides feature importance."
-                    )
-                
-                if hasattr(self.model, "kernel") and self.model.kernel != "linear":
-                    raise AttributeError(
-                        f"SVR with kernel '{self.model.kernel}' does not support feature importance. "
-                        "Only linear kernel provides coefficients."
-                    )
+                    raise AttributeError("LinearSVR model does not have coefficients in this version of cuML")
                 
                 # Extract coefficients (handle different shapes)
                 coefficients = self.model.coef_[0] if len(self.model.coef_.shape) > 1 else self.model.coef_
@@ -411,20 +453,11 @@ class MLBasicRegressor:
             metrics = DEFAULT_METRICS
         
         try:
-            y_pred = self.model.predict(X)
-            results = {}
-            
-            # Compute metrics and store in dictionary
-            for metric in metrics:
-                if   (metric.lower() == "mse")  : results["mse"]  = mean_squared_error(y, y_pred)
-                elif (metric.lower() == "rmse") : results["rmse"] = root_mean_squared_error(y, y_pred)
-                elif (metric.lower() == "mae")  : results["mae"]  = mean_absolute_error(y, y_pred)
-                elif (metric.lower() == "r2")   : results["r2"]   = r2_score(y, y_pred)
-                
-                else:
-                    if self.verbose: 
-                        print(f"Warning: Unknown metric '{metric}' ignored")
-            
+            # Scale input features using the fitted scaler if required, else pass the original data
+            X_scaled = self.scaler_.transform(X) if self.use_scaler else X
+            y_pred   = self.model.predict(X_scaled)
+            results  = compute_metrics(y, y_pred, metrics, verbose=self.verbose)
+
             return results
             
         except (TypeError, ValueError) as e:
@@ -458,6 +491,7 @@ class MLBasicRegressor:
                 "model_type"          : self.model_type,
                 "model_params"        : self.model_params,
                 "model"               : self.model,
+                "scaler"              : self.scaler_,
                 "is_fitted"           : self.is_fitted,
                 "feature_names"       : self.feature_names,
                 "device"              : self.device,
@@ -526,15 +560,23 @@ class MLBasicRegressor:
             instance.importance_type     = data.get("importance_type", DEFAULT_IMPORTANCE_TYPE)
             instance.feature_importance_ = data.get("feature_importance_", None)
             
+            # Restore scaler state (fallback to fresh scaler for backward compatibility)
+            if "scaler" in data and data["scaler"] is not None:
+                instance.scaler_ = data["scaler"]
+            else:
+                if verbose:
+                    warnings.warn("No scaler found in saved model. A new unfitted scaler was created. "
+                                  "Re-fit or re-save the model to persist the scaler.")
+            
             # Device validation and warnings
             if instance.model_type == "elasticnet" and load_device == "cuda":
                 if verbose:
                     warnings.warn("ElasticNet loaded with 'cuda' device, but will use CPU.")
                 instance.device = "cpu"
             
-            elif instance.model_type == "svr" and load_device == "cpu":
+            elif instance.model_type == "linearsvr" and load_device == "cpu":
                 if verbose:
-                    warnings.warn("cuML SVR loaded with 'cpu' device, but requires GPU. Device will be set to 'cuda'.")
+                    warnings.warn("cuML LinearSVR loaded with 'cpu' device, but requires GPU. Device will be set to 'cuda'.")
                 instance.device = "cuda"
             
             if verbose: 
@@ -564,6 +606,7 @@ class MLBasicRegressor:
             "device"                 : self.device,
             "importance_type"        : self.importance_type,
             "has_feature_importance" : self.feature_importance_ is not None,
+            "scaler_type"           : type(self.scaler_).__name__ if self.scaler_ is not None else None,
         }
         
         # Add model-specific information
@@ -573,8 +616,7 @@ class MLBasicRegressor:
                 info["l1_ratio"] = getattr(self.model, "l1_ratio", None)
                 info["n_iter"]   = getattr(self.model, "n_iter_", None)
                 
-            elif self.model_type == "svr":
-                info["kernel"]  = getattr(self.model, "kernel", None)
+            elif self.model_type == "linearsvr":
                 info["C"]       = getattr(self.model, "C", None)
                 info["epsilon"] = getattr(self.model, "epsilon", None)
                 if hasattr(self.model, "support_"):

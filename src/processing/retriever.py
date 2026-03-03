@@ -15,14 +15,15 @@ from src.processing.constructors.moccasurvey import load_moccasurvey_imbh_histor
 
 # Retrieve a partition of input / target values for a ML-Experiment -------------------------------------------------------#
 def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSurveyExperimentConfig = def_config,
-                        simulations_type   : Optional[List[str]]         = None,
-                        augmentation       : bool                        = False, 
-                        logger             : Optional[Logger]            = None, 
-                        test_partition     : bool                        = False,
-                        noise              : bool                        = True,
-                        points_per_sim     : Optional[Union[int, float]] = None, 
-                        n_virtual          : int                         = 1,
-                        downsampled        : bool                        = False
+                        simulations_type     : Optional[List[str]]         = None,
+                        augmentation         : bool                        = False, 
+                        logger               : Optional[Logger]            = None, 
+                        test_partition       : bool                        = False,
+                        noise                : bool                        = True,
+                        points_per_sim       : Optional[Union[int, float]] = None, 
+                        n_virtual            : int                         = 1,
+                        downsampled          : bool                        = False,
+                        max_resolution_ratio : float                       = 10.0
                         )-> Union[Tuple[List[np.ndarray], List[np.ndarray]],
                                   Tuple[List[np.ndarray], List[np.ndarray], List[str]]]:
     """
@@ -30,26 +31,40 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
     Retrieve a partition of input/target values for a ML-Experiment using MOCCA Survey simulation data.
     ________________________________________________________________________________________________________________________
     Parameters:
-    -> simulations_path  (list)                        : List of simulation paths.
-    -> experiment_config (MoccaSurveyExperimentConfig) : Configuration object defining features and targets to retrieve.
-    -> simulations_type  (Optional[list])              : List of simulation environment types (e.g., 'FAST', 'SLOW')
-    -> augmentation      (bool)                        : Whether to augment data based on the time evolution of the initial 
-                                                         conditions.
-    -> logger            (Optional[Logger])            : If given, print relevant comments in the console.
-    -> test_partition    (bool)                        : If True, store simulation paths for test data tracking.
-    -> noise             (bool)                        : Implement gaussian noise to data (not included for test partition)
-    -> points_per_sim    (Union[int, float])           : Number of points to sample per simulation. Only used when 
-                                                         augmentation = True.
-                                                         If int, uses fixed number of points. If float (between 0 and 1), 
-                                                         uses proportional sampling (size = len(imbh_df) * points_per_sim).
-    -> n_virtual        (int)                          : Number of virtual simulations to sample per real simulation if 
-                                                         augmentation is enabled.
-    -> downsampled      (bool)                         : If perform a downsampled of the dataset by accumulation points in 
-                                                         a 2D histogram
+    -> simulations_path     (list)                        : List of simulation paths.
+    -> experiment_config    (MoccaSurveyExperimentConfig) : Configuration object defining features and targets to retrieve.
+    -> simulations_type     (Optional[list])              : List of simulation environment types (e.g., 'FAST', 'SLOW')
+    -> augmentation         (bool)                        : Whether to augment data based on the time evolution of the 
+                                                            initial conditions.
+    -> logger               (Optional[Logger])            : If given, print relevant comments in the console.
+    -> test_partition       (bool)                        : If True, store simulation paths for test data tracking.
+    -> noise                (bool)                        : Implement gaussian noise to data (not included for test 
+                                                            partition)
+    -> points_per_sim       (Union[int, float])           : Number of points to sample per simulation. Only used when 
+                                                            augmentation = True.
+                                                            If int, uses fixed number of points. If float (between 0 and 1), 
+                                                            uses proportional sampling 
+                                                            (size = len(imbh_df) * points_per_sim).
+    -> n_virtual            (int)                         : Number of virtual simulations to sample per real simulation if 
+                                                            augmentation is enabled.
+    -> downsampled          (bool)                        : If perform a downsampled of the dataset by accumulation points
+                                                            in a 2D histogram
+    -> max_resolution_ratio (float)                       : Maximum allowed ratio of (median match error) / (median IMBH
+                                                            timestep) after merge_asof alignment. Simulations where this
+                                                            ratio exceeds the threshold are skipped with a warning.
+                                                            Default=10.0 (match error <= 10 x dt_imbh).
     ________________________________________________________________________________________________________________________
     Returns:
         Tuple: ([features, feature_names], [targets, target_names]) or 
                ([features, feature_names], [targets, target_names], simulation_paths) if test_partition=True
+    ________________________________________________________________________________________________________________________
+    Notes:
+        - When checking the temporal resolution compatibility, we compute the median IMBH timestep and the median match 
+          error produced by the nearest-neighbour merge. If the resolutions are too disparate, every virtual window sample 
+          will pair an IMBH state with a system state that is physically far away in time, silently biasing the features.
+        - If the merger is done correctly, we overwrite time_column_system with the exact IMBH timestamps so that when 
+          process_single_mocca_simulation re-sorts both DataFrames by their respective time columns, both produce the same 
+          row order (no duplicates from nearest-neighbor matching can cause misalignment during window sampling).
     ________________________________________________________________________________________________________________________
     """
     # Retrieve configuration and prelocated values
@@ -61,7 +76,9 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
 
         try:
             imbh, system     = load_moccasurvey_imbh_history(f"{path}/", init_conds_sim=True, init_conds_evo=True)
-            imbh_df          = imbh[0].drop_duplicates(def_config.time_column_imbh).sort_values(def_config.time_column_imbh)
+            imbh_df          = imbh[0].drop_duplicates(def_config.time_column_imbh
+                                                       ).sort_values(def_config.time_column_imbh
+                                                                     ).reset_index(drop=True)
             iconds_imbh_dict = imbh[1]
             system_df        = system[0].sort_values(def_config.time_column_system).reset_index(drop=True)
             env_type         = simulations_type[idx] if simulations_type else None
@@ -72,6 +89,25 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
                                               right_on  = def_config.time_column_system, 
                                               direction = "nearest"
                                               ).reset_index(drop=True)
+            
+            # Check temporal resolution compatibility before accepting the alignment.
+            imbh_dt     = imbh_df[def_config.time_column_imbh].diff().median()
+            match_error = (matched_system_df[def_config.time_column_system]- imbh_df[def_config.time_column_imbh]
+                           ).abs().median()
+
+            # If the median match error is larger than the allowed threshold times the median IMBH timestep, skip.
+            if imbh_dt > 0 and match_error > max_resolution_ratio * imbh_dt:
+                ignored += 1
+                if logger: logger.warning(
+                    f"Ignored '{path}': temporal resolutions too disparate "
+                    f"(median match error={match_error:.2f} Myr, "
+                    f"imbh_dt={imbh_dt:.2f} Myr, "
+                    f"ratio={match_error/imbh_dt:.1f}x > threshold={max_resolution_ratio}x)"
+                )
+                continue
+
+            # Overwrite time_column_system with the exact IMBH timestamp.
+            matched_system_df[def_config.time_column_system] = imbh_df[def_config.time_column_imbh].values
             
             # Ignore short simulations and raise warning
             if len(imbh_df) <= def_config.min_points_threshold:

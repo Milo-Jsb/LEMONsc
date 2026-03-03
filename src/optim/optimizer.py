@@ -4,14 +4,15 @@ import joblib
 import warnings
 import logging
 import torch
+import gc
 
-import numpy             as np
-import pandas            as pd
+import numpy  as np
+import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from pathlib              import Path
-from typing               import Dict, List, Optional, Union, Callable, Any, Sequence, TypeVar, Literal
-from sklearn.metrics      import get_scorer
+from pathlib         import Path
+from typing          import Dict, List, Optional, Union, Callable, Any, Sequence
+from sklearn.metrics import get_scorer
             
 # Custom functions --------------------------------------------------------------------------------------------------------#
 
@@ -21,14 +22,14 @@ from src.models.mltrees.regressor  import MLTreeRegressor
 from src.models.dltab.regressor    import DLTabularRegressor
 
 # Grid of hyperparams to optimize
-from src.optim.grid import ElasticNetGrid, SVRGrid, RandomForestGrid, LightGBMGrid, XGBoostGrid, MLPGrid, NODEGrid
+from src.optim.grid import ElasticNetGrid, LinearSVRGrid, RandomForestGrid, LightGBMGrid, XGBoostGrid, MLPGrid, NODEGrid
 
 # Import helper functions for each type of regressor framework
 from src.optim.utils._ml    import validate_data_ml, normalize_partitions_ml, evaluate_partition_ml
 from src.optim.utils._dltab import validate_data_dl, normalize_partitions_dl, evaluate_partition_dl
 
 # Custom function for Huber loss
-from src.utils.callbacks import huber_loss
+from src.utils.eval import huber_loss
 
 # Visualization plots
 from src.optim.utils._visuals import create_visualizations_per_study, plot_cv_evol_distributions
@@ -43,7 +44,7 @@ class SpaceSearch:
     SpaceSearch: A comprehensive hyperparameter optimization class using Optuna for Supervised Regression
     ________________________________________________________________________________________________________________________
     Features:
-    -> Support for multiple model types (ElasticNet, SVR, LightGBM, XGBoost, Random Forest, MultiLayer Perceptron, NODE)
+    -> Support for multiple model types (ElasticNet, SVR, LightGBM, XGBoost, Random Forest, MultiLayer Perceptron)
     -> Customizable search spaces and objective functions
     -> Advanced visualization and analysis tools
     -> Study persistence and loading
@@ -66,7 +67,7 @@ class SpaceSearch:
         
         # Tag of regressor type and mapping to model types
         self.model_grid_map = {
-            "mlbasic": ["elasticnet", "svr"],
+            "mlbasic": ["elasticnet", "linearsvr"],
             "mltrees": ["rf", "lightgbm", "xgboost"],
             "dltab"  : ["mlp", "node"]}
         
@@ -77,18 +78,26 @@ class SpaceSearch:
         if self.regressor is None:
             valid_models = [model for models in self.model_grid_map.values() for model in models]
             raise ValueError(f"Unsupported model_type: '{config.model_type}'. "
-                           f"Valid options are: {valid_models}")
+                             f"Valid options are: {valid_models}")
         
         # Parameter grid mapping
         self.param_grid_map = {
             "elasticnet" : ElasticNetGrid,
-            "svr"        : SVRGrid,
+            "linearsvr"  : LinearSVRGrid,
             "rf"         : RandomForestGrid,
             "lightgbm"   : LightGBMGrid,
             "xgboost"    : XGBoostGrid,
             "mlp"        : MLPGrid,
             "node"       : NODEGrid
                               }
+        
+        # Dispatch maps for validation and normalization (avoids repetitive if/elif chains)
+        self._validate_fn  = {"mlbasic" : validate_data_ml, 
+                              "mltrees" : validate_data_ml, 
+                              "dltab"   : validate_data_dl}
+        self._normalize_fn = {"mlbasic" : normalize_partitions_ml, 
+                              "mltrees" : normalize_partitions_ml, 
+                              "dltab"   : normalize_partitions_dl}
         
         # Custom metrics registry
         self.custom_metrics = {"huber": lambda y_true, y_pred: huber_loss(y_true, y_pred, delta=self.config.huber_delta)}
@@ -106,7 +115,7 @@ class SpaceSearch:
         if self.config.verbose:
             self.logger.info(f"SpaceSearch initialized for {self.model_type} model (device={self.config.device})")
     
-    # [Helper] Logging with loguru ----------------------------------------------------------------------------------------#
+    # [Helper] Logging ----------------------------------------------------------------------------------------------------#
     def __setup_logging(self) -> logging.Logger:
         """Configure logging for the optimization process"""
         logger = logging.getLogger("SpaceSearch")
@@ -117,7 +126,7 @@ class SpaceSearch:
             
             handler.setFormatter(formatter)
             logger.addHandler(handler)
-            logger.setLevel(logging.INFO if self.config.verbose else logging.WARNING)
+            logger.setLevel(logging.DEBUG if self.config.verbose else logging.WARNING)
 
         return logger
     
@@ -182,6 +191,7 @@ class SpaceSearch:
             # Construct the Regressor with the given params
             model = MLBasicRegressor(model_type = self.model_type, model_params = trial_params, 
                                      feat_names = features_names,
+                                     use_scaler = self.config.use_scaler,
                                      device     = self.config.device,
                                      n_jobs     = self.config.n_jobs)
         
@@ -197,6 +207,9 @@ class SpaceSearch:
         # Delete model if provided
         if model is not None:
             del model
+        
+        # Force garbage collection before clearing CUDA cache
+        gc.collect()
         
         # Clear GPU cache if using CUDA
         if torch.cuda.is_available() and self.config.device != 'cpu':
@@ -214,8 +227,10 @@ class SpaceSearch:
         # If a str given, check custom metrics first and then sklearn
         if isinstance(metric, str):
             
+            # If a self implemented metric, return the corresponding function
             if metric.lower() in self.custom_metrics:
                 return self.custom_metrics[metric.lower()]
+            # Elif use sklearn's get_scorer. This returns a function that accepts (y_true, y_pred, **kwargs) 
             else:
                 scorer = get_scorer(metric)
                 return scorer._score_func
@@ -223,6 +238,8 @@ class SpaceSearch:
         # Elif a callable given, return as is
         elif callable(metric):
             return metric
+        
+        # Else, invalid metric type
         else:
             raise ValueError(f"Invalid metric type: {type(metric)}")
     
@@ -234,70 +251,69 @@ class SpaceSearch:
         joblib.dump(self.study, save_path, compress=compress)
             
     # [Helper] Define Optuna objective function ---------------------------------------------------------------------------#
-    def __create_objective(self, partitions: Union[Dict, List[Dict]], scorer: Callable, direction: str, 
-                           lambda_penalty: float = 0.0) -> Callable[[optuna.trial.Trial], float]:
+    def __create_objective(self, partitions: List[Dict], scorer: Callable, direction: str, is_cv : bool = True, 
+                           lambda_penalty : float = 0.0
+                           ) -> Callable[[optuna.trial.Trial], float]:
         """Create the Optuna objective function for optimization, main check for CV or single partition mode"""
-        is_cv          = isinstance(partitions, list)
-        partition_list = partitions if is_cv else [partitions]
+        
+        # Set the list of partitions
+        partition_list = partitions
         
         def objective(trial: optuna.trial.Trial) -> float:
-            
             # Initialize model reference for cleanup
             model = None  
             
-            # Main try-except block for trial evaluation
-            try:
+            try: 
+                # Initialize list to store scores for each partition
                 scores = []
                 
+                # Loop through each partition and evaluate the model
                 for idx, partition in enumerate(partition_list):
-                    try:
-                        # Create model
-                        model = self.__create_model(trial, features_names=partition['features_names'])
-                        
-                        # Evaluate partition
-                        score = self.__evaluate_partition(model, partition, scorer, trial=trial)
-                        scores.append(score)
-                        
-                        # Report intermediate values for CV
-                        if is_cv:
-                            trial.set_user_attr(f'partition_{idx}_score', score)
-                        
-                        # Clean up GPU memory after each partition evaluation
-                        self.__cleanup_gpu_memory(model)
-                        model = None  # Clear reference
+                    # Create model
+                    model = self.__create_model(trial, features_names=partition['features_names'])
                     
-                    except Exception as e:
-                        self.logger.warning(f"Trial {trial.number}, Partition {idx} failed: {e}")
-                        scores.append(-float('inf') if direction == "maximize" else float('inf'))
-                        # Clean up on error
-                        if model is not None:
-                            self.__cleanup_gpu_memory(model)
-                            model = None
+                    # Evaluate partition
+                    score = self.__evaluate_partition(model, partition, scorer, trial=trial)
+                    scores.append(score)
+                    
+                    # Report intermediate values for CV
+                    if is_cv:
+                        trial.set_user_attr(f'partition_{idx}_score', score)
+                    
+                    # Clean up GPU memory after each partition evaluation
+                    self.__cleanup_gpu_memory(model)
+                    model = None  
                 
                 # Calculate final score
                 if is_cv:
-                    mean_score = np.mean(scores)
-                    std_score  = np.std(scores)
+                    mean_score = float(np.mean(scores))
+                    std_score  = float(np.std(scores)) if np.isfinite(np.std(scores)) else 0.0
                     trial.set_user_attr('partition_scores', scores)
                     trial.set_user_attr('score_std', std_score)
                     trial.set_user_attr('score_mean', mean_score)
-                    return mean_score - lambda_penalty * std_score
+                    final_score = mean_score - lambda_penalty * std_score
+                    
+                    # Guard: return worst-case finite value if score is nan/inf (bad trial)
+                    if not np.isfinite(final_score):
+                        return -float('inf') if direction == "maximize" else float('inf')
+                    return final_score
                 else:
-                    return scores[0]
-                
+                    score = scores[0]
+                    if not np.isfinite(score):
+                        return -float('inf') if direction == "maximize" else float('inf')
+                    return score
+            
+            # If trial is pruned, re-raise the exception to let Optuna handle it    
             except optuna.TrialPruned:
-                # Clean up on pruning
-                if model is not None:
-                    self.__cleanup_gpu_memory(model)
                 raise
+            
+            # Catch other exceptions to prevent study from crashing and log them
             except Exception as e:
                 self.logger.warning(f"Trial {trial.number} failed: {e}")
-                # Clean up on failure
-                if model is not None:
-                    self.__cleanup_gpu_memory(model)
                 return -float('inf') if direction == "maximize" else float('inf')
+            
+            # At the end ensure GPU memory is cleaned up to prevent leaks, even if an exception occurred
             finally:
-                # Final cleanup to ensure no memory leaks
                 if model is not None:
                     self.__cleanup_gpu_memory(model)
         
@@ -330,28 +346,14 @@ class SpaceSearch:
     # [Helper] Router for input validation of data-------------------------------------------------------------------------#
     def __validate_data(self, partitions: List[Dict]) -> None:
         """Validate input data shapes and types"""
-        
-        # Check case scenario for MLTreesRegressor 
-        if self.regressor == "mltrees"   : validate_data_ml(partitions)
-        
-        # Elif case scenario for DLTabularRegressor
-        elif self.regressor == "dltab"   : validate_data_dl(partitions)
-        
-        # Elif case scenario for MLBasicRegressor
-        elif self.regressor == "mlbasic" : validate_data_ml(partitions)
+        self._validate_fn[self.regressor](partitions)
         
     # [Helper] Router to normalize partitions and ensure standardization of format ----------------------------------------#
     def __normalize_partitions(self, partitions: List[Dict]) -> List[Dict]:
         """Normalize partitions for both ML and DL models"""
-    
-        if self.regressor == "dltab":
-            return normalize_partitions_dl(partitions)
-        elif self.regressor == "mltrees":
-            return normalize_partitions_ml(partitions)
-        elif self.regressor == "mlbasic":
-            return normalize_partitions_ml(partitions)
-        else:
+        if self.regressor not in self._normalize_fn:
             raise ValueError(f"Unknown regressor type: {self.regressor}")
+        return self._normalize_fn[self.regressor](partitions)
 
     # [Helper] Router to evaluation methods acording to the type of model selected ----------------------------------------#
     def __evaluate_partition(self, model: Union[MLBasicRegressor, MLTreeRegressor, DLTabularRegressor], 
@@ -366,12 +368,9 @@ class SpaceSearch:
                 raise ValueError("Trial object required for DL model evaluation")
             return evaluate_partition_dl(model, partition, scorer, trial, self.logger, self.config)
         
-        elif isinstance(model, MLTreeRegressor):
+        elif isinstance(model, MLTreeRegressor) or isinstance(model, MLBasicRegressor):
             return evaluate_partition_ml(model, partition, scorer)
         
-        elif isinstance(model, MLBasicRegressor):
-            return evaluate_partition_ml(model, partition, scorer)
-
         else:
             raise ValueError(f"Unknown model type: {type(model)}")
     
@@ -413,7 +412,7 @@ class SpaceSearch:
                  patience       : Optional[int]                             = None,
                  pruner         : Optional[optuna.pruners.BasePruner]       = None,
                  timeout        : Optional[int]                             = None,
-                 catch          : Union[tuple, Sequence[Exception]]         = (Exception,),
+                 catch          : Union[tuple, Sequence[Exception]]         = (ValueError, RuntimeError),
                  callbacks      : Optional[List[Callable]]                  = None,
                  lambda_penalty : float                                     = 0.0
                 ) -> SpaceSearchResult:
@@ -458,6 +457,10 @@ class SpaceSearch:
            DLTabularRegressor. Else optimization won't work.
         ____________________________________________________________________________________________________________________
         """  
+        # Validate that partitions are provided
+        if partitions is None:
+            raise ValueError("partitions must be provided (List[Dict] for CV or single Dict for single partition mode)")
+        
         # Define as list if is_cv is False
         is_cv          = isinstance(partitions, list)
         partition_list = [partitions] if not is_cv else partitions
@@ -496,13 +499,14 @@ class SpaceSearch:
         objective = self.__create_objective(partitions     = partitions_normalized,
                                             scorer         = scorer,
                                             direction      = direction,
+                                            is_cv          = is_cv,
                                             lambda_penalty = lambda_penalty if is_cv else 0.0)
         # Set up callbacks
         study_callbacks = callbacks or []
         if patience:
             study_callbacks.append(self.__early_stopping_callback)
         
-        # Optimize
+        # Optimize (n_jobs=1: sequential trials for reproducibility with TPESampler and GPU memory safety)
         self.study.optimize(objective, n_trials = self.config.n_trials, timeout = timeout, catch = catch,
                             callbacks = study_callbacks if study_callbacks else None,
                             n_jobs    = 1)

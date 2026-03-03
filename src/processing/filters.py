@@ -14,10 +14,11 @@ class FilterConfig:
     min_acc          : int   = 10    # Minimum accumulation per bin
     max_acc          : int   = 150   # Maximum accumulation per bin
     randseed         : int   = 42    # Random seed for reproducibility
-    sim_pos          : int   = 0     # Position of simulation data in physical_params entries
+    sim_pos          : int   = 0     # Position of first-row data in physical_params entries (window start)
+    final_pos        : int   = -1    # Position of last-row data in physical_params entries (window end)
     Mcrit_pos        : int   = 8     # Position of M_crit in simulation data
     Mtot_pos         : int   = 5     # Position of M_total in simulation data
-    M_loss_total_pos : int   = 9     # Position of M_loss_total in simulation data
+    M_loss_total_pos : int   = 9     # Position of M_loss_total in simulation data (unused for epsilon)
     Mmmo_pos         : int   = -1    # Position of M_mmo in mmo_mass entries
     k_thres          : float = 0.5   # Multiplier for IQR to set outlier threshold
 
@@ -63,10 +64,9 @@ def safe_downsampling_of_points(feats: np.ndarray, mass: np.ndarray, logger) -> 
         if len(time_feat) > 0:
 
             H1, xedges, yedges = np.histogram2d(time_feat, mass_feat, bins=[def_config.bingrid, def_config.bingrid])
-            idxs = filter_and_downsample_hist2d(time_feat, mass_feat, H1, xedges, yedges, 
-                                                min_count = def_config.min_acc, 
+            idxs = filter_and_downsample_hist2d(time_feat, mass_feat, H1, xedges, yedges,
                                                 max_count = def_config.max_acc,
-                                                seed      = def_config.randseed)   
+                                                seed      = def_config.randseed)
 
             if len(idxs) > 0:
                 return feats_temp[idxs], mass_temp[idxs]
@@ -79,9 +79,8 @@ def safe_downsampling_of_points(feats: np.ndarray, mass: np.ndarray, logger) -> 
             return None
 
 # Filter and downsize a dataset based in a 2D histogram -------------------------------------------------------------------#
-def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray, 
-                                 min_count: int           = def_config.min_acc, 
-                                 max_count: int           = def_config.max_acc, 
+def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xedges: np.ndarray, yedges: np.ndarray,
+                                 max_count: int           = def_config.max_acc,
                                  seed     : Optional[int] = def_config.randseed
                                 ) -> np.ndarray:
     """
@@ -94,33 +93,27 @@ def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xe
         - H          (np.ndarray)        : 2D histogram array. Mandatory.
         - xedges     (np.ndarray)        : X-axis bin edges. Mandatory.
         - yedges     (np.ndarray)        : Y-axis bin edges. Mandatory.
-        - min_count  (int)               : Minimum count threshold. Points in bins with fewer points are discarded. 
         - max_count  (int)               : Maximum count threshold. Points in bins with more points are downsampled.
-        - seed       (Optional[int])     : Random seed for reproducible downsampling. 
+        - seed       (Optional[int])     : Random seed for reproducible downsampling.
     ________________________________________________________________________________________________________________________
     Returns:
         - selected_indices (np.ndarray) : Array of indices corresponding to the selected points.
     ________________________________________________________________________________________________________________________
     Notes:
-        Points in bins with accumulation < min_count are discarded. For bins with accumulation > max_count, random 
-        downsampling is performed. Between min_count and max_count, all points are kept.
+        All points are kept unless their bin exceeds max_count, in which case random downsampling is applied.
     ________________________________________________________________________________________________________________________
     """
     # Input validation ----------------------------------------------------------------------------------------------------#
     if len(x) != len(y):
         raise ValueError("x and y must have the same length.")
-    if min_count < 0:
-        raise ValueError("min_count must be non-negative.")
     if max_count <= 0:
         raise ValueError("max_count must be positive.")
-    if min_count >= max_count:
-        raise ValueError("min_count must be less than max_count.")
-    
+
     # Set random seed if provided
     if seed is not None:
         np.random.seed(seed)
 
-    # Assign each point to their respective bin----------------------------------------------------------------------------#
+    # Assign each point to their respective bin ---------------------------------------------------------------------------#
     x_bin = np.digitize(x, xedges) - 1
     y_bin = np.digitize(y, yedges) - 1
 
@@ -134,18 +127,13 @@ def filter_and_downsample_hist2d(x: np.ndarray, y: np.ndarray, H: np.ndarray, xe
 
     selected_indices = []
 
-    for bin_id, indices in bin_points.items():
-        count = len(indices)
-        if count < min_count:
-            continue 
-        elif count > max_count:
-            sampled = np.random.choice(indices, size=max_count, replace=False)
-            selected_indices.extend(sampled)
+    for indices in bin_points.values():
+        if len(indices) > max_count:
+            selected_indices.extend(np.random.choice(indices, size=max_count, replace=False))
         else:
             selected_indices.extend(indices)
 
-    selected_indices = np.array(selected_indices)
-    return selected_indices
+    return np.array(selected_indices)
 
 # Filter simulations based on the efficiency and  mass ratio relationship -------------------------------------------------#
 def efficiency_mass_ratio_relation(mmo_mass        : Union[List[float], np.ndarray], 
@@ -169,7 +157,8 @@ def efficiency_mass_ratio_relation(mmo_mass        : Union[List[float], np.ndarr
     -> config          (FilterConfig)                   : Configuration parameters for filtering. Is set by default.
     ________________________________________________________________________________________________________________________
     Returns:
-    -> output (Dict[str, Any]) : Dictionary containing valid simulations and outliers based on the filtering criteria.
+    -> output (Dict[str, Any]) : Dictionary containing all studied simulations, and outliers paths detected based on 
+                                 the filtering criteria.
     ________________________________________________________________________________________________________________________
     Notes:
     
@@ -179,23 +168,33 @@ def efficiency_mass_ratio_relation(mmo_mass        : Union[List[float], np.ndarr
         
         and efficiency,  
         
-            epsilon = M_mmo_final / M_stellar_final = M_mmo_final / (M_total_initial - M_loss_total)
+            epsilon = M_mmo_final / M_stellar_final = M_mmo_final / (M_total_final - M_mmo_final)
         
-        for each simulation, fits a curve based on Vergara et al.(2025), and calculates the perpendicular distance of each 
-        point to this curve. Simulations that fall beyond a threshold (defined as median + k*IQR of distances) are 
-        classified as outliers for further explorations. Outliers are not removed from the dataset, but flagged for review.
+        where all quantities are evaluated at the end of the (possibly windowed) time series. This avoids
+        the double-subtraction artefact that arises when using cumulative mass-loss (sloses) from t=0
+        together with a windowed M_total that already excludes pre-window losses.
+
+        The function fits a curve based on Vergara et al.(2025), and calculates the perpendicular distance
+        of each point to this curve. Simulations that fall beyond a threshold (defined as median + k*IQR
+        of distances) are classified as outliers for further explorations. Outliers are not removed from
+        the dataset, but flagged for review.
     
     Reference: Vergara et al. (2025),  10.48550/arXiv.2508.14260
     ________________________________________________________________________________________________________________________
     """
     # Compute elements of interest from the input elements
-    init_totmass    = np.array([entry[config.sim_pos][config.Mtot_pos] for entry in physical_params])
-    init_mcrit      = np.array([entry[config.sim_pos][config.Mcrit_pos] for entry in physical_params])
-    final_bhmass    = np.array([mmo[config.Mmmo_pos] for mmo in mmo_mass])
-    total_mass_loss = np.array([entry[config.sim_pos][config.M_loss_total_pos] for entry in physical_params])
-    
+    init_totmass  = np.array([entry[config.sim_pos][config.Mtot_pos]   for entry in physical_params])
+    final_totmass = np.array([entry[config.final_pos][config.Mtot_pos] for entry in physical_params])
+    init_mcrit    = np.array([entry[config.sim_pos][config.Mcrit_pos]  for entry in physical_params])
+    final_bhmass  = np.array([mmo[config.Mmmo_pos] for mmo in mmo_mass])
+
+    # mass_ratio uses window-start conditions (the "initial" state of the window-as-new-simulation)
     mass_ratio = init_totmass / init_mcrit
-    epsilon    = final_bhmass / (init_totmass - total_mass_loss)
+
+    # epsilon uses final values only: M_stellar_final = M_tot_final - M_mmo_final
+    # This is consistent regardless of whether a window was applied, because it never relies on
+    # cumulative sloses which is always counted from t=0 of the original simulation.
+    epsilon    = final_bhmass / (final_totmass - final_bhmass)
     
     # Define fit from Vergara et al. (2025)
     def V2025_epsilon_BH(m_ratio: np.ndarray, k: float=4.63, x0: float=4.0, a: float=-0.1):
