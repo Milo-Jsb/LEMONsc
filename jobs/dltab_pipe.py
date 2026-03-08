@@ -1,8 +1,9 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
 import sys
+import warnings
 import argparse
 import yaml
-import torch 
+import torch
 import optuna
 
 import numpy  as np
@@ -42,7 +43,6 @@ from src.models.dltab.regressor import DLTabularRegressor
 from src.models.dltab.data.datasets import LEMONscDataManager
 
 # Warnings managment ------------------------------------------------------------------------------------------------------#
-import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
@@ -93,6 +93,19 @@ def get_args():
                         help="Architecture YAML file name (from src/models/dltab/config/arch/)")
     parser.add_argument("--opt_config", type=str, default="adam.yaml",
                         help="Optimizer YAML file name (from src/models/dltab/config/opt/)")
+    parser.add_argument("--loss_config", type=str, default="huber.yaml",
+                        help="Loss YAML file name (from src/models/dltab/config/loss/). "
+                             "If None, loss_params defaults to {}.")
+
+    # Study persistence (SQLite)
+    parser.add_argument("--study_name", type=str, default=None,
+                        help="Deterministic name for the Optuna study. Required when using --storage to allow "
+                             "resume. If omitted, auto-generated (timestamp-based without storage, "
+                             "model+exp_name+n_folds based when storage is set).")
+    parser.add_argument("--storage", type=str, default=None,
+                        help="SQLite storage URL for Optuna study persistence and resume, e.g. "
+                             "'sqlite:///./output/optim/study.db'. "
+                             "When set, load_if_exists=True is applied automatically.")
 
     return parser.parse_args()
 
@@ -110,28 +123,30 @@ TARGET_FEAT = ["log(M_MMO/M_tot)"]
 @dataclass
 class TrainingConfig:
     """Configuration class for the execution of dltab_training() script."""
-    n_folds        : int                 = 3
-    n_trials       : int                 = 100
-    n_jobs         : int                 = 15
-    device         : str                 = "cuda" if torch.cuda.is_available() else "cpu"
-    cont_feats     : List[str]           = field(default_factory=lambda:CONT_FEATS.copy())
-    cat_feats      : Optional[List[str]] = field(default_factory=lambda:CAT_FEATS.copy() if CAT_FEATS is not None else None)
-    target_feat    : List[str]           = field(default_factory=lambda:TARGET_FEAT.copy())
-    verbose        : bool                = True
-    seed           : int                 = 42
-    direction      : str                 = "minimize"
-    metric         : str                 = "huber"
-    patience       : int                 = 20
-    lambda_penalty : float               = 0.0
-    scale_target   : bool                = True
-    epsilon_target : Optional[float]     = 1e-6
-    norm_target    : Optional[str]       = "M_tot"
-    # DL-specific parameters
-    max_epochs     : int                 = 100
-    dl_patience    : int                 = 10
-    dl_loss_fn     : str                 = "huber"
-    batch_size     : int                 = 2048
-    num_workers    : int                 = 16 
+    n_folds           : int                 = 3
+    n_trials          : int                 = 100
+    n_jobs            : int                 = 15
+    device            : str                 = "cuda" if torch.cuda.is_available() else "cpu"
+    cont_feats        : List[str]           = field(default_factory= lambda: CONT_FEATS.copy())
+    cat_feats         : Optional[List[str]] = field(default_factory= lambda: CAT_FEATS.copy() if CAT_FEATS is not None else None)
+    target_feat       : List[str]           = field(default_factory= lambda: TARGET_FEAT.copy())
+    verbose           : bool                = True
+    seed              : int                 = 42
+    direction         : str                 = "minimize"
+    metric            : str                 = "huber"
+    patience          : int                 = 15
+    lambda_penalty    : float               = 0.01
+    scale_target      : bool                = True
+    epsilon_target    : Optional[float]     = 0
+    eps_feats         : float               = 1
+    min_dem_threshold : float               = 1e-10
+    norm_target       : Optional[str]       = "M_tot"
+    max_epochs        : int                 = 100
+    dl_patience       : int                 = 5
+    train_patience    : int                 = 25
+    dl_loss_fn        : str                 = "huber"
+    batch_size        : int                 = 4096
+    num_workers       : int                 = 16 
 
 # Instantiate the configuration
 CONFIG = TrainingConfig()
@@ -139,16 +154,23 @@ CONFIG = TrainingConfig()
 # DL Architecture fixed parameters (non-optimizable, used as base for SpaceSearch) ----------------------------------------#
 _DL_CONFIG_BASE = Path(__file__).resolve().parent.parent / "src" / "models" / "dltab" / "config"
 
-def build_dl_architecture(arch_config: str = "mlp.yaml", opt_config: str = "adam.yaml") -> dict:
+def build_dl_architecture(arch_config: str = "mlp.yaml", opt_config: str = "adam.yaml",
+                          loss_config: Optional[str] = None) -> dict:
     """Build DL_ARCHITECTURE dict from YAML config files."""
     arch_params = load_yaml_dict(str(_DL_CONFIG_BASE / "arch" / arch_config))
     opt_params  = load_yaml_dict(str(_DL_CONFIG_BASE / "opt"  / opt_config))
+    
+    # Load loss params from YAML if provided, otherwise default to empty dict
+    if loss_config is not None:
+        loss_params = load_yaml_dict(str(_DL_CONFIG_BASE / "loss" / loss_config))
+    else:
+        loss_params = {}
     
     arch_elemnts = {
         "model_params"     : arch_params, 
         "optimizer_name"   : Path(opt_config).stem,
         "optimizer_params" : opt_params, 
-        "loss_params"      : {}
+        "loss_params"      : loss_params
                     }
     
     return arch_elemnts
@@ -159,7 +181,9 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
                      scale_target    : bool            = True,
                      target_norm     : Optional[str]   = None,
                      target_eps      : Optional[float] = 1e-6,
-                     n_folds         : int             = 3):
+                     n_folds         : int             = 3,
+                     study_name      : Optional[str]   = None,
+                     storage         : Optional[str]   = None):
     """Run the optimization mode pipeline for DL tabular models."""
     
     logger.info(110*"_")
@@ -178,7 +202,13 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     # Determine column names after transformation (use first fold as reference)
     fold_0_path = feats_path + "/0_fold/train.csv"
     temp_df     = pd.read_csv(fold_0_path, index_col=False)
-    temp_feats  = tabular_features(temp_df, names=feature_names, return_names=False)
+    temp_filt   = filter_simulation_artifacts(temp_df, min_denominator_threshold=CONFIG.min_dem_threshold,
+                                              filter_null_mass     = True, 
+                                              filter_initial_state = False, 
+                                              verbose              = False)
+    temp_feats  = tabular_features(temp_filt, names=feature_names, return_names=False,
+                                   eps_logscale_all_range     = CONFIG.eps_feats,
+                                   eps_logscale_limited_range = CONFIG.epsilon_target)
     
     # Identify transformed column names
     cont_columns   = [col for col in temp_feats.columns if col in contfeats]
@@ -193,8 +223,15 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     logger.info(f"  - Target               : {target} -> {target_columns}")
     logger.info(f"  - Total features       : {len(feature_cols)}")
     
-    # Define transform function to engineer features from raw CSV columns via tabular_features
-    transform_fn = lambda df: tabular_features(df, names=feature_names, return_names=False)
+    # Define transform function: filter artifacts then engineer features (consistent with mltrees_pipe)
+    transform_fn = lambda df: tabular_features(
+        filter_simulation_artifacts(df, min_denominator_threshold=CONFIG.min_dem_threshold,
+                                   filter_null_mass     = True, 
+                                   filter_initial_state = False, 
+                                   verbose              = False),
+        names=feature_names, return_names=False,
+        eps_logscale_all_range     = CONFIG.eps_feats,
+        eps_logscale_limited_range = CONFIG.epsilon_target)
     
     # Process each fold: create DataLoaders for SpaceSearch
     partitions = []
@@ -251,22 +288,41 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
 
     # Initialize optimizer with DL-specific configuration
     logger.info("Initializing SpaceSearch optimizer for DL...")
-    config = SpaceSearchConfig(model_type = model_type, n_jobs = CONFIG.n_jobs, n_trials = CONFIG.n_trials,
+    config = SpaceSearchConfig(model_type      = model_type, n_jobs = CONFIG.n_jobs, n_trials = CONFIG.n_trials,
                                device          = CONFIG.device,
                                seed            = CONFIG.seed,
                                max_epochs      = CONFIG.max_epochs,
                                dl_patience     = CONFIG.dl_patience,
                                dl_loss_fn      = CONFIG.dl_loss_fn,
-                               dl_architecture = dl_architecture)
+                               dl_architecture = dl_architecture,
+                               storage         = storage,
+                               load_if_exists  = storage is not None)
+    
+    # Generate the optimizer instance with the provided configuration
     optimizer = SpaceSearch(config)
     
-    # Prepare study
-    timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    study_name = f"cv_study_{n_folds}fold_{timestamp}"
+    # Prepare study name:
     study_path = Path(out_path) / "optim"
+    
+    # If not name provided, generate one based on storage presence and model/experiment details
+    if study_name is not None:
+        pass  
+    
+    # If a storage is provided but no study name, create a deterministic one based on model type, experiment tag and n_folds
+    elif storage is not None:
+        _exp_tag   = Path(out_path).name   # last path component as experiment identifier
+        study_name = f"cv_study_{model_type}_{_exp_tag}_{n_folds}fold"
+        logger.info(f"SQLite storage active — using deterministic study name: '{study_name}'")
+    
+    # If no storage and no name, generate a timestamp-based name to avoid conflicts between independent runs (no resume expected)
+    else:
+        timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        study_name = f"cv_study_{n_folds}fold_{timestamp}"
     
     # Log configuration before starting optimization
     logger.info(f"Starting optimization : {study_name}")
+    logger.info(f"  - Storage           : {storage if storage is not None else 'in-memory (no persistence)'}")
+    logger.info(f"  - Load if exists    : {storage is not None}")
     logger.info(f"  - Model             : {model_type}")
     logger.info(f"  - Device            : {CONFIG.device}")
     logger.info(f"  - Trials            : {CONFIG.n_trials}")
@@ -281,14 +337,28 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     logger.info(f"  - Architecture      : {dl_architecture}")
     
     try:
+        # Set the global step as fold_idx * max_epochs + epoch for the Hyperband pruner
+        _max_resource = CONFIG.n_folds * CONFIG.max_epochs
+        
+        # Min_resource: earliest step where the pruner may act. Setting to max_epochs // 4
+        _min_resource = max(1, CONFIG.max_epochs // 4)
+        
+        # Construct the Hyperband pruner with the specified resource limits and reduction factor
+        pruner = optuna.pruners.HyperbandPruner(min_resource     = _min_resource,
+                                                max_resource     = _max_resource,
+                                                reduction_factor = 3)
+        
+        # Verbose
+        logger.info(f"  - Pruner            : HyperbandPruner(min={_min_resource}, "
+                    f"max={_max_resource}, r=3) | global step = fold*{CONFIG.max_epochs}+epoch")
+        
+        # Run the optimization process with the defined partitions, study name, direction, metric, and pruner
         results = optimizer.optimize(partitions= partitions, study_name= study_name, direction= CONFIG.direction, 
                                      metric         = CONFIG.metric,
                                      output_dir     = str(study_path),
                                      save_study     = True,
                                      patience       = CONFIG.patience,
-                                     pruner         = optuna.pruners.HyperbandPruner(min_resource     = CONFIG.patience,
-                                                                                     max_resource     = CONFIG.max_epochs, 
-                                                                                     reduction_factor = 3),
+                                     pruner         = pruner,
                                      lambda_penalty = CONFIG.lambda_penalty
                                      )
         
@@ -303,19 +373,26 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         
         # Save optimization summary
         summary_path = study_path / study_name / "optimization_summary.yaml"
-        
+
         # Reconstruct nested best_params from flat Optuna dict using param group mappings
         param_groups_map = {"mlp": MLP_PARAM_GROUPS, "node": NODE_PARAM_GROUPS}
         flat_params      = results.best_params
+        
+        # Depending of model type, reconstruct the nested structure of best_params
         if model_type in param_groups_map:
+            
+            # Select the appropriate group mapping for the current model type
             groups = param_groups_map[model_type]
+            
+            # Generate the structured best_params by grouping flat_params according to the defined groups
             structured_best_params = {
-                group: {k: flat_params[k] for k in keys if k in flat_params}
-                for group, keys in groups.items()
-            }
+                group: {k: flat_params[k] for k in keys if k in flat_params} for group, keys in groups.items()}
+        
+        # If the model type is not in the param_groups_map, use the flat_params as is
         else:
             structured_best_params = flat_params
-        
+
+        # Set the summary data to be saved in the optimization summary YAML file
         summary_data = {
             'study_name'  : study_name,
             'model_type'  : model_type,
@@ -336,6 +413,7 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
                 'patience'       : CONFIG.patience,
                 'max_epochs'     : CONFIG.max_epochs,
                 'dl_patience'    : CONFIG.dl_patience,
+                'train_patience' : CONFIG.train_patience,   
                 'dl_loss_fn'     : CONFIG.dl_loss_fn,
                 'batch_size'     : CONFIG.batch_size,
                 'device'         : CONFIG.device,
@@ -346,7 +424,7 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
                 'epsilon_target' : target_eps
             }
         }
-        
+
         with open(summary_path, "w") as f:
             yaml.dump(summary_data, f, default_flow_style=False)
         
@@ -373,6 +451,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     plot_generator = PlotGenerator(config=None, cmap="magma_r")
     
     # Load best hyperparameters from optimization or use defaults ---------------------------------------------------------#
+    
     # Default nested structure built from dl_architecture (used when no opt study is found or on error)
     _default_model_params = {
         "architecture_params" : dl_architecture['model_params'],
@@ -382,18 +461,34 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     
     try:
         optimization_path = Path(out_path) / "optim"
-        study_dirs        = [d for d in optimization_path.glob("cv_study_*fold_*") if d.is_dir()]
-        
+
+        # Match both naming conventionsof storage type:
+        all_study_dirs = [d for d in optimization_path.glob("cv_study_*") if d.is_dir()]
+
+        # Keep only dirs that have a valid summary for the current model_type
+        study_dirs = []
+        for d in all_study_dirs:
+            summary_file = d / "optimization_summary.yaml"
+            if summary_file.exists():
+                try:
+                    s = load_yaml_dict(str(summary_file))
+                    if s.get("model_type") == model_type:
+                        study_dirs.append(d)
+                except Exception:
+                    pass
+
         if study_dirs:
-            latest_study = max(study_dirs, key=lambda x: x.stat().st_mtime)
-            opt_summary  = load_yaml_dict(f"{latest_study}/optimization_summary.yaml")
+            # Use the summary file's mtime so SQLite-resumed studies (whose dir mtime did not change)
+            latest_study = max(study_dirs, key=lambda x: (x / "optimization_summary.yaml").stat().st_mtime)
+            opt_summary  = load_yaml_dict(str(latest_study / "optimization_summary.yaml"))
             model_params = opt_summary['best_params']
-            
+
             logger.info(f"Using optimized parameters from: {latest_study.name}")
         else:
             model_params = _default_model_params
-            logger.info("No optimization study found. Using default architecture parameters.")
-            
+            logger.info(f"No optimization study found for model_type='{model_type}'. "
+                        "Using default architecture parameters.")
+
     except Exception as e:
         logger.warning(f"Error loading parameters: {e}")
         logger.warning("Falling back to default architecture parameters.")
@@ -415,7 +510,11 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     # Determine column names after transformation (use first fold as reference)
     fold_0_path = feats_path + "/0_fold/train.csv"
     temp_df     = pd.read_csv(fold_0_path, index_col=False)
-    temp_feats  = tabular_features(temp_df, names=feature_names, return_names=False)
+    temp_filt   = filter_simulation_artifacts(temp_df, min_denominator_threshold=CONFIG.min_dem_threshold,
+                                              filter_null_mass=True, filter_initial_state=False, verbose=False)
+    temp_feats  = tabular_features(temp_filt, names=feature_names, return_names=False,
+                                   eps_logscale_all_range     = CONFIG.eps_feats,
+                                   eps_logscale_limited_range = CONFIG.epsilon_target)
     
     # Identify transformed column names
     cont_columns   = [col for col in temp_feats.columns if col in contfeats]
@@ -429,26 +528,36 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     logger.info(f"  - Target               : {target} -> {target_columns}")
     logger.info(f"  - Total features       : {len(feature_cols)}")
     
-    # Define transform function
-    transform_fn = lambda df: tabular_features(df, names=feature_names, return_names=False)
+    # Define transform function: filter artifacts then engineer features (consistent with mltrees_pipe)
+    transform_fn = lambda df: tabular_features(
+        filter_simulation_artifacts(df, min_denominator_threshold=CONFIG.min_dem_threshold,
+                                   filter_null_mass=True, filter_initial_state=False, verbose=False),
+        names=feature_names, return_names=False,
+        eps_logscale_all_range     = CONFIG.eps_feats,
+        eps_logscale_limited_range = CONFIG.epsilon_target)
     
-    # ---- 3. Load test set and build target scaler -----------------------------------------------------------------------#
+    # Load test set and build target scaler -------------------------------------------------------------------------------#
     test_path  = feats_path + "/test.csv"
     test_df    = pd.read_csv(test_path, index_col=False)
-    filt_test  = filter_simulation_artifacts(test_df, filter_null_mass=True, filter_initial_state=True)
-    feats_test = tabular_features(filt_test, names=feature_names, return_names=False)
+    filt_test  = filter_simulation_artifacts(test_df, min_denominator_threshold=CONFIG.min_dem_threshold,
+                                             filter_null_mass=True, filter_initial_state=False)
+    feats_test = tabular_features(filt_test, names=feature_names, return_names=False,
+                                  eps_logscale_all_range     = CONFIG.eps_feats,
+                                  eps_logscale_limited_range = CONFIG.epsilon_target)
     y_test     = feats_test[target_columns].astype(np.float32).to_numpy().flatten()
     
     # Create target scaler for the test set
     if scale_target and target_norm is not None and target_norm in filt_test.columns:
-        test_norm   = filt_test[target_norm].astype(np.float32).to_numpy().flatten()
-        scaler_test = TargetLogScaler(norm_factor=test_norm, epsilon=target_eps)
+        test_norm     = filt_test[target_norm].astype(np.float32).to_numpy().flatten()
+        scaler_test   = TargetLogScaler(norm_factor=test_norm, epsilon=target_eps)
         y_test_scaled = scaler_test.inverse_transform(y_test)
+    
     elif scale_target:
         scaler_test = TargetLogScaler(norm_factor=None, epsilon=target_eps)
         logger.warning(f"Target normalization column '{target_norm}' not found in test set. "
                        "A default scaler with no norm_factor will be used.")
         y_test_scaled = scaler_test.inverse_transform(y_test)
+    
     else:
         scaler_test   = None
         y_test_scaled = y_test
@@ -485,12 +594,12 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         n_val   = len(data_manager.val_dataset) if data_manager.val_dataset else 0
         logger.info(f"Fold {fold + 1}/{n_folds} loaded: Train={n_train} samples, Val={n_val} samples")
         
-        # Merge optimized params into architecture model_params (optimized params override defaults)
-        fold_model_params = {**dl_architecture['model_params'], **model_params["architecture_params"]}
-        fold_opt_name     = dl_architecture['optimizer_name']
-        fold_opt_params   = {**dl_architecture['optimizer_params'], **model_params["optimizer_params"]}
-        lossfn_params      = model_params["loss_params"]
-        
+        # Merge optimized params into architecture
+        fold_model_params = {**dl_architecture['model_params'], **model_params.get("architecture_params", {})}
+        fold_opt_name     = model_params.get("optimizer_name", dl_architecture['optimizer_name'])
+        fold_opt_params   = {**dl_architecture['optimizer_params'], **model_params.get("optimizer_params", {})}
+        lossfn_params     = model_params.get("loss_params", dl_architecture['loss_params'])
+
         # Initialize the DL model
         model = DLTabularRegressor(model_type       = model_type,
                                    in_features      = len(feature_cols),
@@ -508,7 +617,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
                   epochs                   = CONFIG.max_epochs,
                   loss_fn                  = CONFIG.dl_loss_fn,
                   loss_params              = lossfn_params,
-                  early_stopping_patience  = CONFIG.dl_patience,
+                  early_stopping_patience  = CONFIG.train_patience,
                   verbose_epoch            = 10)
         
         # Load best weights from early stopping
@@ -579,12 +688,12 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
             'epsilon_target' : target_eps
         },
         'config': {
-            'max_epochs'   : CONFIG.max_epochs,
-            'dl_patience'  : CONFIG.dl_patience,
-            'dl_loss_fn'   : CONFIG.dl_loss_fn,
-            'batch_size'   : CONFIG.batch_size,
-            'device'       : CONFIG.device,
-            'seed'         : CONFIG.seed
+            'max_epochs'      : CONFIG.max_epochs,
+            'train_patience'  : CONFIG.train_patience,
+            'dl_loss_fn'      : CONFIG.dl_loss_fn,
+            'batch_size'      : CONFIG.batch_size,
+            'device'          : CONFIG.device,
+            'seed'            : CONFIG.seed
         },
         'metrics': {
             'per_fold'  : results,
@@ -608,23 +717,25 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     # Generate visualizations ---------------------------------------------------------------------------------------------#
     viz_path = Path(fig_path)
     viz_path.mkdir(parents=True, exist_ok=True)
-    
-    # Generate correlation plot and residual plot for mean predictions across folds
-    model_title    = {"mlp": "MLP", "node": "NODE"}
-    predictions_df = predictions_df.sample(frac=0.3, random_state=CONFIG.seed).reset_index(drop=True)
-    
+
+    # Create a mapping for model titles to be used in plots (if needed)
+    model_title_map = {"mlp": "MLP", "node": "NODE"}
+
+    # Subsample predictions for visualization only 
+    predictions_df_plot = predictions_df.sample(frac=0.3, random_state=CONFIG.seed).reset_index(drop=True)
+
     # Take the mean of all folds
     fold_columns = [f"y_pred_fold_{fold}" for fold in range(n_folds)]
-    df_results   = predictions_df[fold_columns].mean(axis=1)
-    
+    df_results   = predictions_df_plot[fold_columns].mean(axis=1)
+
     # Generate plots using the plot generator
     plot_generator.create_ml_results_plots(predictions_df_mean = df_results,
-                                           true_values_df      = predictions_df["y_true"],
+                                           true_values_df      = predictions_df_plot["y_true"],
                                            feature_importances = None,
                                            out_path            = viz_path,
                                            model_name          = model_type,
-                                           model_title         = model_title)
-    
+                                           model_title         = model_title_map)  
+
     return trained_models, summary
     
 def run_prediction():
@@ -649,7 +760,8 @@ def run_pipeline(args):
         logger.info(f"Auto-selecting architecture config: {arch_config}")
     
     # Build DL architecture from YAML config files
-    dl_architecture = build_dl_architecture(arch_config=arch_config, opt_config=args.opt_config)
+    dl_architecture = build_dl_architecture(arch_config=arch_config, opt_config=args.opt_config,
+                                            loss_config=args.loss_config)
     
     if args.mode == "optim":
         run_optimization(feats_path      = path_manager.data_path,
@@ -662,7 +774,9 @@ def run_pipeline(args):
                          scale_target    = CONFIG.scale_target,
                          target_norm     = CONFIG.norm_target,
                          target_eps      = CONFIG.epsilon_target,
-                         n_folds         = CONFIG.n_folds)
+                         n_folds         = CONFIG.n_folds,
+                         study_name      = args.study_name,
+                         storage         = args.storage)
     
     elif args.mode == "train":
         run_training(feats_path      = path_manager.data_path,
@@ -685,4 +799,5 @@ def run_pipeline(args):
 if __name__ == "__main__":
     args = get_args()
     run_pipeline(args)
+
 #--------------------------------------------------------------------------------------------------------------------------#

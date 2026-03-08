@@ -71,6 +71,9 @@ class MoccaSurveyExperimentConfig:
     time_column_imbh     : str            = "time[Myr]"  
     time_column_system   : Optional[str]  = "tphys"
     mass_column_imbh     : str            = "massNew[Msun](10)"
+    downsample_max_count : int            = 100
+    downsample_auto_bins : bool           = True
+    histogram_bins       : int            = 200
     
 def_config = MoccaSurveyExperimentConfig()
 

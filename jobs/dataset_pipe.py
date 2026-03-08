@@ -20,7 +20,7 @@ from src.utils.directory import PathManagerDatasetPipeline, save_dataset_to_csv
 # Data processing
 from src.processing.features import filter_simulation_artifacts, tabular_features
 
-# Specifics to dataset
+# Specifics to dataset [MOCCASURVEY]
 from src.processing.retriever                import moccasurvey_dataset
 from src.processing.constructors.moccasurvey import MoccaSurveyExperimentConfig, compute_mocca_cluster_features
 
@@ -38,7 +38,7 @@ logger.remove()
 logger.add(sink=sys.stdout, level="INFO", format="<level>{level}: {message}</level>")
 
 # Add outputs to the file
-logger.add("./logs/moccaset_pipe.log",
+logger.add("./logs/dataset_pipeline.log",
            level     = "INFO",
            format    = "{time:YYYY-MM-DD HH:mm:ss} - {level}: {message}",
            rotation  = "10 MB",    
@@ -105,7 +105,7 @@ def create_processing_config(dataset: str):
     class ProcessingFeaturesConfig(BaseConfig):
         """Configuration class for the processing of get_features() parameters."""
         dataset_name         : str                 = dataset
-        points_per_sim       : Union[int, float]   = 0.98
+        points_per_sim       : Union[int, float]   = 0.97
         n_virtual            : int                 = 10 
         train_split          : float               = 0.7
         val_split            : float               = 0.2
@@ -113,11 +113,11 @@ def create_processing_config(dataset: str):
         min_points_threshold : int                 = 1000
         histogram_bins       : int                 = 200
         downsample_min_count : int                 = 10
-        downsample_max_count : int                 = 150
+        downsample_max_count : int                 = 100
         downsample_auto_bins : bool                = True
         requires_temp_evol   : bool                = False
-        sample_window        : bool                = False
-        reset_time_window    : bool                = False
+        sample_window        : bool                = True
+        reset_time_window    : bool                = True
         max_resolution_ratio : float               = 20                 
         cont_feats           : List[str]           = field(default_factory = lambda:CONT_FEATS.copy())
         cat_feats            : Optional[List[str]] = field(default_factory = lambda:CAT_FEATS.copy())
@@ -194,7 +194,7 @@ def run_study_mode(data_path: str, out_figs: str, config: Any, root_dir: str, da
     logger.success("Study mode completed")
     logger.info(110*"_")
 
-# Pipeline Modes [Compare Datasets Processings] --------------------------------------------------------------------------#
+# Pipeline Modes [Compare Datasets Processings] ---------------------------------------------------------------------------#
 def run_comparison_mode(root_dir : str, data_path: str, out_figs: str, config: Any, 
                         path_manager: PathManagerDatasetPipeline):
     """Run the comparison mode pipeline."""
@@ -264,10 +264,14 @@ def run_comparison_mode(root_dir : str, data_path: str, out_figs: str, config: A
                                                    t_down, m_down, phy_down, 
                                                    out_figs)
     
-# Pipeline Modes [Feature generation] ------------------------------------------------------------------------------------#
+    logger.success("Features generation completed")
+    logger.info(110*"_")
+    
+# Pipeline Modes [Feature generation] -------------------------------------------------------------------------------------#
 def run_feats_mode(root_dir : str, data_path: str, out_path: str, folds: int, augment: bool, downsampled: bool, config: Any, 
                    path_manager: PathManagerDatasetPipeline):
     """Generate tabular features for the configured dataset."""
+    
     # Validate data path to ensure it exists before processing
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Data path does not exist: {data_path}")
@@ -374,7 +378,7 @@ def run_feats_mode(root_dir : str, data_path: str, out_path: str, folds: int, au
     logger.success("Features generation completed")
     logger.info(110*"_")
 
-# Pipeline Modes (Plot generation) ----------------------------------------------------------------------------------------#
+# Pipeline Modes [Plot generation] ----------------------------------------------------------------------------------------#
 def run_plot_mode(datafile: str, contfeats: list, catfeats: list, target: list, out_figs: str, 
                   config: Any, dataset: str):
     """Run the plotting mode pipeline."""
@@ -399,7 +403,8 @@ def run_plot_mode(datafile: str, contfeats: list, catfeats: list, target: list, 
     # Filter possible numerical effects and times equal to zero
     filter_tab_df = filter_simulation_artifacts(raw_df = tab_data_df,
                                                 min_denominator_threshold = config.min_dem_threshold,
-                                                filter_initial_state      = True,
+                                                filter_null_mass          = True,
+                                                filter_initial_state      = False,
                                                 verbose                   = True)
     
     # Retrieve input features to compute 
@@ -442,7 +447,7 @@ def run_plot_mode(datafile: str, contfeats: list, catfeats: list, target: list, 
     logger.success("Plotting completed")
     logger.info(110*"_")
 
-# Pipeline Modes (Distribution analysis) ---------------------------------------------------------------------------------#
+# Pipeline Modes [Distribution analysis] ----------------------------------------------------------------------------------#
 def run_dist_mode(root_dir: str, dataset: str, data_path: str, aug_path: str, contfeats: list, catfeats: list, 
                   target    : list,
                   figs_path : str, 
@@ -492,7 +497,8 @@ def run_dist_mode(root_dir: str, dataset: str, data_path: str, aug_path: str, co
     # Filter numerical artifacts and t=0 rows before log-scale feature engineering
     raw_df = filter_simulation_artifacts(raw_df, 
                                          min_denominator_threshold = config.min_dem_threshold,
-                                         filter_initial_state      = True,
+                                         filter_null_mass          = True,
+                                         filter_initial_state      = False,
                                          verbose                   = True)
     
     # Retrieve input features to compute statistical test
@@ -516,7 +522,8 @@ def run_dist_mode(root_dir: str, dataset: str, data_path: str, aug_path: str, co
     # Filter numerical artifacts and t=0 rows before log-scale feature engineering
     processed_df = filter_simulation_artifacts(processed_df,
                                                min_denominator_threshold = config.min_dem_threshold,
-                                               filter_initial_state      = True,
+                                               filter_initial_state      = False,
+                                               filter_null_mass          = True,
                                                verbose                   = True)
         
     feats_processed, feats_names = tabular_features(processed_df, names=feature_names, return_names=True, onehot=False,

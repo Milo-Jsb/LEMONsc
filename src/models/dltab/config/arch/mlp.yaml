@@ -1,6 +1,6 @@
-hidden_layers : [256, 128, 64, 32] 
+hidden_layers : [256, 256, 128, 64, 32, 16, 8]
 out_features : 1
 activation : 'relu'
 dropout    : 0.2 
-normalization : 'batch'
-bias       : True
+normalization : 'layer'
+bias  : True

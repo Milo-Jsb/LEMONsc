@@ -9,7 +9,7 @@ from typing         import Optional, List, Tuple, Union
 from loguru._logger import Logger
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
-from src.processing.filters                  import safe_downsampling_of_points
+from src.processing.modules.downsampling     import DownsamplingProcessor
 from src.processing.constructors.moccasurvey import MoccaSurveyExperimentConfig, def_config
 from src.processing.constructors.moccasurvey import load_moccasurvey_imbh_history, process_single_mocca_simulation
 
@@ -23,7 +23,7 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
                         points_per_sim       : Optional[Union[int, float]] = None, 
                         n_virtual            : int                         = 1,
                         downsampled          : bool                        = False,
-                        max_resolution_ratio : float                       = 10.0
+                        max_resolution_ratio : float                       = 20.0
                         )-> Union[Tuple[List[np.ndarray], List[np.ndarray]],
                                   Tuple[List[np.ndarray], List[np.ndarray], List[str]]]:
     """
@@ -52,7 +52,7 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
     -> max_resolution_ratio (float)                       : Maximum allowed ratio of (median match error) / (median IMBH
                                                             timestep) after merge_asof alignment. Simulations where this
                                                             ratio exceeds the threshold are skipped with a warning.
-                                                            Default=10.0 (match error <= 10 x dt_imbh).
+                                                            Default=20.0 (match error <= 20 x dt_imbh).
     ________________________________________________________________________________________________________________________
     Returns:
         Tuple: ([features, feature_names], [targets, target_names]) or 
@@ -76,23 +76,29 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
 
         try:
             imbh, system     = load_moccasurvey_imbh_history(f"{path}/", init_conds_sim=True, init_conds_evo=True)
-            imbh_df          = imbh[0].drop_duplicates(def_config.time_column_imbh
-                                                       ).sort_values(def_config.time_column_imbh
+            imbh_df          = imbh[0].drop_duplicates(experiment_config.time_column_imbh
+                                                       ).sort_values(experiment_config.time_column_imbh
                                                                      ).reset_index(drop=True)
             iconds_imbh_dict = imbh[1]
-            system_df        = system[0].sort_values(def_config.time_column_system).reset_index(drop=True)
+            system_df        = system[0].sort_values(experiment_config.time_column_system).reset_index(drop=True)
             env_type         = simulations_type[idx] if simulations_type else None
 
+            # Ignore short simulations first (cheap check before alignment)
+            if len(imbh_df) <= experiment_config.min_points_threshold:
+                ignored += 1
+                if logger: logger.warning(f"Ignored {path} (too few points: {len(imbh_df)})")
+                continue
+
             # Use merge_asof to align system_df to imbh_df times
-            matched_system_df = pd.merge_asof(imbh_df[[def_config.time_column_imbh]], system_df,
-                                              left_on   = def_config.time_column_imbh,
-                                              right_on  = def_config.time_column_system, 
+            matched_system_df = pd.merge_asof(imbh_df[[experiment_config.time_column_imbh]], system_df,
+                                              left_on   = experiment_config.time_column_imbh,
+                                              right_on  = experiment_config.time_column_system, 
                                               direction = "nearest"
                                               ).reset_index(drop=True)
             
             # Check temporal resolution compatibility before accepting the alignment.
-            imbh_dt     = imbh_df[def_config.time_column_imbh].diff().median()
-            match_error = (matched_system_df[def_config.time_column_system]- imbh_df[def_config.time_column_imbh]
+            imbh_dt     = imbh_df[experiment_config.time_column_imbh].diff().median()
+            match_error = (matched_system_df[experiment_config.time_column_system]- imbh_df[experiment_config.time_column_imbh]
                            ).abs().median()
 
             # If the median match error is larger than the allowed threshold times the median IMBH timestep, skip.
@@ -107,13 +113,7 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
                 continue
 
             # Overwrite time_column_system with the exact IMBH timestamp.
-            matched_system_df[def_config.time_column_system] = imbh_df[def_config.time_column_imbh].values
-            
-            # Ignore short simulations and raise warning
-            if len(imbh_df) <= def_config.min_points_threshold:
-                ignored += 1
-                if logger: logger.warning(f"Ignored {path} (too few points: {len(imbh_df)})")
-                continue
+            matched_system_df[experiment_config.time_column_system] = imbh_df[experiment_config.time_column_imbh].values
 
             processed += 1
 
@@ -142,28 +142,16 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
     X = np.vstack(features) if features else np.empty((0, len(experiment_config.feature_names)))
     y = np.concatenate(targets) if targets else np.empty((0,))
 
-    # Perform downsampled if desired:
-    if downsampled: 
-        # Initialize empty lists to collect results
-        X_parts, y_parts = [], []
-        
-        # Process each category with safety checks
-        for channel_code, channel_name in [(0, 'FAST'), (1, 'SLOW')]:
-            mask = X[:, -1] == channel_code
-            if np.any(mask):
-                X_channel, y_channel = safe_downsampling_of_points(X[mask], y[mask], logger)
-                if X_channel is not None and len(X_channel) > 0:
-                    X_parts.append(X_channel)
-                    y_parts.append(y_channel)
-                else:
-                    if logger: logger.warning(f"No data after downsampling for {channel_name} channel")
-            else:
-                if logger: logger.warning(f"No data found for {channel_name} channel")
-        
-        # Only concatenate if we have results
-        if X_parts:
-            X = np.concatenate(X_parts)
-            y = np.concatenate(y_parts)
+    # Perform downsampling if desired, using the same DownsamplingProcessor path as the comp/feats pipeline
+    if downsampled:
+        t_down, y_down, phy_down = DownsamplingProcessor(experiment_config).perform_downsampling(
+            t_augm   = X[:, 0],
+            m_augm   = y,
+            phy_augm = X[:, 1:]
+        )
+        if len(t_down) > 0:
+            X = np.column_stack([t_down, phy_down])
+            y = y_down
         else:
             if logger: logger.error("No data remaining after downsampling all channels")
 

@@ -11,7 +11,9 @@ def ElasticNetGrid(trial):
 def LinearSVRGrid(trial):
     param_grid = {
         "C"         : trial.suggest_float("C", 1e-3, 10.0, log=True),
-        "epsilon"   : trial.suggest_float("epsilon", 0.0001, 1.0, log=True)                 }
+        "epsilon"   : trial.suggest_float("epsilon", 0.0001, 1.0, log=True),
+        "penalty"   : trial.suggest_categorical("penalty", ["l1", "l2"]),
+        "loss"      : trial.suggest_categorical("loss", ["epsilon_insensitive", "squared_epsilon_insensitive"]),}
     
     return param_grid
 

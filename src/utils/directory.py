@@ -101,11 +101,11 @@ def load_yaml_dict(path: str, verbose: bool = False):
     if not os.path.exists(path):
         raise FileNotFoundError(f"File not found: {path}")
     
-    # Tuple constructor if needed -----------------------------------------------------------------------------------------#
-    def tuple_constructor(loader, node):
-        return tuple(loader.construct_sequence(node))
+    # Tuple constructor: use a local subclass to avoid mutating the global yaml.SafeLoader --------------------------------#
+    class _Loader(yaml.SafeLoader):
+        pass
 
-    yaml.SafeLoader.add_constructor('!tuple', tuple_constructor)
+    _Loader.add_constructor('!tuple', lambda loader, node: tuple(loader.construct_sequence(node)))
 
     # Verbose logging -----------------------------------------------------------------------------------------------------#
     if verbose: print(f"Loading configuration from: {path}")
@@ -113,7 +113,7 @@ def load_yaml_dict(path: str, verbose: bool = False):
     # Load YAML file ------------------------------------------------------------------------------------------------------#
     try:
         with open(path, 'r') as f:
-            yaml_dict = yaml.safe_load(f)
+            yaml_dict = yaml.load(f, Loader=_Loader)
         
         if verbose: print(f"Successfully loaded configuration with {len(yaml_dict)} parameters")
         return yaml_dict

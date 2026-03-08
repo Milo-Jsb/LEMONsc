@@ -74,7 +74,7 @@ def evaluate_partition_ml(model: MLTreeRegressor | MLBasicRegressor, partition: 
     y_pred = model.predict(X_val)
     
     # Ensure arrays are properly flattened to 1D
-    y_pred = y_pred.ravel()
+    y_pred     = y_pred.ravel()
     y_val_flat = y_val.ravel()
     
     # Apply scaling if provided

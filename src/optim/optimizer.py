@@ -21,8 +21,14 @@ from src.models.mlbasics.regressor import MLBasicRegressor
 from src.models.mltrees.regressor  import MLTreeRegressor
 from src.models.dltab.regressor    import DLTabularRegressor
 
-# Grid of hyperparams to optimize
-from src.optim.grid import ElasticNetGrid, LinearSVRGrid, RandomForestGrid, LightGBMGrid, XGBoostGrid, MLPGrid, NODEGrid
+# Grid of hyperparams to optimize [Linear models]
+from src.optim.grid import ElasticNetGrid, LinearSVRGrid
+
+# Grid of hyperparams to optimize [Tree-based models]
+from src.optim.grid import RandomForestGrid, LightGBMGrid, XGBoostGrid
+
+# Grid of hyperparams to optimize [Deep learning models]
+from src.optim.grid import MLPGrid, NODEGrid
 
 # Import helper functions for each type of regressor framework
 from src.optim.utils._ml    import validate_data_ml, normalize_partitions_ml, evaluate_partition_ml
@@ -31,7 +37,7 @@ from src.optim.utils._dltab import validate_data_dl, normalize_partitions_dl, ev
 # Custom function for Huber loss
 from src.utils.eval import huber_loss
 
-# Visualization plots
+# Visualization plots from optuna library and custom CV-specific visualizations
 from src.optim.utils._visuals import create_visualizations_per_study, plot_cv_evol_distributions
 
 # Configuration and result format dictionaries
@@ -44,7 +50,7 @@ class SpaceSearch:
     SpaceSearch: A comprehensive hyperparameter optimization class using Optuna for Supervised Regression
     ________________________________________________________________________________________________________________________
     Features:
-    -> Support for multiple model types (ElasticNet, SVR, LightGBM, XGBoost, Random Forest, MultiLayer Perceptron)
+    -> Support for multiple model types with a unified interface (MLBasicRegressor, MLTreeRegressor, DLTabularRegressor)
     -> Customizable search spaces and objective functions
     -> Advanced visualization and analysis tools
     -> Study persistence and loading
@@ -69,16 +75,17 @@ class SpaceSearch:
         self.model_grid_map = {
             "mlbasic": ["elasticnet", "linearsvr"],
             "mltrees": ["rf", "lightgbm", "xgboost"],
-            "dltab"  : ["mlp", "node"]}
+            "dltab"  : ["mlp", "node"]
+                              }
         
-        # Config already normalizes model_type in __post_init__, so we can use it directly
+        # Set model type from config, and infer regressor type
         self.model_type = config.model_type
         self.regressor  = next((key for key, models in self.model_grid_map.items() if self.model_type in models), None)
         
+        # If no regressor is found, raise error
         if self.regressor is None:
             valid_models = [model for models in self.model_grid_map.values() for model in models]
-            raise ValueError(f"Unsupported model_type: '{config.model_type}'. "
-                             f"Valid options are: {valid_models}")
+            raise ValueError(f"Unsupported model_type: '{config.model_type}'. Valid options are: {valid_models}")
         
         # Parameter grid mapping
         self.param_grid_map = {
@@ -91,7 +98,7 @@ class SpaceSearch:
             "node"       : NODEGrid
                               }
         
-        # Dispatch maps for validation and normalization (avoids repetitive if/elif chains)
+        # Dispatch maps for validation and normalization 
         self._validate_fn  = {"mlbasic" : validate_data_ml, 
                               "mltrees" : validate_data_ml, 
                               "dltab"   : validate_data_dl}
@@ -99,10 +106,10 @@ class SpaceSearch:
                               "mltrees" : normalize_partitions_ml, 
                               "dltab"   : normalize_partitions_dl}
         
-        # Custom metrics registry
+        # Custom metrics registry, if needed for special cases like Huber loss (which requires delta parameter)
         self.custom_metrics = {"huber": lambda y_true, y_pred: huber_loss(y_true, y_pred, delta=self.config.huber_delta)}
         
-        # Internal state
+        # Initialize internal state variables
         self.study          : Optional[optuna.study.Study]   = None
         self.best_params    : Optional[Dict[str, Any]]       = None
         self.best_score     : Optional[float]                = None
@@ -156,8 +163,9 @@ class SpaceSearch:
             # Store loss params for later use
             trial.set_user_attr("delta", merge_loss.get("delta", 1.0))
             
-            # Extract optimizer name from config and remove from merge_opt to avoid passing as kwarg
-            optimizer_name = merge_opt.pop("optimizer_name", "adam")
+            # Extract optimizer name from architecture config (not from merged opt params)
+            optimizer_name = (self.config.dl_architecture.get("optimizer_name", "adam") 
+                              if self.config.dl_architecture else "adam")
             
             # Extract use_amp from model params (training flag, not architecture param)
             use_amp = merge_model.pop("use_amp", False)
@@ -205,8 +213,7 @@ class SpaceSearch:
                              ) -> None:
         """Clean up GPU memory after trial to prevent memory leaks"""
         # Delete model if provided
-        if model is not None:
-            del model
+        if model is not None: del model
         
         # Force garbage collection before clearing CUDA cache
         gc.collect()
@@ -230,6 +237,7 @@ class SpaceSearch:
             # If a self implemented metric, return the corresponding function
             if metric.lower() in self.custom_metrics:
                 return self.custom_metrics[metric.lower()]
+            
             # Elif use sklearn's get_scorer. This returns a function that accepts (y_true, y_pred, **kwargs) 
             else:
                 scorer = get_scorer(metric)
@@ -246,8 +254,14 @@ class SpaceSearch:
     # [Helper] Save study state -------------------------------------------------------------------------------------------#
     def __save_study(self, output_path: Path, compress: bool = True) -> None:
         """Save study state to disk"""
+        
+        # Create directory
         output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Define saving path with optional compression name       
         save_path = output_path / f"study_state{'_compressed' if compress else ''}.joblib"
+        
+        # Store study
         joblib.dump(self.study, save_path, compress=compress)
             
     # [Helper] Define Optuna objective function ---------------------------------------------------------------------------#
@@ -259,6 +273,7 @@ class SpaceSearch:
         # Set the list of partitions
         partition_list = partitions
         
+        # Create the objective function
         def objective(trial: optuna.trial.Trial) -> float:
             # Initialize model reference for cleanup
             model = None  
@@ -272,8 +287,8 @@ class SpaceSearch:
                     # Create model
                     model = self.__create_model(trial, features_names=partition['features_names'])
                     
-                    # Evaluate partition
-                    score = self.__evaluate_partition(model, partition, scorer, trial=trial)
+                    # Evaluate partition — pass fold index (for optimization with fold-global report)
+                    score = self.__evaluate_partition(model, partition, scorer, trial=trial, fold_idx=idx)
                     scores.append(score)
                     
                     # Report intermediate values for CV
@@ -288,15 +303,21 @@ class SpaceSearch:
                 if is_cv:
                     mean_score = float(np.mean(scores))
                     std_score  = float(np.std(scores)) if np.isfinite(np.std(scores)) else 0.0
+                    
+                    # Report scores 
                     trial.set_user_attr('partition_scores', scores)
                     trial.set_user_attr('score_std', std_score)
                     trial.set_user_attr('score_mean', mean_score)
+                    
+                    # Define the final score with optional penalty for variability across partitions 
                     final_score = mean_score - lambda_penalty * std_score
                     
                     # Guard: return worst-case finite value if score is nan/inf (bad trial)
                     if not np.isfinite(final_score):
                         return -float('inf') if direction == "maximize" else float('inf')
                     return final_score
+                
+                # If not CV, return the single partition score (with same guard for non-finite values)
                 else:
                     score = scores[0]
                     if not np.isfinite(score):
@@ -359,14 +380,15 @@ class SpaceSearch:
     def __evaluate_partition(self, model: Union[MLBasicRegressor, MLTreeRegressor, DLTabularRegressor], 
                              partition : Dict, 
                              scorer    : Callable, 
-                             trial     : Optional[optuna.trial.Trial] = None
+                             trial     : Optional[optuna.trial.Trial] = None,
+                             fold_idx  : int                          = 0
                              ) -> float:
         """Router to appropriate evaluation method based on model type"""
         
         if isinstance(model, DLTabularRegressor):
             if trial is None:
                 raise ValueError("Trial object required for DL model evaluation")
-            return evaluate_partition_dl(model, partition, scorer, trial, self.logger, self.config)
+            return evaluate_partition_dl(model, partition, scorer, trial, self.logger, self.config, fold_idx=fold_idx)
         
         elif isinstance(model, MLTreeRegressor) or isinstance(model, MLBasicRegressor):
             return evaluate_partition_ml(model, partition, scorer)
@@ -422,7 +444,7 @@ class SpaceSearch:
         ____________________________________________________________________________________________________________________
         Parameters:
         ____________________________________________________________________________________________________________________
-        -> Expected inpud for each Mode:
+        -> Expected input for each Mode:
             -> Classical ML models:
                 - partitions (List[Dict]) : List of partition dicts, each containing (or single dict) 
                                             {'X_train', 'y_train', 'X_val', 'y_val'}.
@@ -469,8 +491,7 @@ class SpaceSearch:
         self.__validate_data(partition_list)
         partitions_normalized = self.__normalize_partitions(partition_list)
             
-            
-        # Check if pruner is mandatory based on the modeltype
+        # Check if pruner is given based on the modeltype
         if (self.regressor == "dltab") and (pruner is None): 
             warnings.warn("No pruner provided for DL model. Using MedianPruner by default to prevent state leakage.")
             pruner = optuna.pruners.MedianPruner(n_startup_trials = 5,
@@ -495,6 +516,26 @@ class SpaceSearch:
                                          storage        = self.config.storage,
                                          load_if_exists = self.config.load_if_exists)
         
+        # When load_if_exists=True (SQLite resume), study.optimize(n_trials=N) runs N *additional* trials.
+        n_already_done   = sum(1 for t in self.study.trials if t.state == optuna.trial.TrialState.COMPLETE)
+        remaining_trials = max(0, self.config.n_trials - n_already_done)
+        
+        # Log resumption status
+        if n_already_done > 0:
+            self.logger.info(f"Resuming study '{study_name}': {n_already_done} completed trials found. "
+                             f"Running {remaining_trials} more (target={self.config.n_trials}).")
+            
+            # If no more trials to run, return existing results immediately without calling optimize again 
+            if remaining_trials == 0:
+                self.logger.info("Study already complete — returning existing results.")
+                self.best_params    = self.study.best_params
+                self.best_score     = self.study.best_value
+                self.trials_history = self.study.trials
+                return SpaceSearchResult(best_params = self.best_params, best_score = self.best_score,
+                                         study       = self.study,
+                                         n_trials    = len(self.study.trials),
+                                         output_dir  = str(output_path))
+        
         # Create unified objective
         objective = self.__create_objective(partitions     = partitions_normalized,
                                             scorer         = scorer,
@@ -507,7 +548,7 @@ class SpaceSearch:
             study_callbacks.append(self.__early_stopping_callback)
         
         # Optimize (n_jobs=1: sequential trials for reproducibility with TPESampler and GPU memory safety)
-        self.study.optimize(objective, n_trials = self.config.n_trials, timeout = timeout, catch = catch,
+        self.study.optimize(objective, n_trials = remaining_trials, timeout = timeout, catch = catch,
                             callbacks = study_callbacks if study_callbacks else None,
                             n_jobs    = 1)
         

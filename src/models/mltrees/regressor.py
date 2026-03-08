@@ -39,9 +39,9 @@ class MLTreeRegressor:
     
     # Initialization of the Regressor--------------------------------------------------------------------------------------#
     def __init__(self, model_type: str = "lightgbm", model_params: Optional[Dict] = None, feat_names: Optional[List] = None, 
-                n_jobs  : Optional[int] = None,
-                device  : str           = "cpu", 
-                verbose : bool          = False):
+                 n_jobs  : Optional[int] = None,
+                 device  : str           = "cpu", 
+                 verbose : bool          = False):
         """
         ____________________________________________________________________________________________________________________
         Initialize the MLTreeRegressor with specified model type and parameters.

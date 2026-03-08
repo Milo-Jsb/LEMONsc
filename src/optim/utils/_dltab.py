@@ -16,24 +16,35 @@ from src.models.dltab.utils.losses import get_loss_function
 # [Helper] Validate data format for DL models in SpaceSearch --------------------------------------------------------------#
 def validate_data_dl(partitions:List) -> None:
     """Validate input data shapes and types"""
+    
+    # Set of required keys for each partition
     required_keys = {'train_loader', 'val_loader'}
     
+    # Loop over the list of partitions and validate each one
     for i, partition in enumerate(partitions):
+        
+        # Raise error if any required key is missing
         if not all(key in partition for key in required_keys):
             raise ValueError(f"Partition {i} missing required keys: {required_keys}")
-    
+
+        # Retrieve keys for validation
         train_loader = partition['train_loader']
         val_loader   = partition['val_loader']
         
+        # Check correct types for train_loader and val_loader
         if not isinstance(train_loader, DataLoader) or not isinstance(val_loader, DataLoader):
             raise TypeError("train_loader and val_loader must be DataLoader instances") 
 
 # [Helper] Normalize partitions for DL models based in required features for SpaceSearch ----------------------------------#   
 def normalize_partitions_dl(partitions: List[Dict]) -> List[Dict]:
     """Normalize partitions to ensure they have all required keys for traditional DL models"""
+    
+    # List for storage of results
     normalized = []
     
+    # Loop over partitions and ensure they have all required keys, filling in defaults where necessary
     for i, partition in enumerate(partitions):
+        
         # Validate required keys
         if 'train_loader' not in partition or 'val_loader' not in partition:
             raise ValueError(f"DL partition {i} must contain 'train_loader' and 'val_loader'")
@@ -52,8 +63,9 @@ def normalize_partitions_dl(partitions: List[Dict]) -> List[Dict]:
             dataset = train_loader.dataset
             if hasattr(dataset, 'get_feature_names'):
                 features_names = dataset.get_feature_names()
+            
+            # Fallback: get from first batch if possible (assumes features are in the first element of the batch)
             else:
-                # Fallback: get from first batch
                 try:
                     first_batch    = next(iter(train_loader))
                     X_sample       = first_batch[0]
@@ -71,25 +83,37 @@ def normalize_partitions_dl(partitions: List[Dict]) -> List[Dict]:
 
 # [Helper] Evaluate a DL model on a given partition for SpaceSearch -------------------------------------------------------#
 def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: optuna.trial.Trial,
-                          logger : logging.Logger,
-                          config : Any,
+                          logger   : logging.Logger,
+                          config   : Any,
+                          fold_idx : int = 0
                           ) -> float:
     """
     ________________________________________________________________________________________________________________________
     Train and evaluate DL model with epoch-wise pruning and best model checkpointing.
     ________________________________________________________________________________________________________________________
-    This function implements:
-    
-    1. Epoch-wise training loop with Optuna pruning integration
-    2. Best model state checkpointing (saves model when validation loss improves)
-    3. Automatic restoration of best model before final evaluation
-    4. Early stopping based on validation loss plateau
-    
-    The model is evaluated using the BEST checkpoint, not the final epoch state,
-    preventing overfitting issues and ensuring optimal performance.
+    Parameters:
+    -> model      : The DL model instance to train and evaluate 
+                    (must have train_one_epoch, validate_one_epoch, predict methods)
+    -> partition  : A dict containing 'train_loader', 'val_loader', and optionally 'scaler'
+    -> scorer     : A callable metric function that takes (y_true, y_pred) and returns a scalar score (higher is better)
+    -> trial      : The Optuna trial object for reporting and pruning
+    -> logger     : Logger for debug/info messages
+    -> config     : Configuration object containing training parameters 
+    -> fold_idx   : index of the partition used .
+    ________________________________________________________________________________________________________________________
+    Returns:
+    -> score      : The final evaluation score computed by the scorer on the validation set after training
+    ________________________________________________________________________________________________________________________
+    Notes:
+        -> Each fold occupies its own cotiguous block of steps in the global step-space. Example:
+            Fold 0 -> steps [0,             max_epochs - 1]
+            Fold 1 -> steps [max_epochs,    2*max_epochs - 1]
+            Fold k -> steps [k*max_epochs,  (k+1)*max_epochs - 1]
+          This ensures the pruner compares equivalent (fold, epoch) positions across trials.
     ________________________________________________________________________________________________________________________
     """
     
+    # Get elements of the partition
     train_loader = partition['train_loader']
     val_loader   = partition['val_loader']
     scaler       = partition.get('scaler', None)
@@ -104,31 +128,37 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
     else:
         criterion = get_loss_function(loss_fn).to(model.device)
             
-    # Training loop with pruning and best model checkpoint
+    # Training loop with pruning and best model checkpoint. Store the best model state
     best_val_loss     = float('inf')
-    best_model_state  = None  # Store the best model state
+    best_model_state  = None  
     epochs_no_improve = 0
     
+    # Iterate over epochs
     for epoch in range(config.max_epochs):
-        # Train one epoch
+        
+        # Train and Validate one epoch
         train_loss = model.train_one_epoch(train_loader, criterion)
+        val_loss   = model.validate_one_epoch(val_loader, criterion)
         
-        # Validate one epoch
-        val_loss = model.validate_one_epoch(val_loader, criterion)
-        
-        # Track best validation loss AND save model state
+        # Track best validation loss and  save model state
         if val_loss < best_val_loss:
             best_val_loss     = val_loss
             epochs_no_improve = 0
+            
             # Save a deep copy of the best model state
             best_model_state = copy.deepcopy(model.model.state_dict())
+            
+            # Verbose logging of new best score
             if config.verbose:
                 logger.debug(f"Trial {trial.number}, Epoch {epoch}: New best val_loss = {best_val_loss:.6f}")
+        
+        # Else, add a counter
         else:
             epochs_no_improve += 1
         
-        # Report to Optuna for pruning
-        trial.report(val_loss, epoch)
+        # Report to Optuna for pruning using a GLOBAL step to prevent fold-step collisions.
+        global_step = fold_idx * config.max_epochs + epoch
+        trial.report(val_loss, global_step)
         
         # Check if trial should be pruned
         if trial.should_prune():
@@ -163,14 +193,16 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
     
     # Ensure arrays are properly flattened to 1D to prevent pairwise distance computation
     y_pred = y_pred.ravel()
-    y_val = y_val.ravel()
+    y_val  = y_val.ravel()
     
-    # Apply scaler if provided (unified logic with _ml.py for consistency)
+    # Apply scaler if provided 
     if scaler is not None:
+        
         # Check if scaler is an object with inverse_transform method (e.g., TargetLogScaler)
         if hasattr(scaler, 'inverse_transform') and callable(getattr(scaler, 'inverse_transform')):
             y_pred = scaler.inverse_transform(y_pred)
             y_val  = scaler.inverse_transform(y_val)
+        
         # Or if its just a numeric factor (e.g., standard deviation for scaling)
         else:
             y_pred = y_pred * scaler
@@ -180,4 +212,5 @@ def evaluate_partition_dl(model: Any, partition: Dict, scorer: Callable, trial: 
     score = float(scorer(y_val, y_pred))
     
     return score
+
 #---------------------------------------------------------------------------------------------------------------------------#

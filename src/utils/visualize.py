@@ -1729,5 +1729,124 @@ def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: 
     if ifshow: plt.show()
     
     plt.close(fig)
-    
+
+# Plot individual simulations and their results with options for metadata -------------------------------------------------#
+def plot_simulation_grid(subplot_data: List[Dict], n_rows: int = 1, n_cols: int = 2, figsize : tuple = (8, 4),
+                         save_path : Optional[str] = None,
+                         show      : bool          = True):
+    """
+    ________________________________________________________________________________________________________________________
+    Take a list of individual simulations and predictions to plot them with their metadata in a grid of subplots. 
+    ________________________________________________________________________________________________________________________
+    Parameters:
+    -> subplot_data (List[Dict])    : List of dictionaries, each containing data and metadata for one subplot. Mandatory.
+        Each dictionary should have the following structure:
+        your_dict_data = {
+        'xaxis'      : {'values'      : array, 'label': str},
+        'yaxis'      : {'true_values' : array, 'label': str},
+        'iconds'     : { 'your_metadata_key': your_metadata_value, ... },
+        'predictions': { 'raw_predictions': array, 'rescaled_pred': array, ... }
+        
+    -> n_rowns      (int)           : Number of rows in the subplot grid. Default is 1.
+    -> n_cols       (int)           : Number of columns in the subplot grid. Default is 2.
+    -> figsize      (tuple)         : Figure size (width, height). Default is (8, 4).
+    -> save_path    (Optional[str]) : If given, the path where the figure will be saved as a .png file. Default is None.
+    -> show         (bool)          : Whether to display the figure. Default is True.
+    ________________________________________________________________________________________________________________________
+    Returns: None
+    ________________________________________________________________________________________________________________________
+    """
+
+    # Validate input ------------------------------------------------------------------------------------------------------#
+    if len(subplot_data) != n_rows * n_cols:
+        raise ValueError(
+            f"Expected {n_rows * n_cols} dictionaries but received {len(subplot_data)}."
+        )
+
+    # Create the figure (squeeze=False ensures axes is always a 2D ndarray) -----------------------------------------------#
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
+    axes = axes.flatten()
+
+    # Loop inside the subplot_data, where each dictionary will be directed to one ax on the grid --------------------------#
+    for counter, (ax, data) in enumerate(zip(axes, subplot_data)):
+
+        # Extract the true simulated values
+        x      = data["xaxis"]["values"]
+        y_true = data["yaxis"]["true_values"]
+
+        # Retrieve predictions and compute mean and std across models if needed
+        predictions_dict = data["predictions"]
+        preds = np.array([model_dict["rescaled_pred"] for model_dict in predictions_dict.values()])
+
+        # Average and std across models (axis=0) to get mean and uncertainty for each time step
+        if len(preds) > 1:
+            y_pred_mean = preds.mean(axis=0)
+            y_pred_std  = preds.std(axis=0)
+
+        # If not, conserve the single prediction and set std to None (no uncertainty band)
+        else:
+            y_pred_mean = preds.flatten()
+            y_pred_std  = None
+
+        # Line plot of the true values
+        ax.plot(x, y_true, lw=1.5, color="black", ls="dashed", label="Simulation")
+
+        # Uncertainty band for the predictions (if std is available)
+        if y_pred_std is not None:
+            ax.fill_between(x, y_pred_mean - y_pred_std, y_pred_mean + y_pred_std,
+                            color="maroon",
+                            alpha=0.25,
+                            label="$\sigma$' model predictions"
+                            )
+
+        # Predictions scatter plot
+        tag = "$\mu$ model predictions" if y_pred_std is not None else "model prediction"
+        ax.scatter(x, y_pred_mean, s=6, color="maroon", marker='o', label=tag)
+
+        # Initial conditions: float values displayed as an in-plot text box; non-float values as the subplot title --------#
+        text_dict = data.get("iconds", {})
+        if text_dict:
+            float_lines = []
+            title_parts = []
+            for k, v in text_dict.items():
+                if isinstance(v, float):
+                    float_lines.append(f"{k} = {v:.3e}")
+                else:
+                    title_parts.append(f"{k} {v}")
+
+            if title_parts:
+                ax.set_title("  ".join(title_parts), loc='left', fontsize=10)
+
+            if float_lines:
+                ax.text(0.03, 0.97, "\n".join(float_lines),
+                        transform=ax.transAxes, fontsize=8, va='top',
+                        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none'))
+
+        # Axis labels
+        ax.set_xlabel(data["xaxis"]["label"], fontsize=12)
+        if counter == 0:
+            ax.set_ylabel(data["yaxis"]["label"], fontsize=12)
+        ax.set_yscale('log')
+        ax.legend(loc='lower right')
+
+    # Save figure ---------------------------------------------------------------------------------------------------------#
+    if save_path:
+        save_dir = os.path.dirname(save_path)
+        if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+
+    plt.tight_layout()
+
+    try:
+        if save_path:
+            plt.savefig(save_path, dpi=600)
+        if show:
+            plt.show()
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to save or display plot: {e}")
+
+    finally:
+        plt.close(fig)    
+        
 #--------------------------------------------------------------------------------------------------------------------------#

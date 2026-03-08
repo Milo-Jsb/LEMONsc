@@ -87,8 +87,7 @@ def get_args():
 CONT_FEATS  = ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", "log(t_coll)", 
                "log(M_tot/M_crit)", 
                "log(R_h/R_core)", "log(R_tid/R_core)", 
-               "log(rho(R_h))",
-               "Z"]
+               "log(rho(R_h))"]
 
 CAT_FEATS   = None
 
@@ -121,23 +120,27 @@ class TrainingConfig:
     -> norm_target    : Optional. Column name to use for normalizing the target variable (default: "M_tot").
     ________________________________________________________________________________________________________________________
     """
-    n_folds        : int                 = 3
-    n_trials       : Optional[int]       = 100
-    n_jobs         : int                 = 15
-    device         : str                 = "cuda" if torch.cuda.is_available() else "cpu"
-    seed           : Optional[int]       = 42
-    cont_feats     : List[str]           = field(default_factory=lambda:CONT_FEATS.copy())
-    cat_feats      : Optional[List[str]] = field(default_factory=lambda:CAT_FEATS.copy() if CAT_FEATS is not None else None)
-    target_feat    : List[str]           = field(default_factory=lambda:TARGET_FEAT.copy())
-    direction      : str                 = "minimize"
-    metric         : str                 = "huber"
-    use_scaler     : bool                = True
-    patience       : int                 = 20
-    lambda_penalty : Optional[float]     = 0.01
+    n_folds           : int                 = 3
+    n_trials          : Optional[int]       = 100
+    n_jobs            : int                 = 15
+    device            : str                 = "cuda" if torch.cuda.is_available() else "cpu"
+    seed              : Optional[int]       = 42
+    cont_feats        : List[str]           = field(default_factory= lambda : 
+                                                        CONT_FEATS.copy())
+    cat_feats         : Optional[List[str]] = field(default_factory= lambda :
+                                                        CAT_FEATS.copy() if CAT_FEATS is not None else None)
+    target_feat       : List[str]           = field(default_factory= lambda :
+                                                        TARGET_FEAT.copy())
+    direction         : str                 = "minimize"
+    metric            : str                 = "huber"
+    use_scaler        : bool                = True
+    patience          : int                 = 20
+    lambda_penalty    : Optional[float]     = 0.01
     min_dem_threshold : float               = 1e-10
-    scale_target   : bool                = True
-    epsilon_target : Optional[float]     = 0
-    norm_target    : Optional[str]       = "M_tot"
+    scale_target      : bool                = True
+    epsilon_target    : Optional[float]     = 0
+    eps_feats         : float               = 1
+    norm_target       : Optional[str]       = "M_tot"
 
 # Initialize pipeline configuration for optimization and training
 CONFIG = TrainingConfig()
@@ -167,7 +170,9 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     # Determine column names after transformation (use first fold as reference)
     fold_0_path = feats_path + "/0_fold/train.csv"
     temp_df     = pd.read_csv(fold_0_path, index_col=False)
-    temp_feats  = tabular_features(temp_df, names=feature_names, return_names=False)
+    temp_feats  = tabular_features(temp_df, names=feature_names, return_names=False,
+                                   eps_logscale_all_range     = CONFIG.eps_feats,
+                                   eps_logscale_limited_range = CONFIG.epsilon_target)
     
     # Identify transformed column names
     cont_columns   = [col for col in temp_feats.columns if col in contfeats]
@@ -197,15 +202,19 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         filter_tab_train = filter_simulation_artifacts(raw_df = train_df, 
                                                        min_denominator_threshold = CONFIG.min_dem_threshold,
                                                        filter_null_mass          = True,
-                                                       filter_initial_state      = True)
+                                                       filter_initial_state      = False)
         filter_tab_val   = filter_simulation_artifacts(raw_df = val_df, 
                                                        min_denominator_threshold = CONFIG.min_dem_threshold,
                                                        filter_null_mass          = True,
-                                                       filter_initial_state      = True)
+                                                       filter_initial_state      = False)
         
         
-        feats_train = tabular_features(filter_tab_train, names=feature_names, return_names=False)
-        feats_val   = tabular_features(filter_tab_val, names=feature_names, return_names=False)
+        feats_train = tabular_features(filter_tab_train, names=feature_names, return_names=False,
+                                       eps_logscale_all_range     = CONFIG.eps_feats,
+                                       eps_logscale_limited_range = CONFIG.epsilon_target)
+        feats_val   = tabular_features(filter_tab_val, names=feature_names, return_names=False,
+                                       eps_logscale_all_range     = CONFIG.eps_feats,
+                                       eps_logscale_limited_range = CONFIG.epsilon_target)
         
         # Extract arrays
         X_train = feats_train[feature_cols].astype(np.float32).to_numpy()
@@ -214,12 +223,12 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
         y_val   = feats_val[target_columns].astype(np.float32).to_numpy().flatten()  
 
         # Create target scaler (if target_norm available)
-        if scale_target and target_norm in val_df.columns:
-            val_norm   = val_df[target_norm].astype(np.float32).to_numpy().flatten()
+        if scale_target and target_norm in filter_tab_val.columns:
+            val_norm   = filter_tab_val[target_norm].astype(np.float32).to_numpy().flatten()
             scaler_val = TargetLogScaler(norm_factor=val_norm, epsilon=target_eps)
         
         # If target normalization is requested but the column is missing, create a default scaler with norm_factor=1 
-        elif scale_target and (target_norm not in val_df.columns or target_norm is None):
+        elif scale_target and (target_norm not in filter_tab_val.columns or target_norm is None):
             scaler_val = TargetLogScaler(norm_factor=None, epsilon=target_eps)
             logger.warning(f"Target normalization column '{target_norm}' not found in fold {fold + 1}. "
                             "A default scaler with no norm_factor will be used.")
@@ -373,9 +382,11 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     filter_test   = filter_simulation_artifacts(raw_df = test_df,
                                                 min_denominator_threshold = CONFIG.min_dem_threshold,
                                                 filter_null_mass          = True,
-                                                filter_initial_state      = True) 
+                                                filter_initial_state      = False) 
     
-    feats_test    = tabular_features(filter_test, names=feature_names, return_names=False)
+    feats_test    = tabular_features(filter_test, names=feature_names, return_names=False,
+                                     eps_logscale_all_range     = CONFIG.eps_feats,
+                                     eps_logscale_limited_range = CONFIG.epsilon_target)
 
     # Identify continuous, categorical, and target columns   
     cont_columns   = [col for col in feats_test.columns if col in contfeats]
@@ -388,7 +399,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     y_test      = feats_test[target_columns].astype(np.float32).to_numpy().flatten()
     
     # Create target scaler (if target_norm available)
-    if scale_target and target_norm in test_df.columns:
+    if scale_target and target_norm in filter_test.columns:
         test_norm   = filter_test[target_norm].astype(np.float32).to_numpy().flatten()
         scaler_test = TargetLogScaler(norm_factor=test_norm, epsilon=target_eps)
        
@@ -396,7 +407,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         y_test_scaled = scaler_test.inverse_transform(y_test)
     
     # Scale without normalization if not provided or not found
-    elif scale_target and (target_norm not in test_df.columns or target_norm is None):
+    elif scale_target and (target_norm not in filter_test.columns or target_norm is None):
         scaler_test = TargetLogScaler(norm_factor=None, epsilon=target_eps)
         logger.warning(f"Target normalization column '{target_norm}' not found in test set. "
                        "A default scaler with no norm_factor will be used.")
@@ -429,9 +440,11 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         filter_tab_train = filter_simulation_artifacts(raw_df = train_df,
                                                        min_denominator_threshold = CONFIG.min_dem_threshold,
                                                        filter_null_mass          = True,
-                                                       filter_initial_state      = True)
+                                                       filter_initial_state      = False)
         # Extract features and target for train
-        feats_train = tabular_features(filter_tab_train, names=feature_names, return_names=False)
+        feats_train = tabular_features(filter_tab_train, names=feature_names, return_names=False,
+                                       eps_logscale_all_range     = CONFIG.eps_feats,
+                                       eps_logscale_limited_range = CONFIG.epsilon_target)
 
         X_train = feats_train[feature_cols].astype(np.float32).to_numpy()
         y_train = feats_train[target_columns].astype(np.float32).to_numpy().flatten()
