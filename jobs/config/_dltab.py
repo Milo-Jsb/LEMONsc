@@ -62,7 +62,7 @@ class DeepModelConfig:
     max_epochs        : int             = 100
     train_es_patience : int             = 15
     dl_loss_fn        : str             = "huber"
-    grad_clip_norm    : Optional[float] = 1.0
+    grad_clip_norm    : Optional[float] = None
     use_amp           : Optional[bool]  = True
 
 # defaul parameters for Expected Gradients --------------------------------------------------------------------------------#

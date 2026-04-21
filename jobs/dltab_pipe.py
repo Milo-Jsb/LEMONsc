@@ -6,11 +6,8 @@ import yaml
 import torch
 import optuna
 
-import numpy      as np
-import pandas     as pd
-import matplotlib
-matplotlib.use("Agg")  # non-interactive backend (safe for pipelines)
-import matplotlib.pyplot as plt
+import numpy             as np
+import pandas            as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from loguru      import logger
@@ -97,13 +94,13 @@ def get_args():
     return parser.parse_args()
 
 # List of tabular features to compute for the dataset  --------------------------------------------------------------------#
-CONT_FEATS  = ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)",
-               "log(t/t_coll)", 
-               "log(M_tot)",
+CONT_FEATS  = ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", "log(t/t_coll)", 
+               "log(M_tot)", "log(M_MMO_0)",
                "log(R_h/R_core)", "log(R_tid/R_core)", 
                "log(rho(R_h))",
                "log(Z)", 
                "log(fbin)"]
+
 CAT_FEATS   = None
 
 TARGET_FEAT = ["log(M_MMO/M_tot)"]
@@ -124,6 +121,24 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
                      storage         : Optional[str]   = None):
     """Run the optimization mode pipeline for DL tabular models."""
     
+    # Prepare study name:
+    study_path = Path(out_path) / "optim"
+    
+    # If not name provided, generate one based on storage presence and model/experiment details
+    if study_name is not None:
+        pass  
+    
+    # If a storage is provided but no study name, create a deterministic one based on model type, experiment tag and n_folds
+    elif storage is not None:
+        _exp_tag   = Path(out_path).name   
+        study_name = f"cv_study_{model_type}_{_exp_tag}_{n_folds}fold"
+        logger.info(f"SQLite storage active — using deterministic study name: '{study_name}'")
+    
+    # If no storage and no name, generate a timestamp-based name to avoid conflicts between independent runs
+    else:
+        timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        study_name = f"cv_study_{n_folds}fold_{timestamp}"
+            
     # Verbose
     logger.info(110*"_")
     logger.info(f"Space search of the params for the dltab {model_type} regressor using {n_folds}-fold cross-validation")
@@ -179,23 +194,6 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     partitions = []
     
     for fold in range(n_folds):
-        # Prepare study name:
-        study_path = Path(out_path) / "optim"
-        
-        # If not name provided, generate one based on storage presence and model/experiment details
-        if study_name is not None:
-            pass  
-        
-        # If a storage is provided but no study name, create a deterministic one based on model type, experiment tag and n_folds
-        elif storage is not None:
-            _exp_tag   = Path(out_path).name   
-            study_name = f"cv_study_{model_type}_{_exp_tag}_{n_folds}fold"
-            logger.info(f"SQLite storage active — using deterministic study name: '{study_name}'")
-        
-        # If no storage and no name, generate a timestamp-based name to avoid conflicts between independent runs
-        else:
-            timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-            study_name = f"cv_study_{n_folds}fold_{timestamp}"
         
         # Create fold directory
         foldpath = study_path/ f"{study_name}/fold_{fold}"
@@ -647,7 +645,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
                                    scheduler_params = fold_schd_params,
                                    feat_names       = feature_cols,
                                    device           = CONFIG.device,
-                                   use_amp          = True if CONFIG.device =="cuda" else False,
+                                   use_amp          = CONFIG.device =="cuda",
                                    verbose          = CONFIG.verbose)
         
         # Train the model
@@ -1037,59 +1035,9 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, targ
                                                     name_file        = model_type,
                                                     model_name       = model_title.get(model_type, model_type),
                                                     importance_name  = "EG Attribution",
-                                                    features_names   = latex_names)
+                                                    features_names   = latex_names,
+                                                    direction_dict   = direction_by_feature)
         logger.info("Feature importance plot saved.")
-
-        # --- POC Plot 1: fold_cv bar chart (between-fold variability) ------------------------------------------------#
-        # Sort features by mean importance (descending) for consistent ordering
-        sorted_feat_keys = sorted(importance_stats.keys(),
-                                  key=lambda f: importance_stats[f]['magnitude_mean'], reverse=True)
-        sorted_latex     = [feats_labels.get(f, f) for f in sorted_feat_keys]
-        fold_cv_vals     = [importance_stats[f]['fold_cv'] for f in sorted_feat_keys]
-        # Replace inf (single-fold edge case) with NaN so the bar is omitted cleanly
-        fold_cv_vals     = [v if np.isfinite(v) else np.nan for v in fold_cv_vals]
-
-        fig_cv, ax_cv = plt.subplots(figsize=(10, 5))
-        x_cv = np.arange(len(sorted_latex))
-        ax_cv.bar(x_cv, fold_cv_vals, color="steelblue", alpha=0.8, width=0.6)
-        ax_cv.axhline(0.3, color="red", linestyle="--", linewidth=1.2, label="CV=0.3 threshold")
-        ax_cv.set_xticks(x_cv)
-        ax_cv.set_xticklabels(sorted_latex, rotation=45, ha="right", fontsize=10)
-        ax_cv.set_ylabel("Fold CV  (std / mean  |EG|)", fontsize=12)
-        ax_cv.set_title(f"{model_title.get(model_type, model_type)} – Between-fold variability (fold CV)", fontsize=13)
-        ax_cv.legend(fontsize=10)
-        fig_cv.tight_layout()
-        cv_path = viz_path / f"{model_type}_fold_cv.png"
-        fig_cv.savefig(cv_path, dpi=150)
-        plt.close(fig_cv)
-        logger.info(f"Fold-CV plot saved to: {cv_path}")
-
-        # --- POC Plot 2: sample_consistency heatmap (feature × fold) ------------------------------------------------#
-        # Build matrix shape (n_features_sorted, n_valid_folds)
-        consistency_matrix = np.array(
-            [[fold_attr_consistency[fold][list(feature_cols).index(f)] for fold in range(n_valid_folds)]
-             for f in sorted_feat_keys]
-        )
-
-        fig_ht, ax_ht = plt.subplots(figsize=(max(4, n_valid_folds * 1.2), max(5, len(sorted_latex) * 0.45)))
-        im = ax_ht.imshow(consistency_matrix, aspect="auto", cmap="RdYlGn", vmin=0, vmax=1)
-        ax_ht.set_xticks(np.arange(n_valid_folds))
-        ax_ht.set_xticklabels([f"Fold {k+1}" for k in range(n_valid_folds)], fontsize=10)
-        ax_ht.set_yticks(np.arange(len(sorted_latex)))
-        ax_ht.set_yticklabels(sorted_latex, fontsize=10)
-        ax_ht.set_title(f"{model_title.get(model_type, model_type)} – Sample consistency  (1 - CV(|EG|))", fontsize=13)
-        # Annotate cells with numeric values
-        for row in range(len(sorted_feat_keys)):
-            for col in range(n_valid_folds):
-                ax_ht.text(col, row, f"{consistency_matrix[row, col]:.2f}",
-                           ha="center", va="center", fontsize=8,
-                           color="black" if 0.3 < consistency_matrix[row, col] < 0.85 else "white")
-        fig_ht.colorbar(im, ax=ax_ht, label="Consistency (1 = stable)")
-        fig_ht.tight_layout()
-        ht_path = viz_path / f"{model_type}_consistency_heatmap.png"
-        fig_ht.savefig(ht_path, dpi=150)
-        plt.close(fig_ht)
-        logger.info(f"Consistency heatmap saved to: {ht_path}")
 
     else:
         logger.warning("No feature importances could be extracted from the loaded models.")

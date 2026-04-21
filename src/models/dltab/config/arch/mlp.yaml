@@ -1,6 +1,6 @@
 hidden_layers : [32, 64, 128, 512, 256, 128, 64, 32, 16, 8]
 out_features : 1
 activation : 'silu'
-dropout    : 0.15 
+dropout    : 0.125 
 normalization : null
 bias  : True
