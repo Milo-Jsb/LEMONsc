@@ -2,7 +2,7 @@
 import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing  import Dict, List, Callable, Optional
+from typing  import Dict, List, Callable, Optional, Union
 
 # Custom functions and utilities ------------------------------------------------------------------------------------------#
 from src.models.mltrees.regressor  import MLTreeRegressor
@@ -54,17 +54,19 @@ def normalize_partitions_ml(partitions: List[Dict]) -> List[Dict]:
             'X_val'          : partition['X_val'],
             'y_val'          : partition['y_val'],
             'features_names' : features_names,
+            'trs'            : partition.get('trs', None),
             'scaler'         : partition.get('scaler', None)
         })
     return normalized
  
 # [Helper] Evaluate a ML model on a given partition for SpaceSearch -------------------------------------------------------#
-def evaluate_partition_ml(model: MLTreeRegressor | MLBasicRegressor, partition: Dict, scorer: Callable) -> float:
+def evaluate_partition_ml(model: Union[MLTreeRegressor, MLBasicRegressor], partition: Dict, scorer: Callable) -> float:
     """Train and evaluate model on a single partition, applying scaler if provided else return unscaled results"""
     X_train = partition['X_train']
     y_train = partition['y_train']
     X_val   = partition['X_val']
     y_val   = partition['y_val']
+    trs     = partition.get('trs', None)
     scaler  = partition.get('scaler', None)
     
     # Train model
@@ -74,26 +76,26 @@ def evaluate_partition_ml(model: MLTreeRegressor | MLBasicRegressor, partition: 
     y_pred = model.predict(X_val)
     
     # Ensure arrays are properly flattened to 1D
-    y_pred     = y_pred.ravel()
-    y_val_flat = y_val.ravel()
+    y_pred = y_pred.ravel()
+    y_val  = y_val.ravel()
     
     # Apply scaling if provided
     if scaler is not None:
         # Check if scaler is an object with inverse_transform method (e.g., TargetLogScaler)
         if hasattr(scaler, 'inverse_transform') and callable(getattr(scaler, 'inverse_transform')):
-            y_pred_scaled = scaler.inverse_transform(y_pred)
-            y_val_scaled  = scaler.inverse_transform(y_val_flat)
-        
-        # Or if its just a numeric factor (e.g., standard deviation for scaling)
+            y_pred = scaler.inverse_transform(y_pred)
+            y_val  = scaler.inverse_transform(y_val)
         else:
-            y_pred_scaled = y_pred * scaler
-            y_val_scaled  = y_val_flat * scaler
-        
-        score = float(scorer(y_val_scaled, y_pred_scaled))
+            raise ValueError("Scaler provided in partition does not have an inverse_transform method")
     
-    # If no scaler, evaluate directly on original predictions and true values
-    else:
-        score = float(scorer(y_val_flat, y_pred))
+    # Apply trs if provided 
+    if trs is not None:    
+        # Check if trs is an object with inverse_transform method (e.g., TargetTransform)
+        if hasattr(trs, 'inverse_transform') and callable(getattr(trs, 'inverse_transform')):
+            y_pred = trs.inverse_transform(y_pred)
+            y_val  = trs.inverse_transform(y_val)
+        
+    score = float(scorer(y_val, y_pred))
     
     return score
 

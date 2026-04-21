@@ -3,8 +3,8 @@ import numpy  as np
 import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing            import Optional, Union
-from pandas.api.types  import CategoricalDtype
+from typing           import Optional, Union, List
+from pandas.api.types import CategoricalDtype
 
 # Custom utilities and functions ------------------------------------------------------------------------------------------#
 from src.utils.phyfactors  import relaxation_time, core_collapse_time, collision_time, crossing_time
@@ -13,7 +13,8 @@ from src.utils.phyfactors  import rho_at_rh, critical_mass, safronov_num, mean_s
 # Define relevant operations for desired tabular features -----------------------------------------------------------------#
 def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=True, onehot:bool=True,
                      eps_logscale_all_range     : float = 0,
-                     eps_logscale_limited_range : float = 1e-6
+                     eps_logscale_limited_range : float = 1e-6,
+                     n_sim_categories           : int   = 2
                      ) -> pd.DataFrame:
     """
     ________________________________________________________________________________________________________________________
@@ -51,7 +52,7 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
     ________________________________________________________________________________________________________________________
     """
     # Set defaul types for categorical features ---------------------------------------------------------------------------#
-    type_sim_dtype = CategoricalDtype(categories=[0., 1.], ordered=False)
+    type_sim_dtype = CategoricalDtype(categories=[float(i) for i in range(n_sim_categories)], ordered=False)
 
     # Set possible features and possible names with nested operations -----------------------------------------------------#
     default_feats = {
@@ -67,6 +68,10 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
             "label"     : r"$\log(t/t_{\rm{relax}})$",
             "operation" : lambda df: np.log10(df['t'] / df['t_relax'] + eps_logscale_all_range)
         },
+        "log(t/t_coll)" :{
+            "label"     : r"$\log(t/t_{\rm{coll}})$",
+            "operation" : lambda df: np.log10(df['t'] / df['t_coll'] + eps_logscale_all_range)
+        },
         "log(t)" :{
             "label"     : r"$\log(t)$",
             "operation" : lambda df: np.log10(df['t'] + eps_logscale_all_range)
@@ -79,9 +84,21 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
             "label"     : r"$\log(\rho(R_{h}))$",
             "operation" : lambda df: np.log10(df['rho(R_h)'] + eps_logscale_all_range)
         },
+        "log(M_tot)": {
+            "label"     : r"$\log(M_{\rm tot})$",
+            "operation" : lambda df: np.log10(df['M_tot'] + eps_logscale_limited_range)
+        },
         "log(M_tot/M_crit)" :{
             "label"     : r"$\log(M_{\rm tot}/M_{\rm crit})$",
             "operation" : lambda df:np.log10(df['M_tot']/df['M_crit'] + eps_logscale_all_range)
+        },
+        "log(M_MMO_0)" :{
+            "label"     : r"$\log(M_{{\rm MMO},\,0})$",
+            "operation" : lambda df: np.log10(df['M_MMO_0'] + eps_logscale_limited_range)
+        },
+        "log(M_MMO/M_MMO_0)" :{
+            "label"     : r"$\log(M_{\rm MMO}/M_{{\rm MMO},\,0})$",
+            "operation" : lambda df: np.log10(df['M_MMO']/df['M_MMO_0'] + eps_logscale_limited_range)
         },
         "log(M_MMO/M_tot)" :{
             "label"     : r"$\log(M_{\rm MMO}/M_{\rm tot})$",
@@ -97,11 +114,11 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
         },
         "log(Z)":{
             "label"     : r"$\log(Z)$",
-            "operation" : lambda df: np.log10(df['z'] + eps_logscale_all_range)
+            "operation" : lambda df: np.log10(df['z'] + eps_logscale_limited_range)
         },
-        "fracbin":{
-            "label"     : r"$f_{\rm{bin}}$",
-            "operation" : lambda df: df['fracbin']
+        "log(fbin)":{
+            "label"     : r"$\log(f_{\rm{bin}})$",
+            "operation" : lambda df: np.log10(df['fbin'] + eps_logscale_limited_range)
         },
         "type_sim" :{
             "label"     : r"environment",
@@ -188,11 +205,11 @@ def filter_simulation_artifacts(raw_df                    : pd.DataFrame,
     # Make a working copy to accumulate masks without modifying input
     valid_mask = pd.Series(True, index=raw_df.index)
 
-    # Filter 1: t=0 (physically undefined initial state) ------------------------------------------------------------------#
+    # Filter 1: t=0 (initial state) ---------------------------------------------------------------------------------------#
     if filter_initial_state and ('t' in raw_df.columns):
         
         # Identify rows where t=0 and count them
-        t_zero_mask  = raw_df['t'] == 0
+        t_zero_mask = raw_df['t'] == 0
         n_t_zero    = t_zero_mask.sum()
         
         # Log the number of rows removed due to t=0
@@ -213,17 +230,28 @@ def filter_simulation_artifacts(raw_df                    : pd.DataFrame,
         
         # Create mask to exclude rows with null mass
         valid_mask = valid_mask & ~null_mass_mask
+    if filter_null_mass and ('M_MMO_0' in raw_df.columns):
+        
+        # Identify rows where M_MMO_0=0 and count them
+        null_mass_mask = raw_df['M_MMO_0'] == 0
+        n_null_mass    = null_mass_mask.sum()
+        
+        # log the number of rows removed due to null mass
+        removal_log['initial null mass (M_MMO_0=0)'] = int(n_null_mass)
+        
+        # Create mask to exclude rows with null initial mass
+        valid_mask = valid_mask & ~null_mass_mask
 
     # Filter 2: near-zero denominators (numerical artifacts) --------------------------------------------------------------#
-    default_columns     = ['t_cc', 't_cross', 't_relax', 'M_crit', 'R_core', 'M_tot']
+    default_columns     = ['t_cc', 't_cross', 't_coll', 't_relax', 'M_crit', 'R_core', 'M_tot']
     denominator_columns = columns_to_check if columns_to_check is not None else default_columns
 
     for col in denominator_columns:
         if col not in raw_df.columns:
             continue
         # Identify rows where the absolute value of the denominator is below the threshold and only count rows
-        artifact_mask  = raw_df[col].abs() < min_denominator_threshold
-        n_artifacts    = (artifact_mask & valid_mask).sum()  
+        artifact_mask = raw_df[col].abs() < min_denominator_threshold
+        n_artifacts   = (artifact_mask & valid_mask).sum()  
         
         # Log the number of rows removed due to near-zero denominators for this column
         removal_log[f'{col} ~ 0 (denominator artifact)'] = int(n_artifacts)
@@ -231,12 +259,12 @@ def filter_simulation_artifacts(raw_df                    : pd.DataFrame,
         # Create mask to exclude rows with near-zero denominators
         valid_mask = valid_mask & ~artifact_mask
 
-    # --- Apply mask and report ------------------------------------------------------------------------------------------#
+    # Apply mask and report -----------------------------------------------------------------------------------------------#
     clean_df  = raw_df[valid_mask].reset_index(drop=True)
     n_removed = n_initial - len(clean_df)
 
     if verbose:
-        print(f"{'─'*64}")
+        print(f"{'_'*110}")
         print(f"  filter_simulation_artifacts: {n_initial} rows in → {len(clean_df)} rows out")
         print(f"  Total removed : {n_removed} ({100 * n_removed / n_initial:.2f}%)")
         if n_removed > 0:
@@ -244,7 +272,7 @@ def filter_simulation_artifacts(raw_df                    : pd.DataFrame,
             for reason, count in removal_log.items():
                 if count > 0:
                     print(f"    [{count:>6}]  {reason}")
-        print(f"{'─'*64}")
+        print(f"{'_'*110}")
 
     return clean_df
 
@@ -361,82 +389,4 @@ def compute_physical_parameters(time_values : np.ndarray, rh_values: Union[float
     
     return results
 
-# Store the transformation of the target to retrieve the physical value ---------------------------------------------------#
-class TargetLogScaler:
-    """
-    ________________________________________________________________________________________________________________________
-    TargetLogScaler: transformation and inverse transformation of the target variable in a safe logspace.
-    ________________________________________________________________________________________________________________________
-    -> Current transformation: 
-        y = log10(target/norm_factor + epsilon)
-    -> Inverse transformation: 
-        target = (10^y - epsilon) * norm_factor
-    ________________________________________________________________________________________________________________________
-    Notes:
-    This Scaler works if the target variable its strictly positive and has was intended to be used on a variable restricted
-    from 0 to 1. The epsilon parameter is a small constant added to avoid log(0) errors, and should be set based on the 
-    expected range of values for the target variable.
-    ________________________________________________________________________________________________________________________
-    """
-    # Initialization ------------------------------------------------------------------------------------------------------#
-    def __init__(self, norm_factor: Optional[np.ndarray], epsilon: float = 1e-6):
-        """
-        ____________________________________________________________________________________________________________________
-        Parameters:
-        -> norm_factor : Array of normalization factors for scaling
-        -> epsilon     : Small constant to avoid log(0)
-        ____________________________________________________________________________________________________________________
-        """
-        self.norm_factor = norm_factor
-        self.epsilon     = epsilon
-    
-    # Inverse transformation ----------------------------------------------------------------------------------------------#
-    def inverse_transform(self, y: np.ndarray) -> np.ndarray:
-        """
-        ____________________________________________________________________________________________________________________
-        Transform from log-space predictions back to target variable.
-        ____________________________________________________________________________________________________________________
-        Parameters:
-        -> y: Predictions in log-space (log10(target/norm_factor + epsilon))
-        ____________________________________________________________________________________________________________________    
-        Returns:
-            target: Target variable in original scale, ensuring non-negative values by clipping at 0.
-        ____________________________________________________________________________________________________________________
-        """
-        # Clip y to a safe range before exponentiation to avoid float64 overflow (max ~10^308)
-        y_safe = np.clip(np.asarray(y, dtype=np.float64), -300.0, 300.0)
-
-        # If no normalization factor, just apply transformation
-        if self.norm_factor is None:
-            target = np.clip(np.power(10, y_safe) - self.epsilon, 0, None)
-        
-        else:
-            target = (np.power(10, y_safe) - self.epsilon) * self.norm_factor
-        
-        return np.clip(target, 0, None)  
-    
-    # Forward transformation ----------------------------------------------------------------------------------------------#
-    def transform(self, target: np.ndarray) -> np.ndarray:
-        """
-        ____________________________________________________________________________________________________________________
-        Transform from target variable to log-space.
-        ____________________________________________________________________________________________________________________
-        Parameters:
-        -> target: Target variable in original scale
-        ____________________________________________________________________________________________________________________    
-        Returns:
-            y: Transformed values in log-space
-        ____________________________________________________________________________________________________________________
-        """
-        if self.norm_factor is None:
-            y = np.log10(target + self.epsilon)
-        else:
-            y = np.log10(target / self.norm_factor + self.epsilon) 
-        
-        return y
-    
-    # Representation for logging and debugging ----------------------------------------------------------------------------#
-    def __repr__(self):
-        return f"TargetLogScaler(norm_factor={len(self.norm_factor)}, epsilon={self.epsilon})"
-    
 #--------------------------------------------------------------------------------------------------------------------------#

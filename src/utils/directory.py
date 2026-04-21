@@ -26,7 +26,11 @@ class PathManagerDatasetPipeline:
     
     def get_stratified_file_path(self, env_type: str) -> str:
         """Get path for stratified simulation files."""
-        return os.path.join(self.stratified_path, f"{env_type}_simulations.txt")
+        return os.path.join(self.stratified_path, f"{env_type.lower()}_simulations.txt")
+
+    def get_simulation_lengths_path(self) -> str:
+        """Get path for simulation lengths JSON file."""
+        return os.path.join(self.stratified_path, "simulation_lengths.json")
 
 # Path Management ---------------------------------------------------------------------------------------------------------#
 class PathManagerTrainOptPipeline:
@@ -143,5 +147,37 @@ def save_dataset_to_csv(data: np.ndarray, columns: List[str], target_data: np.nd
     except Exception as e:
         logger.error(f"Failed to save dataset to {filepath}: {e}")
         raise
+
+# Load the DL architecture parameters from default config folder ----------------------------------------------------------#
+def build_dl_architecture_from_YAML(config_path_base: Path, arch_config: str, opt_config: str,
+                                    schd_config: Optional[str] = None,
+                                    loss_config: Optional[str] = None) -> dict:
     
+    """Build DL_ARCHITECTURE dict from YAML config files."""
+    arch_params = load_yaml_dict(str(config_path_base / "arch" / arch_config))
+    opt_params  = load_yaml_dict(str(config_path_base / "opt"  / opt_config))
+    
+    # Load loss params from YAML if provided, otherwise default to empty dict
+    if loss_config is not None:
+        loss_params = load_yaml_dict(str(config_path_base / "loss" / loss_config))
+    else:
+        loss_params = {}
+    
+    # Load scheduler params from YAML if provided, otherwise default to None (scheduler is optional in the training loop)
+    if schd_config is not None:
+        schd_params = load_yaml_dict(str(config_path_base / "schd" / schd_config))
+    else:
+        schd_params = None
+    
+    arch_elemnts = {
+        "model_params"     : arch_params, 
+        "optimizer_name"   : Path(opt_config).stem,
+        "optimizer_params" : opt_params, 
+        "loss_params"      : loss_params,
+        "scheduler_name"   : Path(schd_config).stem if schd_config else None,
+        "scheduler_params" : schd_params
+                    }
+    
+    return arch_elemnts
+  
 #--------------------------------------------------------------------------------------------------------------------------#

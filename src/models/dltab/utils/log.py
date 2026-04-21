@@ -47,25 +47,4 @@ def _setup_logger(log_file: Optional[str] = None) -> None:
                 encoding="utf-8"
             )
 
-# Convert state_dict to CPU (for saving/loading across devices) -----------------------------------------------------------#
-def _to_cpu_state_dict(state_dict: dict) -> dict:
-    """
-    ________________________________________________________________________________________________________________
-    Convert a state_dict with tensors to CPU.
-    ________________________________________________________________________________________________________________
-    Parameters:
-    -> state_dict (dict) : Model state dictionary potentially containing GPU tensors
-    ________________________________________________________________________________________________________________
-    Returns:
-    -> dict : State dictionary with all tensors moved to CPU
-    ________________________________________________________________________________________________________________
-    """
-    cpu_state = {}
-    for k, v in state_dict.items():
-        if isinstance(v, torch.Tensor):
-            cpu_state[k] = v.detach().cpu()
-        else:
-            cpu_state[k] = v
-    return cpu_state
-
 #--------------------------------------------------------------------------------------------------------------------------#

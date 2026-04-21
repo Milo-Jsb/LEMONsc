@@ -134,7 +134,7 @@ class MLTreeRegressor:
                                }
             
             # Retrieve default parameters and update the dictionary
-            default_params = load_yaml_dict(path=str(default_model_params_path / "random_forest.yaml"))
+            default_params = load_yaml_dict(path=str(default_model_params_path / "rf.yaml"))
             default_params.update(params)
                  
             # Remove device parameter if present (not supported by cuML RandomForest)
@@ -164,7 +164,7 @@ class MLTreeRegressor:
         elif self.model_type == "lightgbm":
             
             # Retrieve default parameters and update the dictionary
-            default_params = load_yaml_dict(path=str(default_model_params_path / "lgbm.yaml"))
+            default_params = load_yaml_dict(path=str(default_model_params_path / "lightgbm.yaml"))
             default_params.update(params)
             
             # Set type of computation
@@ -293,7 +293,8 @@ class MLTreeRegressor:
             raise ValueError(f"Error making predictions: {e}") from e
 
     # Return feature importance for evaluation of the training ------------------------------------------------------------#
-    def get_feature_importance(self, importance_type: Optional[str] = None, recompute: bool = False) -> Dict[str, float]:
+    def get_feature_importance(self, importance_type: Optional[str] = None, recompute: bool = False, norm: bool = False
+                               ) -> Dict[str, float]:
         """
         ____________________________________________________________________________________________________________________
         Get feature importance scores from the fitted model.
@@ -362,13 +363,15 @@ class MLTreeRegressor:
                     if idx < n_features:
                         importances[idx] = v
             
-            # RandomForest (cuML) - only supports default importance (similar to Gini importance)
-            elif self.model_type == "rf":
-                importances = self.model.feature_importances_
-            
             else:
                 raise ValueError(f"Unsupported model type for feature importance: {self.model_type}")   
             
+            # Normalize importances to sum to 1 for relative interpretation
+            if norm:
+                total = importances.sum()
+                if total > 0:
+                    importances = importances / total
+
             # Ensure we have feature names (generate generic ones if needed)
             if self.feature_names is None or len(self.feature_names) == 0:
                 n_features = len(importances)

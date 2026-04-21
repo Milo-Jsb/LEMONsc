@@ -19,12 +19,14 @@ from matplotlib.cm                         import ScalarMappable
 
 # Statistics and computation of correlations    
 from sklearn.metrics      import r2_score
-from scipy.stats          import gaussian_kde, pearsonr, spearmanr
+from scipy.stats          import gaussian_kde, rankdata
 from scipy.optimize       import curve_fit
-from sklearn.linear_model import LinearRegression
 
 # Parallel costly computations
 from joblib import Parallel, delayed
+
+# Correlation statistics
+from src.utils.corrstats import pcc_estimator, ksg_mi_estimator
 
 # Helpers -----------------------------------------------------------------------------------------------------------------#
 def truncate_colormap(cmap: Union[str, Colormap], minval: float = 0.05, maxval: float = 1.0, n: int = 256) -> Colormap:
@@ -157,92 +159,20 @@ def plot_partial_correlation_bars(df: pd.DataFrame, features: list, target: str,
     if n_samples < 10:
         raise ValueError(f"Insufficient samples ({n_samples}). Need at least 10 samples for reliable estimates.")
     
-    # Helper function for computing correlation ---------------------------------------------------------------------------#
-    def _compute_correlation(x, y, method='pearson'):
-        """Compute correlation between two arrays."""
-        if method == 'pearson':
-            return pearsonr(x, y)[0]
-        else:  # spearman
-            return spearmanr(x, y)[0]
-    
-    # Define feature computation function for parallelization -------------------------------------------------------------#
-    def _compute_feature(i, seed=None):
-        """Compute partial correlation coefficient and bootstrap uncertainty for feature i."""
-        # Set seed for this worker if provided (crucial for reproducibility in parallel execution)
-        if seed is not None:
-            np.random.seed(seed)
-        
-        # Indices of other features
-        idx_other = [j for j in range(len(features)) if j != i]
-        
-        if len(idx_other) == 0:
-            # Only one feature, partial correlation = regular correlation
-            pcc_value = _compute_correlation(X[:, i], y, corr_metric)
-            return pcc_value, 0.0
-        
-        # Regress Xi on other features to get residuals
-        reg_x = LinearRegression(fit_intercept=True).fit(X[:, idx_other], X[:, i])
-        res_x = X[:, i] - reg_x.predict(X[:, idx_other])
-        
-        # Regress y on other features to get residuals
-        reg_y = LinearRegression(fit_intercept=True).fit(X[:, idx_other], y)
-        res_y = y - reg_y.predict(X[:, idx_other])
-        
-        # Partial correlation is correlation between residuals
-        pcc_value = _compute_correlation(res_x, res_y, corr_metric)
-        
-        # Bootstrap to estimate uncertainty -------------------------------------------------------------------------------#
-        bootstrap_pccs = np.zeros(n_bootstrap)
-        
-        for b in range(n_bootstrap):
-            # Resample indices with replacement
-            boot_idx = np.random.randint(0, n_samples, size=n_samples)
-            
-            # Compute correlation on bootstrap sample
-            try:
-                r_boot = _compute_correlation(res_x[boot_idx], res_y[boot_idx], corr_metric)
-                bootstrap_pccs[b] = r_boot
-            except:
-                # In rare cases correlation might fail (e.g., constant values)
-                bootstrap_pccs[b] = np.nan
-        
-        # Remove any NaN values from bootstrap
-        bootstrap_pccs = bootstrap_pccs[~np.isnan(bootstrap_pccs)]
-        
-        # Use standard deviation as uncertainty estimate
-        if len(bootstrap_pccs) > 0:
-            pcc_error = np.std(bootstrap_pccs)
-        else:
-            pcc_error = 0.0
-        
-        return pcc_value, pcc_error
-    
-    # Parallel computation across features --------------------------------------------------------------------------------#
-    
-    # Generate unique seeds for each worker to ensure reproducibility
-    if random_seed is not None:
-        feature_seeds = [random_seed + i for i in range(len(features))]
-    else:
-        feature_seeds = [None] * len(features)
-    
-    # Use joblib to parallelize the computation of PCC and uncertainty for each feature
-    outputs = Parallel(n_jobs=n_jobs)(delayed(_compute_feature)(i, feature_seeds[i]) for i in range(len(features)))
-    
-    # Collect results from parallel computation
-    pcc_values = np.zeros(len(features))
-    pcc_errors = np.zeros(len(features))
-    
-    for i, (pcc_val, pcc_err) in enumerate(outputs):
-        pcc_values[i] = pcc_val
-        pcc_errors[i] = pcc_err
-    
+    # Compute partial correlations and bootstrap uncertainties for all features ------------------------------------------#
+    pcc_values, pcc_errors = pcc_estimator(X, y, corr_metric=corr_metric, n_bootstrap=n_bootstrap, n_jobs=n_jobs, 
+                                           random_seed=random_seed)
+
     # Create Plot ---------------------------------------------------------------------------------------------------------#
     fig, ax = plt.subplots(figsize=figsize)
     x_pos   = np.arange(len(features))
     
     # Create bars with error bars
     bars = ax.bar(x_pos, pcc_values, yerr=pcc_errors, width=bar_width, color=bar_color, edgecolor=bar_edgecolor,
-                  capsize=4, linewidth=1.2, alpha=0.8, error_kw={'linewidth': 1.5})
+                  capsize   = 4, 
+                  linewidth = 1.2, 
+                  alpha     = 0.8, 
+                  error_kw  = {'linewidth': 1.5})
     
     # Add reference line at y=0
     ax.axhline(0, color='black', linewidth=0.8, linestyle='--', alpha=0.6)
@@ -261,7 +191,7 @@ def plot_partial_correlation_bars(df: pd.DataFrame, features: list, target: str,
     # Add value labels on top of bars
     for i, (val, err) in enumerate(zip(pcc_values, pcc_errors)):
         y_pos = val + err + 0.02 if val >= 0 else val - err - 0.02
-        va = 'bottom' if val >= 0 else 'top'
+        va    = 'bottom' if val >= 0 else 'top'
         ax.text(i, y_pos, f'{val:.3f}', ha='center', va=va, fontsize=12, fontweight='bold')
     
     # Set y-axis limits with some padding
@@ -349,13 +279,15 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
 
     # Density coloring 
     try:
-        xy      = np.vstack([true_values, predictions])
-        kde     = gaussian_kde(xy)
-        z       = kde(xy)
+        xy  = np.vstack([true_values, predictions])
+        kde = gaussian_kde(xy)
+        z   = kde(xy)
+        
         # Normalize density values to [0,1]
         z       = (z - z.min()) / (z.max() - z.min())
         idx     = z.argsort()
         x, y, z = true_values[idx], predictions[idx], z[idx]
+    
     except Exception as e:
         raise ValueError(f"Error computing density for scatter plot: {e}")
 
@@ -368,14 +300,12 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
     cbar.ax.tick_params(labelsize=12)
 
     # Labels and annotation
-    ax.set_ylabel(r"Model's predictions [$M_{\odot}$]", size=14)
-    ax.set_xlabel(r"True simulated values [$M_{\odot}$]", size=14)
+    ax.set_ylabel(r"Model's predictions: M$_{{\rm MMO}}$[$M_{\odot}$]", size=14)
+    ax.set_xlabel(r"True values: M$_{{\rm MMO}}$[$M_{\odot}$]", size=14)
     ax.tick_params(labelsize=12)
-    ax.text(0.05, 0.95, f"{model_name}\n$R^2$-Score: {r2:.4f}",
-            transform=ax.transAxes,
-            fontsize=12,
-            verticalalignment='top',
-            bbox=dict(facecolor='white', alpha=0.5))
+    ax.text(0.05, 0.95, f"{model_name}\n$R^2$-Score: {r2:.4f}", transform=ax.transAxes, fontsize=12, 
+            verticalalignment  = 'top',
+            bbox               = dict(facecolor='white', alpha=0.5))
     
     if scale is not None:
         ax.set_xscale(scale)
@@ -394,9 +324,9 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
 
 # Custom Residual plot with density color map -----------------------------------------------------------------------------#
 def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: str, name_file: str, model_name: str,
-                  cmap  : Union[str, Colormap]="inferno",
-                  scale : Optional[str] = None,
-                  show  : bool = True):
+                  cmap  : Union[str, Colormap]= "inferno",
+                  scale : Optional[str]       =  None,
+                  show  : bool                = True):
     """
     ________________________________________________________________________________________________________________________
     Generate a residual plot (residuals vs predicted values) with density coloring and RMSE annotation.
@@ -453,13 +383,14 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
 
     # Density coloring 
     try:
-        xy = np.vstack([predictions, residuals])
+        xy  = np.vstack([predictions, residuals])
         kde = gaussian_kde(xy)
-        z = kde(xy)
+        z   = kde(xy)
         # Normalize density values to [0,1]
-        z = (z - z.min()) / (z.max() - z.min())
-        idx = z.argsort()
+        z       = (z - z.min()) / (z.max() - z.min())
+        idx     = z.argsort()
         x, y, z = predictions[idx], residuals[idx], z[idx]
+    
     except Exception as e:
         raise ValueError(f"Error computing density for scatter plot: {e}")
 
@@ -472,14 +403,12 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
     cbar.ax.tick_params(labelsize=12)
 
     # Labels and annotation
-    ax.set_xlabel(r"Predicted values [$M_{\odot}$]", size=14)
-    ax.set_ylabel(r"Residuals [$M_{\odot}$]", size=14)
+    ax.set_xlabel(r"Model's predictions M$_{{\rm MMO}}^{{\it pred}}$[$M_{\odot}$]", size=14)
+    ax.set_ylabel(r"Residuals: M$_{{\rm MMO}}^{{\it true}}$-M$_{{\rm MMO}}^{{\it pred}}$ [$M_{\odot}$]", size=14)
     ax.tick_params(labelsize=12)
-    ax.text(0.05, 0.95, f"{model_name}\nR$^2$-Score: {r2:.4f}",
-            transform=ax.transAxes,
-            fontsize=12,
-            verticalalignment='top',
-            bbox=dict(facecolor='white', alpha=0.5))
+    ax.text(0.05, 0.95, f"{model_name}\nR$^2$-Score: {r2:.4f}", transform=ax.transAxes, fontsize=12,
+            verticalalignment ='top',
+            bbox              =dict(facecolor='white', alpha=0.5))
     
     if scale is not None:
         ax.set_xscale(scale)
@@ -648,7 +577,8 @@ def boxplot_features_with_points(features: np.ndarray, feature_names: list, path
     plt.close(fig)
 
 # Custom Violin Plot Analysis with statistics display ---------------------------------------------------------------------#
-def violinplot_features(features: np.ndarray, feature_names: list, path_save: str, name_file: str, 
+def violinplot_features(features: pd.DataFrame,  mapping_dict: Dict[str, str], path_save: str, 
+                        name_file    : str, 
                         dataset_name : str,
                         figsize      : tuple = (20, 10),
                         violin_color : str   = 'rebeccapurple',
@@ -662,18 +592,18 @@ def violinplot_features(features: np.ndarray, feature_names: list, path_save: st
     Generate violin plots for all features with statistical information displayed, providing distribution analysis.
     _______________________________________________________________________________________________________________________
     Parameters:
-        features      (array-like) : Feature array with shape (n_samples, n_features). Mandatory.
-        feature_names (list)       : List of feature names corresponding to columns. Mandatory.
-        path_save     (str)        : Directory path to save the plot. Mandatory.
-        name_file     (str)        : Name for the saved plot file (without extension). Mandatory.
-        dataset_name  (str)        : Name of the dataset for annotation. Mandatory.
-        figsize       (tuple)      : Figure size (width, height). Default is (20, 10).
-        violin_color  (str)        : Color for the violin plots. Default is 'rebeccapurple'.
-        nrows         (int)        : Number of rows in the subplot grid. Default is 2.
-        ncols         (int)        : Number of columns in the subplot grid. Default is 4.
-        num_points    (int)        : Number of points to use for the violin plot. Default is 1000.
-        ifsave        (bool)       : Whether to save the plot. Default is True.
-        ifshow        (bool)       : Whether to show the plot. Default is False.
+        features      (DataFrame) : Feature array with shape (n_samples, n_features). Mandatory.
+        mapping_dict  (dict)      : Ditionary with respective feature names and xticklabel and additionals.
+        path_save     (str)       : Directory path to save the plot. Mandatory.
+        name_file     (str)       : Name for the saved plot file (without extension). Mandatory.
+        dataset_name  (str)       : Name of the dataset for annotation. Mandatory.
+        figsize       (tuple)     : Figure size (width, height). Default is (20, 10).
+        violin_color  (str)       : Color for the violin plots. Default is 'rebeccapurple'.
+        nrows         (int)       : Number of rows in the subplot grid. Default is 2.
+        ncols         (int)       : Number of columns in the subplot grid. Default is 4.
+        num_points    (int)       : Number of points to use for the violin plot. Default is 1000.
+        ifsave        (bool)      : Whether to save the plot. Default is True.
+        ifshow        (bool)      : Whether to show the plot. Default is False.
     _______________________________________________________________________________________________________________________
     Returns:
         None. The function saves the plot as a .png file and optionally displays it.
@@ -690,19 +620,19 @@ def violinplot_features(features: np.ndarray, feature_names: list, path_save: st
         ValueError, TypeError, OSError
     _______________________________________________________________________________________________________________________
     """
-    if features is None or feature_names is None:
-        raise ValueError("features and feature_names must not be None.")
+    # Input validation ---------------------------------------------------------------------------------------------------#
+    if features is None:
+        raise ValueError("features must not be None.")
+    if not isinstance(features, pd.DataFrame):
+        raise TypeError("features must be a pandas.DataFrame.")
     
-    try:
-        features = np.asarray(features)
-    except Exception as e:
-        raise TypeError(f"Could not convert features to numpy array: {e}")
+    if features.empty:
+        raise ValueError("DataFrame is empty.")
     
-    if features.ndim != 2:
-        raise ValueError("features must be a 2D array.")
-    
-    if len(feature_names) != features.shape[1]:
-        raise ValueError(f"Mismatch between feature_names and feature columns.")
+    # Check for numeric columns only
+    numeric_cols = features.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) == 0:
+        raise ValueError("DataFrame contains no numeric columns.")
     
     if not all(isinstance(arg, str) for arg in [path_save, name_file, dataset_name]):
         raise TypeError("path_save, name_file, and dataset_name must be strings.")
@@ -721,18 +651,19 @@ def violinplot_features(features: np.ndarray, feature_names: list, path_save: st
         raise ValueError(f"Not enough subplots ({total_subplots}) for all features ({n_features}). "
                         f"Increase nrows or ncols, or reduce number of features.")
     
-    df_features = pd.DataFrame(features, columns=feature_names)
+    # Start plotting ------------------------------------------------------------------------------------------------------#
+    df_features = features
     fig, axes   = plt.subplots(figsize=figsize, nrows=nrows, ncols=ncols)
     
     # Flatten axes array for easier indexing
     axes_flat = axes.flatten() if nrows * ncols > 1 else [axes]
 
-    for i, col in enumerate(feature_names):
+    for i, col in enumerate(df_features.columns):
         try:
             ax = axes_flat[i]
             
             # Violin plot
-            parts = ax.violinplot([df_features[col].values], positions=[1], widths=0.5, 
+            parts = ax.violinplot([df_features[col].values], positions=[1], widths=0.4, 
                                   points      = num_points,
                                   showmeans   = False, 
                                   showmedians = False, 
@@ -758,31 +689,42 @@ def violinplot_features(features: np.ndarray, feature_names: list, path_save: st
             
             # Add mean line
             ax.axhline(y=mean_val, color=violin_color, linestyle='--', linewidth=1.5, alpha=0.8)
-            ax.text(1.1, mean_val, rf'$\mu=${mean_val:.2f}',
-                    transform=ax.transData,
-                    va='bottom', ha='left', fontsize=12)
+            ax.text(0.98, mean_val, rf'$\mu$ = {mean_val:.2f}', transform = ax.get_yaxis_transform(), 
+                    va       = 'bottom', 
+                    ha       = 'right', 
+                    fontsize = 12)
             
-            # Add ylabel only to leftmost plots
+            # Add ylabel only to leftmost plots and feat alias to the upper right corner
             if i % ncols == 0:
-                ax.set_ylabel('Value', fontsize=18)
+                ax.set_ylabel('Values', fontsize=18)
             ax.tick_params(labelsize=14)
             
-            ax.set_xticks([])
+            # Include the feature name in the xtick
+            if mapping_dict is not None and col in mapping_dict.keys():
+                xtick_label = [mapping_dict[col]['xtickname']]
+                feat_alias  = mapping_dict[col]['featalias']
+            else:
+                xtick_label = [f"{col}"]
+                feat_alias  = None
+                
+            # Alias
+            if feat_alias is not None:
+                ax.text(0.98, 0.98, feat_alias, transform=ax.transAxes,
+                        fontsize = 20,
+                        va       = 'top',
+                        ha       = 'right',)
+            
+            # Xtick
+            ax.set_xticks([1])
+            ax.set_xticklabels(xtick_label)
             ax.set_xlim(0.5, 1.5)
-
-            # Feature name
-            ax.text(0.02, 0.98, col,
-                    transform=ax.transAxes,
-                    fontsize=14, fontweight='bold',
-                    verticalalignment='top')
 
             # Statistics text
             stats_text = f'Q1: {q1_val:.3f}\nQ3: {q3_val:.3f}\n$\sigma$ : {std_val:.3f}'
-            ax.text(0.02, 0.85, stats_text,
-                    transform=ax.transAxes,
-                    fontsize=12,
-                    verticalalignment='top',
-                    horizontalalignment='left')
+            ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                    fontsize = 12,
+                    va       = 'top',
+                    ha       = 'left',)
 
         except Exception as e:
             raise ValueError(f"Error with feature {col}: {e}")
@@ -807,9 +749,12 @@ def violinplot_features(features: np.ndarray, feature_names: list, path_save: st
     plt.close(fig)
 
 # Custom Full Correlogram Plot (Upper Triangle) ---------------------------------------------------------------------------#
-def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "PuOr",
-                         path_save: str = None, name_file: str = None, dataset_name: str = None,
-                         show: bool = True, figsize: tuple = None, labels: list = None):
+def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "PuOr", path_save: str = None, 
+                        name_file    : str                       = None, 
+                        dataset_name : str                       = None,
+                        show         : bool                      = True, 
+                        figsize      : tuple                     = None, 
+                        mapping_dict : Optional[Dict[str, dict]] = None):
     """
     _______________________________________________________________________________________________________________________
     Generate a full NxN correlogram (upper triangle only) between all numeric variables in the DataFrame.
@@ -823,7 +768,7 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
         dataset_name  (str)          : Name of the dataset for annotation. Optional.
         show          (bool)         : Whether to display the plot. Default is True.
         figsize       (tuple)        : Figure size (width, height). Auto-calculated if None.
-        labels        (list)         : Custom labels for axis ticks. If None, uses column names. Optional.
+        mapping_dict  (dict)         : If provided, aliasfeat will be placed as feature tick. Optional
     _______________________________________________________________________________________________________________________
     Returns:
         None. The function optionally saves the plot as a .png file and displays it.
@@ -871,15 +816,9 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
     
     if dataset_name is not None and not isinstance(dataset_name, str):
         raise TypeError("dataset_name must be a string or None.")   
+    
     if figsize is not None and (not isinstance(figsize, tuple) or len(figsize) != 2):
         raise TypeError("figsize must be a tuple of length 2 or None.")
-    
-    if labels is not None and not isinstance(labels, list):
-        raise TypeError("labels must be a list or None.")
-    
-    # Validate label length if provided
-    if labels is not None and len(labels) != len(df.columns):
-        raise ValueError(f"Length of labels ({len(labels)}) must match number of columns ({len(df.columns)})")
     
     # Compute correlation matrix -------------------------------------------------------------------------------------------#
     try:
@@ -913,9 +852,8 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
                     ax.add_patch(circle)
                     
                     # Text color based on background intensity
-                    text_color = 'white' if norm(val) > 0.6 else 'black'
-                    ax.text(j, i, f"{val:.2f}", ha='center', va='center',
-                           color=text_color, fontsize=11)
+                    text_color = 'white' if abs(val) > 0.4 else 'black'
+                    ax.text(j, i, f"{val:.2f}", ha='center', va='center', color=text_color, fontsize=14)
         
         # Customize plot appearance
         ax.set_xlim(-0.5, len(df.columns) - 0.5)
@@ -924,13 +862,17 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
         ax.set_yticks(range(len(df.columns)))
         
         # Set tick labels - use custom labels if provided, otherwise use column names
-        tick_labels = labels if labels is not None else df.columns
+        if mapping_dict is not None:
+            tick_labels = [mapping_dict[col]["featalias"] for col in df.columns]
         
-        ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=13)
-        ax.set_yticklabels(tick_labels, fontsize=13)
+        else:
+            tick_labels = df.columns
+        
+        ax.set_xticklabels(tick_labels, fontsize=20)
+        ax.set_yticklabels(tick_labels, fontsize=20)
         
         # Add background grid
-        ax.imshow(matrix_triu, cmap='Greys', alpha=0.1, vmin=-1, vmax=1)
+        ax.imshow(matrix_triu, cmap='Greys', alpha=0.1, vmin=-1, vmax=1, origin='lower')
         
         # Set title
         title_map = {
@@ -947,8 +889,8 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
         # Add colorbar
         sm = ScalarMappable(cmap=cmap_obj, norm=norm)
         sm.set_array([])
-        cbar = plt.colorbar(sm, ax=ax, shrink=0.70, pad=0.04)
-        cbar.ax.tick_params(labelsize=12)
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.75, pad=0.04)
+        cbar.ax.tick_params(labelsize=14)
         
         # Adjust layout
         plt.tight_layout()
@@ -968,9 +910,280 @@ def classic_correlogram(df: pd.DataFrame, method: str = "pearson", cmap: str = "
     if show: plt.show()
     plt.close(fig)
 
+# Custom Correlogram Plot using mutual information score (Upper Triangle) ------------------------------------------------#
+def mutual_information_correlogram(df: pd.DataFrame, cmap: str = "PuOr", path_save: str = None, 
+                                   name_file    : str                                        = None, 
+                                   dataset_name : str                                        = None,
+                                   show         : bool                                       = True, 
+                                   figsize      : tuple                                      = None, 
+                                   labels       : list                                       = None,
+                                   k            : int                                        = 3,
+                                   base         : Union[int,float]                           = 2,
+                                   n_jobs       : int                                        = -1,
+                                   subsample    : Optional[int]                              = 50000,
+                                   n_subsamples : int                                        = 3,
+                                   random_seed  : Optional[int]                              = 42,
+                                   normalize    : Union[bool, Literal["nmi", "rank", "raw"]] = "rank"):
+    """
+    _______________________________________________________________________________________________________________________
+    Generate a full NxN correlogram (upper triangle only) between all numeric variables in the DataFrame using MI.
+    _______________________________________________________________________________________________________________________
+    Parameters:
+        df            (pd.DataFrame) : DataFrame containing numeric variables. Mandatory.
+        cmap          (str)          : Matplotlib colormap name. Default is "PuOr".
+        path_save     (str)          : Directory path to save the plot. Optional.
+        name_file     (str)          : Name for the saved plot file (without extension). Optional.
+        dataset_name  (str)          : Name of the dataset for annotation. Optional.
+        show          (bool)         : Whether to display the plot. Default is True.
+        figsize       (tuple)        : Figure size (width, height). Auto-calculated if None.
+        labels        (list)         : Custom labels for axis ticks. If None, uses column names. Optional.
+        k             (int)          : Number of nearest neighbors for the KSG estimator. Default 3.
+        base          (int/float)    : Logarithm base for MI units (2=bits, np.e=nats). Default 2.
+        n_jobs        (int)          : Number of parallel workers for joblib (-1 = all CPUs). Default -1.
+        subsample     (int, optional): If set and n_rows > subsample, each MI estimate is computed on a
+                                       random subset of this size. Strongly recommended for large datasets
+                                       (>100k rows). KSG converges well before 50k samples in practice.
+                                       Set None to use all data. Default 50000.
+        n_subsamples  (int)          : Number of independent random subsamples to average per pair when
+                                       subsample is active. Reduces variance of the estimate. Default 3.
+        random_seed   (int, optional): Base seed for reproducible subsampling. Each subsample draw uses
+                                       (random_seed + draw_index). Set None to disable. Default 42.
+        normalize     (str or bool)  : Normalization mode for the MI matrix. Options:
+                                       - "rank"  (default, recommended): rank-transforms each variable before
+                                         computing MI, then normalizes. All marginals become uniform, so the
+                                         normalization denominator is identical for every pair. Yields [0,1]
+                                         with diagonal = 1.00. Captures nonlinear dependencies without the
+                                         scale-dependent artifacts of "nmi".
+                                       - "nmi": normalizes as NMI = I(X;Y) / sqrt(H(X)*H(Y)) on raw data.
+                                         Caution: features with higher differential entropy will have their
+                                         NMI values compressed. Can produce misleading comparisons.
+                                       - "raw": no normalization, shows MI in bits/nats. Diagonal excluded.
+                                       - True is accepted as "nmi", False as "raw" (backward compatibility).
+    _______________________________________________________________________________________________________________________
+    Returns:
+        None. The function optionally saves the plot as a .png file and displays it.
+    _______________________________________________________________________________________________________________________
+    Notes:
+        - Pairwise MI is estimated with the KSG k-nearest-neighbor estimator (ksg_mi_estimator).
+        - "rank" mode: each column is replaced by its ranks (via scipy.stats.rankdata) before MI estimation.
+          Since all rank-transformed variables share the same uniform marginal, H(rank(Xi)) is constant
+          across features, making the NMI normalization artifact-free. This is analogous to how Spearman
+          relates to Pearson, but MI still captures arbitrary (non-monotonic) dependencies.
+        - "nmi" mode: NMI(X,Y) = I(X;Y) / sqrt(H(X)*H(Y)), where H(Xi) = I(Xi;Xi). Values in [0,1].
+        - "raw" mode: raw MI values in bits (base=2) or nats (base=e). Diagonal excluded.
+        - Only the upper triangle is rendered. Upper-triangle pairs are computed in parallel via joblib.
+        - For large datasets, subsampling is the correct strategy: KSG variance is O(1/k), not O(1/N),
+          so the estimator saturates well before N=50k. Averaging n_subsamples draws reduces noise further.
+    _______________________________________________________________________________________________________________________
+    Raises:
+        ValueError, TypeError, OSError
+    _______________________________________________________________________________________________________________________
+    """
+    # Input validation ----------------------------------------------------------------------------------------------------#
+    if df is None:
+        raise ValueError("df must not be None.")
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df must be a pandas.DataFrame.")
+    if df.empty:
+        raise ValueError("DataFrame is empty.")
+    
+    # Check for numeric columns only
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) == 0:
+        raise ValueError("DataFrame contains no numeric columns.")
+    
+    if not isinstance(cmap, str):
+        raise TypeError("cmap must be a string.")
+    
+    if not isinstance(show, bool):
+        raise TypeError("show must be a boolean.")
+    
+    if path_save is not None and not isinstance(path_save, str):
+        raise TypeError("path_save must be a string or None.")
+    
+    if name_file is not None and not isinstance(name_file, str):
+        raise TypeError("name_file must be a string or None.")
+    
+    if dataset_name is not None and not isinstance(dataset_name, str):
+        raise TypeError("dataset_name must be a string or None.")   
+    
+    if figsize is not None and (not isinstance(figsize, tuple) or len(figsize) != 2):
+        raise TypeError("figsize must be a tuple of length 2 or None.")
+    
+    if labels is not None and not isinstance(labels, list):
+        raise TypeError("labels must be a list or None.")
+    
+    if not isinstance(k, int) or k <= 0:
+        raise TypeError("k must be a positive integer.")
+
+    if not isinstance(base, (int, float)) or base <= 0:
+        raise TypeError("base must be a positive number.")
+
+    if subsample is not None and (not isinstance(subsample, int) or subsample <= 0):
+        raise TypeError("subsample must be a positive integer or None.")
+
+    if not isinstance(n_subsamples, int) or n_subsamples <= 0:
+        raise TypeError("n_subsamples must be a positive integer.")
+
+    # Backward compatibility: accept bool values
+    if normalize is True:
+        normalize = "nmi"
+    elif normalize is False:
+        normalize = "raw"
+    if normalize not in ("nmi", "rank", "raw"):
+        raise ValueError(f"normalize must be 'nmi', 'rank', or 'raw', got '{normalize}'.")
+
+    # Select numeric columns and extract raw data array
+    cols   = df.select_dtypes(include=[np.number]).columns
+    n      = len(cols)
+
+    # Validate label length if provided (against numeric columns, not all columns)
+    if labels is not None and len(labels) != n:
+        raise ValueError(f"Length of labels ({len(labels)}) must match number of numeric columns ({n})")
+
+    data   = df[cols].to_numpy(dtype=float)
+    n_rows = len(data)
+
+    # Rank-transform data if requested: uniform marginals eliminate entropy-scale artifacts
+    # Normalize ranks to (0, 1) via rank/(N+1) so KSG receives continuous, uniform-like inputs
+    if normalize == "rank":
+        data = np.apply_along_axis(rankdata, 0, data).astype(float) / (n_rows + 1)
+
+    # Determine effective subsample size: skip if data is already small enough
+    _subsample_active = subsample is not None and n_rows > subsample
+
+    # Compute pairwise MI matrix using the KSG estimator (parallelized) --------------------------------------------------#
+    try:
+        # Upper-triangle pairs; include diagonal for nmi/rank (needed for H(Xi)), exclude for raw
+        if normalize in ("nmi", "rank"):
+            pairs = [(i, j) for i in range(n) for j in range(i, n)]
+        else:
+            pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+
+        def _compute_pair(i: int, j: int) -> Tuple[int, int, float]:
+            if _subsample_active:
+                # Average MI over n_subsamples independent random draws
+                mi_vals = []
+                for s in range(n_subsamples):
+                    rng = np.random.default_rng(None if random_seed is None else random_seed + s)
+                    idx = rng.choice(n_rows, size=subsample, replace=False)
+                    mi_vals.append(ksg_mi_estimator(data[idx, i], data[idx, j], k=k, base=base))
+                return i, j, float(np.mean(mi_vals))
+            return i, j, ksg_mi_estimator(data[:, i], data[:, j], k=k, base=base)
+
+        results = Parallel(n_jobs=n_jobs)(delayed(_compute_pair)(i, j) for i, j in pairs)
+
+        # Fill symmetric raw MI matrix
+        raw = np.zeros((n, n))
+        for ri, rj, val in results:
+            raw[ri, rj] = val
+            if ri != rj:
+                raw[rj, ri] = val
+
+        if normalize in ("nmi", "rank"):
+            # Normalize: NMI(X,Y) = I(X;Y) / sqrt(H(X)*H(Y))  →  values in [0, 1], diagonal = 1
+            h               = np.diag(raw).copy()
+            h[h <= 0]       = np.nan
+            h_sq            = np.sqrt(np.outer(h, h))
+            with np.errstate(invalid="ignore"):
+                matrix      = raw / h_sq
+            matrix          = np.where(np.isfinite(matrix), matrix, 0.0)
+            matrix          = np.clip(matrix, 0.0, 1.0)
+            np.fill_diagonal(matrix, 1.0)
+            norm_range      = (0, 1)
+        else:
+            # Raw MI in bits/nats — clip negatives from estimation noise
+            matrix     = np.maximum(raw, 0.0)
+            mi_max     = np.max(matrix[np.triu_indices(n, k=1)])
+            norm_range = (0, mi_max if mi_max > 0 else 1.0)
+
+    except Exception as e:
+        raise ValueError(f"Error computing MI matrix: {e}")
+
+    # Keep only upper triangle (k=0 includes diagonal for nmi/rank, k=1 excludes it for raw)
+    triu_k      = 0 if normalize in ("nmi", "rank") else 1
+    matrix_triu = np.triu(matrix, k=triu_k)
+
+    # Auto-calculate figure size if not provided
+    if figsize is None:
+        figsize = (1.4 * n, 1.4 * n)
+
+    # Full Correlogram Plot ------------------------------------------------------------------------------------------------#
+    fig, ax = plt.subplots(figsize=figsize)
+
+    try:
+        norm     = Normalize(*norm_range)
+        cmap_obj = plt.get_cmap(cmap)
+
+        # Create circular markers for each MI value
+        for i in range(n):
+            for j in range(n):
+                val = matrix_triu[i, j]
+                if not np.isnan(val) and val != 0:
+                    color  = cmap_obj(norm(val))
+                    radius = 0.4
+                    circle = plt.Circle((j, i), radius=radius, color=color, fill=True)
+                    ax.add_patch(circle)
+
+                    # Text color based on background intensity
+                    text_color = 'white' if norm(val) > 0.6 else 'black'
+                    ax.text(j, i, f"{val:.2f}", ha='center', va='center',
+                            color=text_color, fontsize=14)
+
+        # Customize plot appearance
+        ax.set_xlim(-0.5, n - 0.5)
+        ax.set_ylim(-0.5, n - 0.5)
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+
+        # Set tick labels - use custom labels if provided, otherwise use column names
+        tick_labels = labels if labels is not None else cols
+
+        ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=16)
+        ax.set_yticklabels(tick_labels, fontsize=16)
+
+        # Add background grid
+        ax.imshow(matrix_triu, cmap='Greys', alpha=0.1, vmin=norm_range[0], vmax=norm_range[1], origin='lower')
+
+        # Set title
+        unit_str   = "bits" if base == 2 else ("nats" if base == np.e else f"log{base}")
+        title_map  = {
+            "rank": "Rank MI Correlogram (KSG)",
+            "nmi" : "Mutual Information Correlogram (KSG)",
+            "raw" : f"Mutual Information Correlogram (KSG) [{unit_str}]"
+        }
+        title = title_map[normalize]
+        if dataset_name:
+            title = f"{title} - {dataset_name}"
+        ax.set_title(title, fontsize=16, loc="left", pad=10)
+
+        # Add colorbar
+        sm = ScalarMappable(cmap=cmap_obj, norm=norm)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.70, pad=0.04)
+        cbar.ax.tick_params(labelsize=14)
+
+        # Adjust layout
+        plt.tight_layout()
+
+    except Exception as e:
+        raise ValueError(f"Error creating correlogram plot: {e}")
+
+    # Save and show plot -------------------------------------------------------------------------------------------------#
+    if path_save is not None and name_file is not None:
+        suffix_map = {"nmi": "nmi", "rank": "rank_mi", "raw": "mi_raw"}
+        file_path  = os.path.join(path_save, f"correlogram_{suffix_map[normalize]}_{name_file}.png")
+        try:
+            os.makedirs(path_save, exist_ok=True)
+            plt.savefig(file_path, bbox_inches="tight", dpi=600)
+        except Exception as e:
+            raise OSError(f"Could not save plot to {file_path}: {e}")
+
+    if show: plt.show()
+    plt.close(fig)
+
 # Single simulation plot --------------------------------------------------------------------------------------------------#
-def plot_simulation_example(df: pd.DataFrame, y_var: str = "massNew[Msun](10)",
-                            x_var       : str = "time[Myr]",
+def plot_simulation_example(df: pd.DataFrame, y_var: str = "massNew[Msun](10)", x_var : str = "time[Myr]",
                             y_label     : str = r'$M[\rm M_\odot]$',
                             x_label     : str = r'Time $[Myr]$',
                             norm_factor : Optional[float] = None,
@@ -1136,7 +1349,10 @@ def dataset_2Dhist_comparison(x_base: np.ndarray, y_base: np.ndarray, x_aug : np
     x_filt, y_filt = x_filt.flatten(), y_filt.flatten()
 
     # Calculate histograms manually to share vmax
-    H1, xedges, yedges = np.histogram2d(x_base, y_base, bins=bins)
+    y_all = np.concatenate([y_base, y_aug, y_filt])
+    x_all = np.concatenate([x_base, x_aug, x_filt])
+
+    H1, xedges, yedges = np.histogram2d(x_all, y_all, bins=bins)
     H2, _, _ = np.histogram2d(x_aug, y_aug, bins=[xedges, yedges])
     H3, _, _ = np.histogram2d(x_filt, y_filt, bins=[xedges, yedges])
 
@@ -1294,10 +1510,11 @@ def dataset_2Dhist(x_values: np.ndarray, y_values: np.ndarray, name : Optional[s
     plt.close(fig)
     
 #Histograms and KDE for different features --------------------------------------------------------------------------------#
-def plot_feature_distributions(feats_raw: pd.DataFrame, feats_processed: pd.DataFrame, labels: dict, cont_features: list, 
-                               sample_size : int = 1e6,
-                               bins        : Union[int, str] = 50,
-                               save_dir    : str = "dist_aug_study"):
+def plot_feature_distributions(feats_raw: pd.DataFrame, feats_processed: pd.DataFrame, labels: Optional[dict], 
+                               cont_features : list, 
+                               sample_size   : int = 1e6,
+                               bins          : Union[int, str] = 50,
+                               save_dir      : str = "dist_aug_study"):
     """
     ________________________________________________________________________________________________________________________
     Plot histogram and KDE for each continuous feature (original vs augmented) using pure matplotlib.
@@ -1331,7 +1548,7 @@ def plot_feature_distributions(feats_raw: pd.DataFrame, feats_processed: pd.Data
         
         raw_sample  = feats_raw[feature].dropna()
         proc_sample = feats_processed[feature].dropna()
-        label       = labels.get(feature, feature)
+        label       = labels.get(feature, feature) 
 
         if len(raw_sample) > sample_size:
             raw_sample  = raw_sample.sample(int(sample_size), random_state=42)
@@ -1597,17 +1814,156 @@ def plot_efficiency_mass_ratio_dataset(data_dict : Dict[str, Dict[str, Union[lis
 
     plt.close(fig)
 
+# Plot efficiency v mass ratio scatter plot -------------------------------------------------------------------------------#
+def plot_stellar_mass_half_mass_radius_dataset(data_dict : Dict[str, Dict[str, Union[list, np.ndarray]]],
+    figsize                  : tuple                                                         = (7, 5),
+    title                    : Optional[str]                                                 = None,
+    cmap_label               : Optional[str]                                                 = None,
+    cmap                     : Optional[Union[str, Colormap]]                                = None,
+    cmap_name                : Optional[str]                                                 = None,
+    norm_mode                : Optional[Literal["linear", "log", "discrete", "categorical"]] = "linear",
+    n_bins                   : Optional[int]                                                 = 6,
+    log_vmin                 : Optional[float]                                               = None,
+    savepath                 : Optional[str]                                                 = None,
+    show                     : bool                                                          = False
+    ):
+    # Prepare data --------------------------------------------------------------------------------------------------------#
+    tags = list(data_dict.keys())
+
+    # Collect all cmap values globally if a colormap is requested
+    if cmap is not None:
+        if cmap_name is None:
+            raise ValueError("cmap_name must be provided when cmap is specified.")
+        c_all = []
+        for tag in tags:
+            if cmap_name not in data_dict[tag]:
+                raise ValueError(f"Group '{tag}' is missing but a cmap {cmap_name}.")
+            c_all.append(np.asarray(data_dict[tag][cmap_name]))
+        c_all = np.concatenate(c_all)
+
+        cmap_obj      = cm.get_cmap(cmap)
+        cb_ticks      = None
+        cb_ticklabels = None
+        cb_spacing    = "uniform"
+
+        # Normalization set up for the colorbar --------------------------------------------------------------------------# 
+        if norm_mode == "linear":
+            norm = Normalize(vmin=c_all.min(), vmax=c_all.max())
+
+        elif norm_mode == "log":
+            if np.any(c_all <= 0):
+                raise ValueError("LogNorm requires cmap_values > 0.")
+            vmin = log_vmin if log_vmin is not None else np.percentile(c_all, 1)
+            norm = LogNorm(vmin=vmin, vmax=c_all.max())
+
+        elif norm_mode == "discrete":
+            bounds     = np.linspace(c_all.min(), c_all.max(), n_bins + 1)
+            norm       = BoundaryNorm(bounds, n_bins)
+            cb_spacing = "proportional"
+
+        elif norm_mode == "categorical":
+            categories = np.unique(c_all)
+            n_cat      = len(categories)
+            cmap_obj   = cm.get_cmap(cmap, n_cat)
+
+            cat_to_idx = {cat: i for i, cat in enumerate(categories)}
+            bounds     = np.arange(-0.5, n_cat + 0.5, 1)
+            norm       = BoundaryNorm(bounds, n_cat)
+
+            cb_ticks      = np.arange(n_cat)
+            cb_ticklabels = categories
+
+            for tag in tags:
+                vals = np.asarray(data_dict[tag][cmap_name])
+                data_dict[tag]["_cmap_mapped"] = np.array([cat_to_idx[v] for v in vals])
+
+        else:
+            raise ValueError(f"Unknown norm_mode: {norm_mode}")
+
+    # Figure --------------------------------------------------------------------------------------------------------------#
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if title:
+        ax.set_title(title, loc="left", fontsize=14)
+
+    # Scatter plots (one per tag) inside the dictionary -------------------------------------------------------------------#
+    last_scatter = None
+
+    for tag in tags:
+
+        # Retrieve group
+        group = data_dict[tag]
+
+        # Set variables
+        x = np.asarray(group["rh"])
+        y = np.asarray(group["mtot"])
+
+        # Retrieve configuration
+        marker    = group.get("marker", "o")
+        color     = group.get("color", None)
+        edgecolor = group.get("edgecolor", "none")
+        s         = group.get("s", 30)
+        label     = group.get("label", tag)
+
+        if cmap is None:
+            sc = ax.scatter(x, y, s=s, marker=marker, c=color, edgecolor=edgecolor,label=label+f" ({len(x)})")
+        else:
+            if norm_mode == "categorical":
+                cvals = group["_cmap_mapped"]
+            else:
+                cvals = np.asarray(group[cmap_name])
+
+            sc = ax.scatter(x, y, s=s, marker=marker, c=cvals, cmap=cmap_obj, norm=norm, edgecolor=edgecolor, 
+                            label=label+f" ({len(x)})")
+
+        last_scatter = sc  # for colorbar handle
+
+    # Axes Configuration --------------------------------------------------------------------------------------------------#
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    
+    ax.set_xlabel(r"$R_{h}$ [pc]", fontsize=16)
+    ax.set_ylabel(r"$M_{\rm tot}$ [M$_{\odot}$]", fontsize=16)
+    
+    ax.tick_params(axis='x', labelsize=14)
+    ax.tick_params(axis='y', labelsize=14)
+    
+    # Colorbar (only if cmap is provided) ---------------------------------------------------------------------------------#
+    if cmap is not None:
+        cax = inset_axes(ax, width="50%", height="4%", loc="upper left", borderpad=1)
+
+        cb = fig.colorbar(last_scatter, cax=cax, orientation="horizontal", spacing=cb_spacing, ticks=cb_ticks)
+
+        if cb_ticklabels is not None:
+            cb.set_ticklabels(cb_ticklabels)
+
+        cb.set_label(cmap_label, fontsize=12)
+        cb.ax.tick_params(labelsize=10)
+
+    # Legend --------------------------------------------------------------------------------------------------------------#
+    ax.legend(loc="lower right", fontsize=10)
+
+    # Save / Show ---------------------------------------------------------------------------------------------------------#
+    if savepath:
+        namefile = f"mass_vs_half_mass_radius_{cmap_name}.png" if cmap_name else "mass_vs_half_mass_radius.png"
+        plt.savefig(savepath + namefile, dpi=600, bbox_inches="tight")
+
+    if show: plt.show()
+
+    plt.close(fig)
+    
 # Feature Importance Plot with error bars ---------------------------------------------------------------------------------#
 def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: str, name_file: str, model_name: str,
                             features_names  : Optional[List[str]] = None,
-                            bar_color       : str   = 'steelblue',
-                            bar_edgecolor   : str   = 'black',
-                            bar_width       : float = 0.6,
-                            figsize         : tuple = (12, 6),
-                            rotation        : int   = 45,
-                            top_n           : Optional[int] = None,
-                            ifsave          : bool  = True,
-                            ifshow          : bool  = False):
+                            importance_name : Optional[str]       = None,
+                            bar_color       : str                 = 'steelblue',
+                            bar_edgecolor   : str                 = 'black',
+                            bar_width       : float               = 0.6,
+                            figsize         : tuple               = (12, 6),
+                            rotation        : int                 = 45,
+                            top_n           : Optional[int]       = None,
+                            ifsave          : bool                = True,
+                            ifshow          : bool                = False):
     """
     _______________________________________________________________________________________________________________________
     Plot feature importance with error bars across cross-validation folds.
@@ -1618,6 +1974,7 @@ def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: 
     -> name_file        (str)   : Name for the saved plot file (without extension). Mandatory.
     -> model_name       (str)   : Name of the model for the plot title. Mandatory.
     -> features_names   (list)  : Optional list of feature display names. Default is None.
+    -> importance_name  (str)   : Optional name of the comparison metric for yaxis.
     -> bar_color        (str)   : Color for the bars. Default is 'steelblue'.
     -> bar_edgecolor    (str)   : Edge color for the bars. Default is 'black'.
     -> bar_width        (float) : Width of the bars. Default is 0.6.
@@ -1651,36 +2008,31 @@ def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: 
         raise TypeError("path_save, name_file, and model_name must be strings.")
     
     # Compute mean and std for each feature ------------------------------------------------------------------------------#
-    feature_names    = list(importances_dict.keys())
-    mean_importances = np.array([np.mean(importances_dict[feat]) for feat in feature_names])
-    std_importances  = np.array([np.std(importances_dict[feat]) for feat in feature_names])
-    
+    feature_keys     = list(importances_dict.keys())
+    mean_importances = np.array([np.mean(importances_dict[feat]) for feat in feature_keys])
+    std_importances  = np.array([np.std(importances_dict[feat]) for feat in feature_keys])
+
+    # Build key->display mapping BEFORE sorting so the labels stay anchored to their features
+    if features_names is not None:
+        key_to_display = {key: (features_names[i] if i < len(features_names) else key)
+                          for i, key in enumerate(feature_keys)}
+    else:
+        key_to_display = {key: key for key in feature_keys}
+
     # Sort by mean importance (descending)
     sorted_indices   = np.argsort(mean_importances)[::-1]
-    feature_names    = [feature_names[i] for i in sorted_indices]
+    feature_keys     = [feature_keys[i] for i in sorted_indices]
     mean_importances = mean_importances[sorted_indices]
     std_importances  = std_importances[sorted_indices]
     
     # Apply top_n filter if specified
     if top_n is not None and top_n > 0:
-        feature_names    = feature_names[:top_n]
+        feature_keys     = feature_keys[:top_n]
         mean_importances = mean_importances[:top_n]
         std_importances  = std_importances[:top_n]
     
-    # Use custom feature names if provided
-    if features_names is not None:
-        display_names = []
-        for fname in feature_names:
-            # Find matching custom name or use original
-            try:
-                idx = feature_names.index(fname)
-                if idx < len(features_names):
-                    display_names.append(features_names[idx])
-                else:
-                    display_names.append(fname)
-            except:
-                display_names.append(fname)
-        feature_names = display_names
+    # Map sorted keys to their display names
+    feature_names = [key_to_display[key] for key in feature_keys]
     
     # Create Plot ---------------------------------------------------------------------------------------------------------#
     fig, ax = plt.subplots(figsize=figsize)
@@ -1690,7 +2042,7 @@ def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: 
     # Create bars with error bars
     bars = ax.bar(x_pos, mean_importances, yerr=std_importances, width=bar_width, color=bar_color, edgecolor=bar_edgecolor,
                   capsize   = 5, 
-                  linewidth = 1.2, 
+                  linewidth = 0.8, 
                   alpha     = 0.85, 
                   error_kw  = {'linewidth': 1.8})
     
@@ -1698,22 +2050,27 @@ def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: 
     ax.set_xticks(x_pos)
     ax.set_xticklabels(feature_names, rotation=rotation, ha='right', fontsize=11)
     
-    ax.set_ylabel("Feature Importance", fontsize=13, fontweight='bold')
-    ax.set_xlabel("Features", fontsize=13, fontweight='bold')
+    ax.set_ylabel(importance_name if importance_name is not None else "Feature Importance", 
+                  fontsize   = 16, 
+                  fontweight = 'bold')
+    ax.set_xlabel("Features", fontsize=16, fontweight ='bold')
     ax.set_title(f"{model_name} - Feature Importance (Mean ± Std across folds)", 
-                 fontsize=14, fontweight='bold', pad=15)
-    ax.tick_params(axis='y', labelsize=11)
-    ax.tick_params(axis='x', labelsize=10)
-    
-    # Add grid for better readability
-    ax.set_axisbelow(True)
+                 fontsize    = 18, 
+                 fontweight  = 'bold', 
+                 pad         = 15)
+    ax.tick_params(axis='y', labelsize=14)
+    ax.tick_params(axis='x', labelsize=14)
     
     # Add value labels on top of bars (only if not too many features)
     if len(feature_names) <= 20:
         for i, (val, err) in enumerate(zip(mean_importances, std_importances)):
             y_pos = val + err + 0.01 * np.max(mean_importances)
-            ax.text(i, y_pos, f'{val:.3f}', ha='center', va='bottom', fontsize=8, fontweight='bold', rotation=0)
+            ax.text(i, y_pos, f'{val:.3f}', ha='center', va='bottom', fontsize=12, fontweight='bold', rotation=0)
     
+    # Adjust y-axis limit to accommodate error bars and labels
+    y_max = max(val + err for val, err in zip(mean_importances, std_importances))
+    ax.set_ylim(top=y_max * 1.10)
+
     fig.tight_layout()
     
     # Save and show plot --------------------------------------------------------------------------------------------------#
@@ -1796,11 +2153,10 @@ def plot_simulation_grid(subplot_data: List[Dict], n_rows: int = 1, n_cols: int 
             ax.fill_between(x, y_pred_mean - y_pred_std, y_pred_mean + y_pred_std,
                             color="maroon",
                             alpha=0.25,
-                            label="$\sigma$' model predictions"
                             )
 
         # Predictions scatter plot
-        tag = "$\mu$ model predictions" if y_pred_std is not None else "model prediction"
+        tag = "$\mu$ model predictions" if y_pred_std is not None else "prediction"
         ax.scatter(x, y_pred_mean, s=6, color="maroon", marker='o', label=tag)
 
         # Initial conditions: float values displayed as an in-plot text box; non-float values as the subplot title --------#

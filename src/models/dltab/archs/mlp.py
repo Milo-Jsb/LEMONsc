@@ -89,14 +89,24 @@ class MLPRegressor(nn.Module):
     def _initialize_weights(self, activation: str = 'relu') -> None:
         """Initialize layer weights using appropriate initialization based on activation function."""
         for m in self.modules():
+            
             if isinstance(m, nn.Linear):
+                
+                # LeCun normal initialization for self-normalizing networks
                 if activation == 'selu':
-                    # LeCun normal initialization for self-normalizing networks
                     nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='linear')
+                
+                # Kaiming He activation for specialized activation functions
+                elif activation in ['relu', 'silu', 'gelu', 'swish']:
+                    nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                
+                # Regural Xavier activation as default
                 else:
                     nn.init.xavier_uniform_(m.weight)
+                
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
+            
             elif isinstance(m, nn.BatchNorm1d):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)

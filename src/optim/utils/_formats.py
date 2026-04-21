@@ -36,26 +36,30 @@ class SpaceSearchConfig:
     -> load_if_exists  : Whether to load existing study if it exists (default: False)
     -> huber_delta     : Delta parameter for Huber loss (default: 1.0)
     -> max_epochs      : Maximum epochs for deep learning models (default: 100)
-    -> use_scaler      : Whether to use feature scaling for MLBasicRegressor (default: True)
     -> dl_patience     : Patience for early stopping in deep learning models (default: 10)
+    -> dl_loss_fn      : Loss function for deep learning models (default: 'huber')
     -> dl_architecture : Optional dictionary of parameters to create a deep learning model (default: None)
+    -> dl_grad_clip    : Optional maximum norm for gradient clipping in deep learning models (default: None)
     ________________________________________________________________________________________________________________________
     """
-    model_type      : ModelType
-    n_jobs          : int                      = 10                
-    n_trials        : int                      = 100               
-    device          : DeviceType               = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
-    verbose         : bool                     = False              
-    seed            : int                      = 42                
-    sampler         : Optional[BaseSampler]    = None              
-    storage         : Optional[str]            = None              
-    load_if_exists  : bool                     = False             
-    huber_delta     : float                    = 1.0               
-    max_epochs      : Optional[int]            = 100
-    use_scaler      : Optional[bool]           = False               
-    dl_patience     : Optional[int]            = 10                
-    dl_loss_fn      : str                      = 'huber'           
-    dl_architecture : Optional[Dict[str, Any]] = None              
+    model_type          : ModelType
+    n_jobs              : int                      = 10                
+    n_trials            : int                      = 100               
+    device              : DeviceType               = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
+    verbose             : bool                     = True              
+    seed                : int                      = 42                
+    sampler             : Optional[BaseSampler]    = None              
+    storage             : Optional[str]            = None              
+    load_if_exists      : bool                     = False             
+    huber_delta         : float                    = 1.0               
+    max_epochs          : Optional[int]            = 100
+    dl_patience         : Optional[int]            = 10     
+    dl_use_amp          : Optional[bool]           = False           
+    dl_loss_fn          : str                      = 'huber'           
+    dl_architecture     : Optional[Dict[str, Any]] = None
+    dl_grad_clip        : Optional[float]          = None
+    dl_scheduler_name   : Optional[str]            = None
+    dl_scheduler_params : Optional[Dict[str, Any]] = None
     
     def __post_init__(self):
         """Validate configuration parameters"""

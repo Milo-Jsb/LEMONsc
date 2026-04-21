@@ -1,41 +1,31 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
-from venv import logger
 import numpy             as np
 import pandas            as pd
 import matplotlib.pyplot as plt
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 # Custom plotting functions ------------------------------------------------------------------------------------------------#
-
-# Helpers
 from src.utils.visualize import truncate_colormap
-
-# Distribution functions
-from src.utils.visualize import boxplot_features_with_points, violinplot_features
+from src.utils.visualize import violinplot_features
 from src.utils.visualize import dataset_2Dhist_comparison, plot_feature_distributions
-
-# Correlation functions
-from src.utils.visualize import plot_partial_correlation_bars, classic_correlogram
-
-# Physical interpretation functions
-from src.utils.visualize import plot_simulation_example, plot_efficiency_mass_ratio_dataset
-
-# ML results functions
-from src.utils.visualize import correlation_plot, residual_plot, feature_importance_plot
-
+from src.utils.visualize import classic_correlogram
+from src.utils.visualize import plot_simulation_example
+from src.utils.visualize import plot_efficiency_mass_ratio_dataset, plot_stellar_mass_half_mass_radius_dataset
+from src.utils.visualize import correlation_plot, residual_plot
+from src.utils.visualize import feature_importance_plot, plot_simulation_grid
 # Set matplotlib configuration ---------------------------------------------------------------------------------------------#
 plt.rcParams.update({
     # LaTeX rendering
-    "text.usetex": True,
-    "text.latex.preamble": r"\usepackage{amsmath} \usepackage{amssymb}",
+    "text.usetex"         : True,
+    "text.latex.preamble" : r"\usepackage{amsmath} \usepackage{amssymb}",
     
     # Font configuration
-    "font.family": "serif",
-    "font.serif": ["Computer Modern Roman"],
-    "font.sans-serif": ["Computer Modern Sans Serif"],
-    "font.monospace": ["Computer Modern Typewriter"]})
+    "font.family"         : "serif",
+    "font.serif"          : ["Computer Modern Roman"],
+    "font.sans-serif"     : ["Computer Modern Sans Serif"],
+    "font.monospace"      : ["Computer Modern Typewriter"]})
 
 # Unique class for plot relevant features of the dataset or simulations ----------------------------------------------------#
 class PlotGenerator:
@@ -58,8 +48,13 @@ class PlotGenerator:
                                 rho_half  = ifeats["rho_half"][0])
         
     # Create a comparison plot between different preprocessing datasets ---------------------------------------------------#
-    def create_comparison_preprocessing(self, t_base: List, m_base: List, phy_base: List, t_augm: List, m_augm: List, 
-                                        phy_augm: List, t_down: List, m_down: List, phy_down: List, out_figs : str):
+    def create_comparison_preprocessing(self, t_base: List, m_base: List, phy_base: List, 
+                                              t_augm: List, m_augm: List, phy_augm: List, 
+                                              t_down: List, m_down: List, phy_down: List, 
+                                              out_figs              : str,
+                                              filtering_criteria    : Optional[List[Tuple[int, str]]] = None,
+                                              criteria_var_position : Optional[int]                   = None,
+                                              ):
         
         """Compare time vs mass for different datasets. Check also environment-specific plots."""
         # Convert to numpy arrays once
@@ -89,23 +84,26 @@ class PlotGenerator:
                                  out_figs    = out_figs)
         
         
-        # Create environment-specific plots
-        for channel_code, env_name in [(0., 'fast'), (1., 'slow')]:
-            self._create_environment_plot(tb_scaled, m_base_arr, phy_base_arr,
-                                          ta_scaled, m_augm_arr, phy_augm_arr,
-                                          td_scaled, m_down_arr, phy_down_arr,
-                                          xlabel, ylabel,
-                                          channel_code, 
-                                          env_name, 
-                                          out_figs)
+        # Create category-specific plots
+        if filtering_criteria is not None and criteria_var_position is not None:
+            for channel_code, env_name in filtering_criteria:
+                self._create_environment_plot(tb_scaled, m_base_arr, phy_base_arr,
+                                            ta_scaled, m_augm_arr, phy_augm_arr,
+                                            td_scaled, m_down_arr, phy_down_arr,
+                                            xlabel, ylabel,
+                                            channel_code, 
+                                            env_name,
+                                            criteria_var_position,
+                                            out_figs)
     
     # [Helper] Create a single comparison plot ----------------------------------------------------------------------------#
-    def _create_single_plot(self, t_base: np.ndarray, m_base: np.ndarray, t_augm: np.ndarray, m_augm: np.ndarray,
-                            t_down: np.ndarray, m_down: np.ndarray,
-                            xaxis_label : str,
-                            yaxis_label : str,
-                            name        : str, 
-                            out_figs    : str):
+    def _create_single_plot(self, t_base: np.ndarray, m_base: np.ndarray, 
+                                  t_augm: np.ndarray, m_augm: np.ndarray,
+                                  t_down: np.ndarray, m_down: np.ndarray,
+                                  xaxis_label : str,
+                                  yaxis_label : str,
+                                  name        : str, 
+                                  out_figs    : str):
         
         """Create a single comparison plot using a 2D histogram for time vs mass."""        
         dataset_2Dhist_comparison(x_base = t_base, y_base = m_base, x_aug  = t_augm, y_aug  = m_augm,
@@ -119,15 +117,17 @@ class PlotGenerator:
     
     # [Helper] Create environment-specific comparison plot ----------------------------------------------------------------#
     def _create_environment_plot(self, t_base: np.ndarray, m_base: np.ndarray, phy_base: np.ndarray,
-                                t_augm: np.ndarray, m_augm: np.ndarray, phy_augm: np.ndarray,
-                                t_down: np.ndarray, m_down: np.ndarray, phy_down: np.ndarray,
-                                xlabel:str, ylabel:str,
-                                channel_code: int, 
-                                env_name: str, 
-                                out_figs: str):
+                                       t_augm: np.ndarray, m_augm: np.ndarray, phy_augm: np.ndarray,
+                                       t_down: np.ndarray, m_down: np.ndarray, phy_down: np.ndarray,
+                                       xlabel                : str, 
+                                       ylabel                : str,
+                                       channel_code          : int, 
+                                       env_name              : str,
+                                       criteria_var_position : int,
+                                       out_figs              : str):
         
-        """Create environment-specific comparison plot. Assume the position of the channel code in the parameters array."""
-        mask = phy_base[:, -1] == channel_code
+        """Create environment-specific comparison plot using criteria_var_position to select the category column."""
+        mask = phy_base[:, criteria_var_position] == channel_code
         
         if not np.any(mask):
             return
@@ -136,11 +136,11 @@ class PlotGenerator:
         t_base_env = t_base[mask]
         m_base_env = m_base[mask]
         
-        mask_augm  = phy_augm[:, -1] == channel_code
+        mask_augm  = phy_augm[:, criteria_var_position] == channel_code
         t_augm_env = t_augm[mask_augm]
         m_augm_env = m_augm[mask_augm]
         
-        mask_down  = phy_down[:, -1] == channel_code
+        mask_down  = phy_down[:, criteria_var_position] == channel_code
         t_down_env = t_down[mask_down]
         m_down_env = m_down[mask_down]
         
@@ -162,80 +162,31 @@ class PlotGenerator:
     
     # Create features analysis plots --------------------------------------------------------------------------------------#
     @staticmethod
-    def create_features_analysis(feats : np.ndarray, names: List[str], dataset : str, experiment: str, out_figs: str):
-
-        # Boxplot of the features selected        
-        boxplot_features_with_points(features= feats, feature_names= names,
-                                     path_save     = out_figs,
-                                     figsize       = (9, 12),
-                                     name_file     = experiment,
-                                     dataset_name  = dataset,
-                                     nrows         = 3,
-                                     ncols         = 3,
-                                     point_color   = "wheat",
-                                     ifsave        = True,
-                                     ifshow        = False)
-        
-        # Violin plot of the features selected
-        violinplot_features(features = feats, feature_names= names, path_save= out_figs, name_file= experiment, 
-                            dataset_name = dataset,
-                            figsize      = (9, 12),
-                            violin_color = 'goldenrod',
-                            nrows        = 3,
-                            ncols        = 3,
-                            num_points   = 1000,
-                            ifsave       = True,
-                            ifshow       = False)
+    def create_features_analysis(feats : np.ndarray, names: List[str], map_dict: Dict[str, dict], dataset : str, 
+                                 experiment: str, 
+                                 out_figs:  str):
         
         # Correlation plot of the features selected (Spearman coefficient)        
         classic_correlogram(df= feats, method= "spearman", path_save=out_figs,
                             name_file    = experiment,
-                            dataset_name = None,
-                            labels       = names,
+                            dataset_name = dataset,
+                            mapping_dict = map_dict,
                             cmap         = "RdGy",
                             figsize      = (10, 10),
-                            show         = False)
+                            show         = False)   
         
-        # Partial Correlation Coefficient plot of the features selected agains the target (Pearson coefficient)
-        
-        # Extract feature names and target name from the columns of the dataframe
-        feats_names = feats.columns.tolist()[:-1]
-        target_name = feats.columns.tolist()[-1]
-        
-        # Extract feature names and target name from the provided list of names
-        feats_labels  = names[:-1] 
-        target_labels = names[-1]
-        
-        plot_partial_correlation_bars(df=feats, features=feats_names, target=target_name, path_save=out_figs, 
-                                      features_names = feats_labels,
-                                      target_name    = target_labels,
-                                      name_file      = experiment,
-                                      corr_metric    = 'pearson',
-                                      n_bootstrap    = 1000,
-                                      n_jobs         = 20,
-                                      bar_color      = 'darkred',
-                                      bar_edgecolor  = 'silver',
-                                      bar_width      = 0.6,
-                                      figsize        = (10, 6),
-                                      rotation       = 45,
-                                      ifsave         = True,
-                                      ifshow         = False) 
-        
-        plot_partial_correlation_bars(df=feats, features=feats_names, target=target_name, path_save=out_figs, 
-                                      features_names = feats_labels,
-                                      target_name    = target_labels,
-                                      name_file      = experiment,
-                                      corr_metric    = 'spearman',
-                                      n_bootstrap    = 1000,
-                                      n_jobs         = 20,
-                                      bar_color      = 'darkred',
-                                      bar_edgecolor  = 'silver',
-                                      bar_width      = 0.6,
-                                      figsize        = (10, 6),
-                                      rotation       = 45,
-                                      ifsave         = True,
-                                      ifshow         = False)
-        
+        # Violin plot of the features selected
+        violinplot_features(features = feats, mapping_dict=map_dict, path_save= out_figs, 
+                            name_file    = experiment, 
+                            dataset_name = dataset,
+                            figsize      = (18, 8),
+                            violin_color = 'darkcyan',
+                            nrows        = 2,
+                            ncols        = 5,
+                            num_points   = 800,
+                            ifsave       = True,
+                            ifshow       = False)
+                  
     # Create efficiency plot ----------------------------------------------------------------------------------------------#
     @staticmethod
     def create_efficiency_plot(data: dict, config: dict, out_figs: str):
@@ -251,11 +202,23 @@ class PlotGenerator:
                                            show                    = True,
                                            savepath                = out_figs)
 
+    # Create mass - half mass radius plot ---------------------------------------------------------------------------------#
+    @staticmethod
+    def create_mass_radius_plot(data: dict, config: dict, out_figs: str):
+                
+        plot_stellar_mass_half_mass_radius_dataset(data_dict  = data,
+                                                   cmap_label = config.get("cmap_label"),
+                                                   cmap       = config.get("cmap"),
+                                                   cmap_name  = config.get("cmap_name"),
+                                                   figsize    = (7, 5),
+                                                   norm_mode  = config.get("norm_mode"),
+                                                   show       = True,
+                                                   savepath   = out_figs)
+        
     # Create ML training results plots ------------------------------------------------------------------------------------#
     @staticmethod
     def create_ml_results_plots(predictions_df_mean : Union[np.ndarray, pd.DataFrame], 
                                 true_values_df      : Union[np.ndarray, pd.DataFrame],
-                                feature_importances : Optional[Union[np.ndarray, pd.DataFrame]], 
                                 out_path    : str,
                                 model_name  : str,
                                 model_title : dict,):
@@ -266,7 +229,7 @@ class PlotGenerator:
                      path_save   = str(out_path),
                      name_file   = f"{model_name}_mean_preds",
                      model_name  = f"{model_title[model_name]}",
-                     cmap        = "magma_r",
+                     cmap        = "magma",
                      scale       = None,
                      show        = False)
 
@@ -276,40 +239,51 @@ class PlotGenerator:
                     path_save   = str(out_path),
                     name_file   = f"{model_name}_mean_preds",
                     model_name  = f"{model_title[model_name]}",
-                    cmap        = "magma_r",
+                    cmap        = "magma",
                     scale       = None,
                     show        = False)
         
-        # Generate feature importance plot
-        if feature_importances is not None:
-            if any(fi is not None for fi in feature_importances):
-                valid_importances = [fi for fi in feature_importances if fi is not None]
-                if valid_importances:
-                    # Organize importances by feature (collect values across folds)
-                    all_features = list(valid_importances[0].keys())
-                    importances_by_feature = {feat: [] for feat in all_features}
-                    
-                    for fold_importance in valid_importances:
-                        for feat, val in fold_importance.items():
-                            importances_by_feature[feat].append(val)
-                    
-                    # Convert to numpy arrays
-                    importances_by_feature = {k: np.array(v) for k, v in importances_by_feature.items()}
-                    
-                    try:
-                        feature_importance_plot(importances_dict = importances_by_feature,
-                                                path_save        = str(out_path),
-                                                name_file        = f"{model_name}_mean_preds",
-                                                model_name       = f"{model_title[model_name]}",
-                                                bar_color        = 'steelblue',
-                                                bar_edgecolor    = 'lightblue',
-                                                figsize          = (10, 6),
-                                                top_n            = None,  
-                                                ifsave           = True,
-                                                ifshow           = False)
-                    
-                    except Exception as e:
-                    
-                        raise RuntimeError(f"Error generating feature importance plot: {e}")
+    # Display model predictions from grid selection -----------------------------------------------------------------------#
+    @staticmethod
+    def plot_simulation_predictions_agaist_gt(subplot_data : list,
+                                              n_rows       : int,
+                                              n_cols       : int,
+                                              save_path    : Optional[str] = None,
+                                              figsize      : tuple         = (8, 4),
+                                              show         : bool          = False):
         
+        plot_simulation_grid(subplot_data, n_rows, n_cols, figsize=figsize,
+                             save_path = save_path,
+                             show      = show)
+
+    
+    # Show feature importance ---------------------------------------------------------------------------------------------#
+    @staticmethod
+    def plot_feature_importance_bars(importances_dict : dict,
+                                     path_save        : str,
+                                     name_file        : str,
+                                     model_name       : str,
+                                     features_names   : Optional[List[str]] = None,
+                                     importance_name  : Optional[str]       = None,
+                                     bar_color        : str                 = 'steelblue',
+                                     bar_edgecolor    : str                 = 'black',
+                                     bar_width        : float               = 0.6,
+                                     figsize          : tuple               = (12, 6),
+                                     rotation         : int                 = 45,
+                                     top_n            : Optional[int]       = None,
+                                     ifsave           : bool                = True,
+                                     ifshow           : bool                = False):
+        
+        feature_importance_plot(importances_dict, path_save, name_file, model_name,
+                                features_names  = features_names,
+                                importance_name = importance_name,
+                                bar_color       = bar_color,
+                                bar_edgecolor   = bar_edgecolor,
+                                bar_width       = bar_width,
+                                figsize         = figsize,
+                                rotation        = rotation,
+                                top_n           = top_n,
+                                ifsave          = ifsave,
+                                ifshow          = ifshow)
+    
 #--------------------------------------------------------------------------------------------------------------------------#

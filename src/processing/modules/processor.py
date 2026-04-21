@@ -1,5 +1,4 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
-import sys
 import os
 
 import numpy  as np
@@ -12,45 +11,32 @@ from tqdm        import tqdm
 from loguru      import logger
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
-from src.processing.modules.simulations import SimulationProcessor
-from src.processing.features            import determine_formation_channel
-from src.processing.filters import efficiency_mass_ratio_relation, def_config as filter_def_config
-
-# Import dataset-specific processing functions
-from src.processing.constructors.moccasurvey import process_single_mocca_simulation
-
-# Logger configuration  ---------------------------------------------------------------------------------------------------#
-logger.remove()
-
-# Add outputs to the console
-logger.add(sink=sys.stdout, level="INFO", format="<level>{level}: {message}</level>")
-
-# Add outputs to the file
-logger.add("./logs/processor_outputs.log",
-           level     = "INFO",
-           format    = "{time:YYYY-MM-DD HH:mm:ss} - {level}: {message}",
-           rotation  = "10 MB",    
-           retention = "10 days",  
-           encoding  = "utf-8")
+from src.processing.modules.simulations      import LoadSimulationFiles
+from src.processing.filters                  import efficiency_mass_ratio_relation, def_config as filter_def_config
+from src.processing.constructors.moccasurvey import process_single_moccasurvey_simulation
 
 # Configuration for processing features -----------------------------------------------------------------------------------#
 @dataclass
 class ProcessingStats:
     """Statistics tracking for simulation processing."""
+    # Counters
     used_sims      : int = 0
     ignored_sims   : int = 0
-    environment    : List[str] = field(default_factory=list)
-    points_per_sim : List[int] = field(default_factory=list)
+    
+    # Relevant atributes of the simulations
+    simulation_type : List[str] = field(default_factory=list)
+    points_per_sim  : List[int] = field(default_factory=list)
     
     # Augmentation-specific tracking
-    virtual_sims_generated : int = 0
+    virtual_sims_generated : int       = 0
     points_per_original    : List[int] = field(default_factory=list)
-    augmentation_enabled   : bool = False
+    augmentation_enabled   : bool      = False
     
-    def increment_used(self, chform: str, num_points: int, is_augmented: bool = False, n_virtual: Optional[int] = None):
+    def increment_used(self, clf_type: str, num_points: int, is_augmented: bool = False, n_virtual: Optional[int] = None):
         """Increment used simulation counter and record stats."""
+        
         self.used_sims += 1
-        self.environment.append(chform)
+        self.simulation_type.append(clf_type)
         self.points_per_sim.append(num_points)
         
         # Track augmentation statistics
@@ -72,12 +58,11 @@ class ProcessingStats:
             avg_points = std_points = 0.0
         
         summary = {
-            'used_sims'    : self.used_sims,
-            'ignored_sims' : self.ignored_sims,
-            'avg_points'   : avg_points,
-            'std_points'   : std_points,
-            'fast_count'   : self.environment.count("FAST"),
-            'slow_count'   : self.environment.count("SLOW")
+            'used_sims'       : self.used_sims,
+            'ignored_sims'    : self.ignored_sims,
+            'avg_points'      : avg_points,
+            'std_points'      : std_points,
+            'category_counts' : {cat: self.simulation_type.count(cat) for cat in set(self.simulation_type)},
                 }
         
         # Add augmentation statistics if enabled
@@ -96,11 +81,12 @@ class ProcessingStats:
 class DataProcessor:
     """Optimized data processing for simulations."""
     
+    # Initialize configuration and single simulation processing -----------------------------------------------------------#
     def __init__(self, config):
-        self.config     = config
-        self._processor = SimulationProcessor(config)
+        self.config             = config
+        self._loader_from_paths = LoadSimulationFiles(config)
     
-    def process_simulations(self, simulations : List[str], labels: Optional[List[int]] = None,
+    def process_simulations(self, simulations : List[str], labels: Optional[List[str]] = None,
                             augmentation: bool = False, 
                             apply_noise : bool = False, 
                             n_virtual   : Optional[int] = None, 
@@ -136,7 +122,7 @@ class DataProcessor:
         for idx, path in enumerate(tqdm(simulations, desc="Processing simulations", unit="sim")):
             try:
                 # Load simulation data
-                imbh_df, system_df, iconds_dict = self._processor.load_single_simulation(path)
+                imbh_df, system_df, iconds_dict = self._loader_from_paths.load_single_simulation(path)
                 label = labels[idx] if (labels is not None and idx < len(labels)) else None
                 
                 # Validate simulation and obtain the time-aligned system DataFrame.
@@ -146,17 +132,12 @@ class DataProcessor:
                     logger.warning(f"Ignored [{reject_reason}]: {path}")
                     continue
                 
-                # Determine formation channel and process
-                chform = determine_formation_channel(imbh_df          = imbh_df, 
-                                                     mass_column_name = self.config.mass_column_imbh,
-                                                     time_column_name = self.config.time_column_imbh)
-                
                 feats, masses, idxs = self._process_single(imbh_df, matched_system_df, iconds_dict, self.config, label, 
                                                            augmentation, 
                                                            apply_noise)
                 
                 # Track statistics and accumulate results
-                stats.increment_used(chform, len(feats), is_augmented=augmentation, n_virtual=n_virtual)
+                stats.increment_used(label, len(feats), is_augmented=augmentation, n_virtual=n_virtual)
                 self._accumulate_results(feats, masses, time_list, mass_list, phy_list, path_list, path, study_mode)
                 
             except Exception as e:
@@ -170,10 +151,15 @@ class DataProcessor:
         
         return time_list, mass_list, phy_list, path_list
     
-    def select_suitable_sims(self, simulations: List[str], simulations_by_type: Dict[str, List[str]], 
+    # From the raw file of simulations review if filtering or outliers are present ----------------------------------------#
+    def select_suitable_sims(self, simulations: List[str], simulations_by_type: Optional[Dict[str, List[str]]], 
                              out_path : str, 
-                             verbose  : bool = True) -> Dict:
+                             verbose  : bool = True
+                             ) -> Dict:
         """Retrieve suitable simulations based on efficiency-mass ratio filtering"""
+        # Treat None as empty dict to allow label-free operation
+        if simulations_by_type is None:
+            simulations_by_type = {}
         
         # Check if division already exist
         valid_sims_path = os.path.join(out_path, 'valid_simulations.txt')
@@ -181,13 +167,11 @@ class DataProcessor:
         cache_exists    = os.path.exists(valid_sims_path) and os.path.exists(outliers_path)
 
         # Build label lookup (always needed)
-        path_to_label = {path: env_type
-                        for env_type, paths in simulations_by_type.items()
-                        for path in paths
-                        }
+        path_to_label = {path: env_type for env_type, paths in simulations_by_type.items() for path in paths}
 
+        # If filtering files already exist, load them to avoid redundant processing.
         if cache_exists:
-            # Load cached paths
+
             logger.info("Found existing filter files. Loading from disk...")
             with open(valid_sims_path, 'r') as f:
                 valid_sim_paths = [line.strip() for line in f if line.strip()]
@@ -198,35 +182,49 @@ class DataProcessor:
             logger.info(f"Loaded {len(outlier_paths)} outliers from: {outliers_path}")
 
             # Process only valid sims to obtain mass_ratio/epsilon for plotting.
-            # Re-running efficiency_mass_ratio_relation would re-compute the outlier
-            # threshold on a different subset, producing a methodologically inconsistent
-            # result. Instead, we compute the quantities directly.
             valid_labels = [path_to_label.get(p, np.nan) for p in valid_sim_paths]
-            _, m_valid, phy_valid, path_list = self.process_simulations(
-                                                    valid_sim_paths, valid_labels,
-                                                    augmentation = False,
-                                                    apply_noise  = False,
-                                                    n_virtual    = None,
-                                                    study_mode   = True,
-                                                    verbose      = verbose)
+            
+            # Process the valid simulation
+            _, m_valid, phy_valid, path_list = self.process_simulations(valid_sim_paths, valid_labels,
+                                                                        augmentation = False,
+                                                                        apply_noise  = False,
+                                                                        n_virtual    = None,
+                                                                        study_mode   = True,
+                                                                        verbose      = verbose)
 
-            filt_labels   = [path_to_label.get(p, np.nan) for p in path_list]
+            # Extract necessary parameters for plotting the efficiency-mass ratio relation.
+            filt_labels = [path_to_label.get(p, np.nan) for p in path_list]
+            
+            # Select initial total mass, final total mass and critical mass from the physical array
             init_totmass  = np.array([e[filter_def_config.sim_pos][filter_def_config.Mtot_pos]   for e in phy_valid])
             final_totmass = np.array([e[filter_def_config.final_pos][filter_def_config.Mtot_pos] for e in phy_valid])
             init_mcrit    = np.array([e[filter_def_config.sim_pos][filter_def_config.Mcrit_pos]  for e in phy_valid])
-            final_bhmass  = np.array([mmo[filter_def_config.Mmmo_pos] for mmo in m_valid])
-            mass_ratio    = init_totmass / init_mcrit
-            epsilon       = final_bhmass / (final_totmass - final_bhmass)
+            
+            # Select the final BH mass from the mass array
+            final_bhmass = np.array([mmo[filter_def_config.Mmmo_pos] for mmo in m_valid])
+            
+            # Compute the mass ratio and the epsilon parameters for the valid simulations.
+            mass_ratio = init_totmass / init_mcrit
+            epsilon    = final_bhmass / (final_totmass - final_bhmass)
+
+            # Retrieve the half mass radius for further plotting
+            init_rh  = np.array([e[filter_def_config.sim_pos][filter_def_config.r_h_pos] for e in phy_valid])
 
             return {
                 "valid_sims": {"paths"      : path_list,
                                "labels"     : filt_labels,
                                "mass_ratio" : mass_ratio,
-                               "epsilon"    : epsilon},
+                               "epsilon"    : epsilon,
+                               "mtot"       : init_totmass,
+                               "rh"         : init_rh
+                               },
                 "outliers"  : {"paths"      : outlier_paths,
                                "labels"     : [path_to_label.get(p, np.nan) for p in outlier_paths],
                                "mass_ratio" : np.array([]),
-                               "epsilon"    : np.array([])}
+                               "epsilon"    : np.array([]),
+                               "mtot"       : np.array([]),
+                               "rh"         : np.array([])
+                               }
             }
 
         # No cache — proceed with full filtering
@@ -235,12 +233,12 @@ class DataProcessor:
         labels = [path_to_label.get(path, np.nan) for path in simulations]
         
         # Process simulations to retrieve per-simulation time series in study_mode
-        t_base, m_base, phy_base, path_list = self.process_simulations(simulations, labels, 
-                                                                       augmentation = False, 
-                                                                       apply_noise  = False,
-                                                                       n_virtual    = None, 
-                                                                       study_mode   = True, 
-                                                                       verbose      = verbose)
+        _, m_base, phy_base, path_list = self.process_simulations(simulations, labels, 
+                                                                  augmentation = False, 
+                                                                  apply_noise  = False,
+                                                                  n_virtual    = None, 
+                                                                  study_mode   = True, 
+                                                                  verbose      = verbose)
         
         # Update label list
         filt_labels = [path_to_label.get(path, np.nan) for path in path_list]
@@ -278,9 +276,11 @@ class DataProcessor:
                                           ).reset_index(drop=True)
 
         # Check temporal resolution compatibility before accepting the alignment.
-        imbh_dt     = imbh_df[self.config.time_column_imbh].diff().median()
-        match_error = (matched_system_df[self.config.time_column_system]
-                       - imbh_df[self.config.time_column_imbh]).abs().median()
+        imbh_dt  = imbh_df[self.config.time_column_imbh].diff().median()
+        res_time = matched_system_df[self.config.time_column_system] - imbh_df[self.config.time_column_imbh]
+        
+        # Use absolute value of the time difference for resolution check, and compute median error for reporting.
+        match_error = res_time.abs().median()
 
         # Create flags for resolution and point count
         resolution_flag = (imbh_dt > 0) and (match_error > self.config.max_resolution_ratio * imbh_dt)
@@ -315,14 +315,14 @@ class DataProcessor:
         # Process based on dataset type
         if (self.config.dataset_name == "moccasurvey"):
         
-            return process_single_mocca_simulation(imbh_df= imbh_df, system_df = system_df, meta_dict = iconds_dict,
-                                                    config         = config,
-                                                    environment    = label,
-                                                    points_per_sim = self.config.points_per_sim, 
-                                                    augment        = augmentation, 
-                                                    noise          = apply_noise,
-                                                    n_virtual      = self.config.n_virtual,
-                                                )
+            return process_single_moccasurvey_simulation(imbh_df= imbh_df, system_df = system_df, meta_dict = iconds_dict,
+                                                         config         = config,
+                                                         environment    = label,
+                                                         points_per_sim = self.config.points_per_sim, 
+                                                         augment        = augmentation, 
+                                                         noise          = apply_noise,
+                                                         n_virtual      = self.config.n_virtual,
+                                                        )
         
         else:
             raise NotImplementedError(f"Dataset '{self.config.dataset_name}' not supported in processor.")
@@ -364,8 +364,11 @@ class DataProcessor:
             logger.info(f"  - Total effective simulations   : {summary['total_effective_sims']}")
             logger.info(f"  - Avg virtual per original sim  : {summary['avg_virtual_per_original']:.1f}")
         
-        logger.info(f"  - FAST formation channel sims   : {summary['fast_count']}")
-        logger.info(f"  - SLOW formation channel sims   : {summary['slow_count']}")
+        for cat, count in summary['category_counts'].items():
+            if (cat is None) or (count is None):
+                continue
+            else:
+                logger.info(f"  - {cat:<30} : {count}")
         
         # Report points statistics based on augmentation state
         if 'avg_points_per_original' in summary:

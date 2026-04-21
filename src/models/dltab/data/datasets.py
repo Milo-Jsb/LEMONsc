@@ -11,23 +11,26 @@ from pathlib          import Path
 from typing           import Optional, Dict, List, Tuple, Any
 from torch.utils.data import Dataset, DataLoader
 
-# Custom collate function for metadata -----------------------------------------------------------------------------------#
+# Custom functions --------------------------------------------------------------------------------------------------------#
+from src.processing.scalers import FeatureScaler
+
+# Custom collate function for metadata ------------------------------------------------------------------------------------#
 def collate_with_metadata(batch: List[Tuple]) -> Tuple[torch.Tensor, torch.Tensor, List[Dict]]:
     """
-    ________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Custom collate function to handle batches with metadata.
-    ________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Use this with DataLoader when you need to access metadata along with features/targets.
-    ________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Parameters:
     -> batch : List of tuples from dataset __getitem__
-    ________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Returns:
     -> Tuple containing: [features, targets, metadata]
         - features : Stacked tensor of shape (batch_size, num_features)
         - targets  : Stacked tensor of shape (batch_size,)
         - metadata : List of metadata dicts (if present in batch)
-    ________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     Example:
         
         loader = DataLoader(dataset, collate_fn=collate_with_metadata)
@@ -37,7 +40,7 @@ def collate_with_metadata(batch: List[Tuple]) -> Tuple[torch.Tensor, torch.Tenso
             # batch_y: (batch_size,)
             # batch_meta: List of dicts with metadata for each sample in the batch
             pass
-    ________________________________________________________________________________________________________________
+    ________________________________________________________________________________________________________________________
     """
     if len(batch[0]) == 3:  # Has metadata
         features, targets, metadata = zip(*batch)
@@ -62,10 +65,14 @@ class LEMONscDataset(Dataset):
     """
     # Initialization ------------------------------------------------------------------------------------------------------#
     def __init__(self, csv_path: str, target_column: str = "M_MMO/M_tot", metadata_columns: Optional[List[str]] = None,
-                 feature_columns : Optional[List[str]]    = None,
-                 exclude_columns : Optional[List[str]]    = None,
-                 transform_fn    : Optional[callable]     = None,
-                 logger          : Optional[Logger]       = None
+                 feature_columns : Optional[List[str]]      = None,
+                 exclude_columns : Optional[List[str]]      = None,
+                 transform_fn    : Optional[callable]       = None,
+                 scale           : bool                     = False,
+                 scaler_kwargs   : Optional[Dict[str, Any]] = None,
+                 scaler_path     : Optional[str]            = None,
+                 scaler_fit      : bool                     = True,
+                 logger          : Optional[Logger]         = None
                  ):
         """
         ____________________________________________________________________________________________________________________
@@ -84,7 +91,9 @@ class LEMONscDataset(Dataset):
                                                             pd.DataFrame with derived/engineered features and target.
                                                             Applied to the raw CSV data before feature/target extraction.
                                                             Example: lambda df: tabular_features(df, names=[...], 
-                                                            return_names=False)
+                                                            return_names=False).
+        -> scale                  
+        -> scale_kwargs
         -> logger                (Optional[Logger])       : Logger instance for info/warnings
         ____________________________________________________________________________________________________________________
         Notes:
@@ -145,12 +154,50 @@ class LEMONscDataset(Dataset):
         # Extract features and targets - Convert to numpy first
         features_np = self.df[self.feature_columns].values.astype(np.float32)
         targets_np  = self.df[target_column].values.astype(np.float32)
-        
+
+        # Feature scaling logic
+        self.feat_scaler = None
+        if scale:
+            scaler_kwargs = scaler_kwargs or {}
+            
+            # Fit scaler on features and transform, then save if path provided
+            if scaler_fit:
+                
+                self.feat_scaler   = FeatureScaler(**scaler_kwargs['feats'])
+                self.target_scaler = FeatureScaler(**scaler_kwargs['target'])
+                
+                features_np = self.feat_scaler.fit_transform(features_np)
+                targets_np  = self.target_scaler.fit_transform(targets_np)  
+                
+                # Store scaler if path provided
+                if scaler_path is not None: 
+                    self.feat_scaler.save_scaler(scaler_path / "feats_scaler.joblib")
+                    self.target_scaler.save_scaler(scaler_path / "target_scaler.joblib")
+                
+                # Verbose
+                if self.logger: self.logger.info(f"FeatureScaler fitted and saved to {scaler_path}")
+            
+            # Load fitted scaler and transform
+            else:
+                # Load scaler and transform
+                if scaler_path is None:
+                    raise ValueError("scaler_path must be provided when scaler_fit is False (val/test)")
+                
+                self.feat_scaler   = FeatureScaler(**scaler_kwargs["feats"], 
+                                                   load_scaler_from=scaler_path / "feats_scaler.joblib")
+                self.target_scaler = FeatureScaler(**scaler_kwargs["target"], 
+                                                   load_scaler_from=scaler_path / "target_scaler.joblib")
+                
+                features_np = self.feat_scaler.transform(features_np)
+                targets_np  = self.target_scaler.transform(targets_np)
+                
+                if self.logger:
+                    self.logger.info(f"FeatureScaler loaded from {scaler_path}")
+
         # Convert to PyTorch tensors using from_numpy (zero-copy, more efficient)
-        # Keep in CPU for optimal pin_memory performance in DataLoader
         self.features = torch.from_numpy(features_np)
         self.targets  = torch.from_numpy(targets_np)
-        
+
         if self.logger:
             self.logger.info(f"Loaded {len(self)} samples with {len(self.feature_columns)} features")
     
@@ -219,13 +266,17 @@ class LEMONscDataManager:
     """
     # Initialization ------------------------------------------------------------------------------------------------------#
     def __init__(self, dataset_root: str, fold: int = 0, target_column: str = "M_MMO/M_tot",
-                 metadata_columns : Optional[List[str]]  = None,
-                 feature_columns  : Optional[List[str]]  = None,
-                 transform_fn     : Optional[callable]   = None,
-                 batch_size       : int                  = 512, 
-                 num_workers      : int                  = 4,
-                 device           : str                  = "cpu",
-                 logger           : Optional[Logger]     = None 
+                 metadata_columns : Optional[List[str]]      = None,
+                 feature_columns  : Optional[List[str]]      = None,
+                 transform_fn     : Optional[callable]       = None,
+                 batch_size       : int                      = 512, 
+                 num_workers      : int                      = 4,
+                 seed             : Optional[int]            = None,
+                 device           : str                      = "cpu",
+                 logger           : Optional[Logger]         = None,
+                 scale            : bool                     = False,
+                 scaler_kwargs    : Optional[Dict[str, Any]] = None,
+                 scaler_dir       : Optional[str]            = None
                  ):
         """
         ____________________________________________________________________________________________________________________
@@ -241,7 +292,8 @@ class LEMONscDataManager:
                                                   feature/target extraction. Use for feature engineering such as 
                                                   tabular_features().
         -> batch_size      (int)                : Batch size for DataLoaders
-        -> num_workers     (int)                : Number of workers for data loading
+        -> num_workers     (int)                : Number of workers for data loading.
+        -> seed           (Optional[int])       : Random seed for reproducibility.
         -> device          (str)                : Target device for training ('cpu' or 'cuda'). Note: tensors are stored 
                                                   in CPU in dataset, device is only used for pin_memory configuration
         -> logger          (Optional[Logger])   : Logger instance
@@ -257,12 +309,22 @@ class LEMONscDataManager:
         self.batch_size       = batch_size
         self.num_workers      = num_workers
         self.device           = device
+        self.seed             = seed
         self.logger           = logger
         
         # Dataset paths
         self.train_path = self.dataset_root / f"{fold}_fold" / "train.csv"
         self.val_path   = self.dataset_root / f"{fold}_fold" / "val.csv"
         self.test_path  = self.dataset_root / "test.csv"
+
+        # Scaler config
+        self.scale         = scale
+        self.scaler_kwargs = scaler_kwargs or {}
+        # Directory to save/load scaler (default: fold dir)
+        if scaler_dir is not None:
+            self.scaler_dir = scaler_dir
+        else:
+            self.scaler_dir = str(self.dataset_root / f"{fold}_fold")
         
         # Datasets and dataloaders (initialized lazily)
         self.train_dataset : Optional[LEMONscDataset] = None
@@ -294,61 +356,89 @@ class LEMONscDataManager:
         
         # Load training dataset and dataloader
         if load_train and self.train_path.exists():
-            
-            # Create training dataset with specified parameters
-            self.train_dataset = LEMONscDataset(csv_path= str(self.train_path), metadata_columns= self.metadata_columns,
-                                                feature_columns = self.feature_columns,
-                                                transform_fn    = self.transform_fn,
-                                                target_column   = self.target_column,
-                                                logger          = self.logger)
-            
-            # Create training dataloader with optimized settings
-            self.train_loader = DataLoader(self.train_dataset, batch_size= self.batch_size, shuffle= True, 
-                                           num_workers        = self.num_workers,
-                                           pin_memory         = (self.device == 'cuda'),
-                                           prefetch_factor    = 2 if self.num_workers > 0 else None,
-                                           persistent_workers = True if self.num_workers > 0 else False)
-            
+            # Set seed for reproducibility (if applicable)
+            if self.seed is not None:
+                _gen = torch.Generator()
+                _gen.manual_seed(self.seed)
+            else:
+                _gen = None
+
+            # Path to save/load scaler
+            scaler_path = self.scaler_dir
+
+            # Create training dataset with scaling (fit and save scaler)
+            self.train_dataset = LEMONscDataset(
+                csv_path       = str(self.train_path),
+                metadata_columns = self.metadata_columns,
+                feature_columns  = self.feature_columns,
+                transform_fn     = self.transform_fn,
+                target_column    = self.target_column,
+                scale            = self.scale,
+                scaler_kwargs    = self.scaler_kwargs,
+                scaler_path      = scaler_path,
+                scaler_fit       = True,
+                logger           = self.logger
+            )
+
+            self.train_loader = DataLoader(
+                self.train_dataset, batch_size= self.batch_size, shuffle= True,
+                num_workers        = self.num_workers,
+                pin_memory         = (self.device == 'cuda'),
+                prefetch_factor    = 2 if self.num_workers > 0 else None,
+                persistent_workers = True if self.num_workers > 0 else False,
+                generator          = _gen
+            )
+
             if self.logger:
                 self.logger.success(f"Training dataset loaded: {len(self.train_dataset)} samples")
         
         # Load validation dataset and dataloader
         if load_val and self.val_path.exists():
-            
-            # Create validation dataset with specified parameters
-            self.val_dataset = LEMONscDataset(csv_path= str(self.val_path), target_column= self.target_column, 
-                                              metadata_columns = self.metadata_columns,
-                                              feature_columns  = self.feature_columns,
-                                              transform_fn     = self.transform_fn,
-                                              logger           = self.logger)
-            
-            # Create validation dataloader with optimized settings (shuffle=False for validation)
-            self.val_loader = DataLoader(self.val_dataset, batch_size= self.batch_size, shuffle= False, 
-                                         num_workers        = self.num_workers,
-                                         pin_memory         = (self.device == 'cuda'),
-                                         prefetch_factor    = 2 if self.num_workers > 0 else None,
-                                         persistent_workers = True if self.num_workers > 0 else False)      
-            
+            scaler_path = self.scaler_dir
+            self.val_dataset = LEMONscDataset(
+                csv_path       = str(self.val_path),
+                target_column  = self.target_column,
+                metadata_columns = self.metadata_columns,
+                feature_columns  = self.feature_columns,
+                transform_fn     = self.transform_fn,
+                scale            = self.scale,
+                scaler_kwargs    = self.scaler_kwargs,
+                scaler_path      = scaler_path,
+                scaler_fit       = False,
+                logger           = self.logger
+            )
+            self.val_loader = DataLoader(
+                self.val_dataset, batch_size= self.batch_size, shuffle= False,
+                num_workers        = self.num_workers,
+                pin_memory         = (self.device == 'cuda'),
+                prefetch_factor    = 2 if self.num_workers > 0 else None,
+                persistent_workers = True if self.num_workers > 0 else False
+            )
             if self.logger:
                 self.logger.success(f"Validation dataset loaded: {len(self.val_dataset)} samples")
         
         # Load test dataset
         if load_test and self.test_path.exists():
-            
-            # Create test dataset with specified parameters
-            self.test_dataset = LEMONscDataset(csv_path= str(self.test_path), target_column= self.target_column, 
-                                               metadata_columns = self.metadata_columns,
-                                               feature_columns  = self.feature_columns,
-                                               transform_fn     = self.transform_fn,
-                                               logger           = self.logger)
-            
-            # Create test dataloader with optimized settings (shuffle=False for test)
-            self.test_loader = DataLoader(self.test_dataset, batch_size= self.batch_size, shuffle= False, 
-                                          num_workers        = self.num_workers,
-                                          pin_memory         = (self.device == 'cuda'),
-                                          prefetch_factor    = 2 if self.num_workers > 0 else None,
-                                          persistent_workers = True if self.num_workers > 0 else False)
-            
+            scaler_path = self.scaler_dir
+            self.test_dataset = LEMONscDataset(
+                csv_path       = str(self.test_path),
+                target_column  = self.target_column,
+                metadata_columns = self.metadata_columns,
+                feature_columns  = self.feature_columns,
+                transform_fn     = self.transform_fn,
+                scale            = self.scale,
+                scaler_kwargs    = self.scaler_kwargs,
+                scaler_path      = scaler_path,
+                scaler_fit       = False,
+                logger           = self.logger
+            )
+            self.test_loader = DataLoader(
+                self.test_dataset, batch_size= self.batch_size, shuffle= False,
+                num_workers        = self.num_workers,
+                pin_memory         = (self.device == 'cuda'),
+                prefetch_factor    = 2 if self.num_workers > 0 else None,
+                persistent_workers = True if self.num_workers > 0 else False
+            )
             if self.logger:
                 self.logger.success(f"Test dataset loaded: {len(self.test_dataset)} samples")
     

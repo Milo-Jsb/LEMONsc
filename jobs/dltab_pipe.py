@@ -6,52 +6,38 @@ import yaml
 import torch
 import optuna
 
-import numpy  as np
-import pandas as pd
+import numpy      as np
+import pandas     as pd
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend (safe for pipelines)
+import matplotlib.pyplot as plt
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from loguru      import logger
 from pathlib     import Path
-from dataclasses import dataclass, field
-from typing      import List, Optional
+from typing      import Optional
 from datetime    import datetime
+from captum.attr import GradientShap
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
-
-# Directory
-from src.utils.directory import PathManagerTrainOptPipeline, load_yaml_dict
-
-# Computation of features
-from src.processing.features import filter_simulation_artifacts, tabular_features, TargetLogScaler
-
-# Optimization of hyperparameters
-from src.optim.optimizer import SpaceSearchConfig, SpaceSearch
-
-# Param group mappings for structured best_params reconstruction
-from src.optim.grid import MLP_PARAM_GROUPS, NODE_PARAM_GROUPS
-
-# Evaluation metrics
-from src.utils.eval import compute_metrics
-
-# Vizualization
-from src.processing.modules.plots import PlotGenerator
-
-# Model Wrapper
-from src.models.dltab.regressor import DLTabularRegressor 
-
-# DL Data Manager
+from src.utils.directory            import PathManagerTrainOptPipeline, build_dl_architecture_from_YAML, load_yaml_dict
+from src.processing.features        import filter_simulation_artifacts, tabular_features
+from src.processing.scalers         import TargetTransform, FeatureScaler
+from src.optim.optimizer            import SpaceSearchConfig, SpaceSearch
+from src.optim.grid                 import MLP_PARAM_GROUPS, NODE_PARAM_GROUPS
+from src.utils.eval                 import compute_metrics
+from src.processing.modules.plots   import PlotGenerator
+from src.models.dltab.regressor     import DLTabularRegressor 
 from src.models.dltab.data.datasets import LEMONscDataManager
+from src.utils.resources            import set_numpy_torch_seed
+from jobs.config._dltab             import JobConfig
 
 # Warnings managment ------------------------------------------------------------------------------------------------------#
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
-
-# Add outputs to the console
 logger.add(sink=sys.stdout, level="INFO", format="<level>{level}: {message}</level>")
-
-# Add outputs to the file
 logger.add("./logs/dltabs_execution.log",
            level     = "INFO",
            format    = "{time:YYYY-MM-DD HH:mm:ss} - {level}: {message}",
@@ -64,8 +50,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Execution of DLTabular models")
     
     # Main mode of the script
-    parser.add_argument("--mode", type=str, default="optim",
-                        choices=["optim", "train", "predict"],
+    parser.add_argument("--mode", type=str, default="optim", choices=["optim", "train", "inter", "predict"],
                         help="Pipeline stage to implement.")
 
     # Directories
@@ -87,6 +72,8 @@ def get_args():
     parser.add_argument("--model", type=str, default="mlp",
                        choices=["mlp", "node"],
                        help="Type of model to use")
+    parser.add_argument("--n_sims", type=int, default=2,
+                        help = "Number of random simulations to plot in interpretation mode.")
     
     # DL architecture and optimizer config files
     parser.add_argument("--arch_config", type=str, default="mlp.yaml",
@@ -94,8 +81,9 @@ def get_args():
     parser.add_argument("--opt_config", type=str, default="adam.yaml",
                         help="Optimizer YAML file name (from src/models/dltab/config/opt/)")
     parser.add_argument("--loss_config", type=str, default="huber.yaml",
-                        help="Loss YAML file name (from src/models/dltab/config/loss/). "
-                             "If None, loss_params defaults to {}.")
+                        help="Loss YAML file name (from src/models/dltab/config/loss/).")
+    parser.add_argument("--schd_config", type=str, default=None,
+                        help="Scheduler YAML file name (from src/models/dltab/config/schd/).")
 
     # Study persistence (SQLite)
     parser.add_argument("--study_name", type=str, default=None,
@@ -106,91 +94,40 @@ def get_args():
                         help="SQLite storage URL for Optuna study persistence and resume, e.g. "
                              "'sqlite:///./output/optim/study.db'. "
                              "When set, load_if_exists=True is applied automatically.")
-
     return parser.parse_args()
 
 # List of tabular features to compute for the dataset  --------------------------------------------------------------------#
-CONT_FEATS  = ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", "log(t_coll)", 
-               "log(M_tot/M_crit)", 
+CONT_FEATS  = ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)",
+               "log(t/t_coll)", 
+               "log(M_tot)",
                "log(R_h/R_core)", "log(R_tid/R_core)", 
-               "log(rho(R_h))"]
-
+               "log(rho(R_h))",
+               "log(Z)", 
+               "log(fbin)"]
 CAT_FEATS   = None
 
 TARGET_FEAT = ["log(M_MMO/M_tot)"]
-
-# Configuration -----------------------------------------------------------------------------------------------------------#
-@dataclass
-class TrainingConfig:
-    """Configuration class for the execution of dltab_training() script."""
-    n_folds           : int                 = 3
-    n_trials          : int                 = 100
-    n_jobs            : int                 = 15
-    device            : str                 = "cuda" if torch.cuda.is_available() else "cpu"
-    cont_feats        : List[str]           = field(default_factory= lambda: CONT_FEATS.copy())
-    cat_feats         : Optional[List[str]] = field(default_factory= lambda: CAT_FEATS.copy() if CAT_FEATS is not None else None)
-    target_feat       : List[str]           = field(default_factory= lambda: TARGET_FEAT.copy())
-    verbose           : bool                = True
-    seed              : int                 = 42
-    direction         : str                 = "minimize"
-    metric            : str                 = "huber"
-    patience          : int                 = 15
-    lambda_penalty    : float               = 0.01
-    scale_target      : bool                = True
-    epsilon_target    : Optional[float]     = 0
-    eps_feats         : float               = 1
-    min_dem_threshold : float               = 1e-10
-    norm_target       : Optional[str]       = "M_tot"
-    max_epochs        : int                 = 100
-    dl_patience       : int                 = 5
-    train_patience    : int                 = 25
-    dl_loss_fn        : str                 = "huber"
-    batch_size        : int                 = 4096
-    num_workers       : int                 = 16 
-
+    
 # Instantiate the configuration
-CONFIG = TrainingConfig()
-    
-# DL Architecture fixed parameters (non-optimizable, used as base for SpaceSearch) ----------------------------------------#
-_DL_CONFIG_BASE = Path(__file__).resolve().parent.parent / "src" / "models" / "dltab" / "config"
-
-def build_dl_architecture(arch_config: str = "mlp.yaml", opt_config: str = "adam.yaml",
-                          loss_config: Optional[str] = None) -> dict:
-    """Build DL_ARCHITECTURE dict from YAML config files."""
-    arch_params = load_yaml_dict(str(_DL_CONFIG_BASE / "arch" / arch_config))
-    opt_params  = load_yaml_dict(str(_DL_CONFIG_BASE / "opt"  / opt_config))
-    
-    # Load loss params from YAML if provided, otherwise default to empty dict
-    if loss_config is not None:
-        loss_params = load_yaml_dict(str(_DL_CONFIG_BASE / "loss" / loss_config))
-    else:
-        loss_params = {}
-    
-    arch_elemnts = {
-        "model_params"     : arch_params, 
-        "optimizer_name"   : Path(opt_config).stem,
-        "optimizer_params" : opt_params, 
-        "loss_params"      : loss_params
-                    }
-    
-    return arch_elemnts
+CONFIG = JobConfig()
+CONFIG.dataconfig.cont_feats  = CONT_FEATS
+CONFIG.dataconfig.cat_feats   = CAT_FEATS
+CONFIG.dataconfig.target_feat = TARGET_FEAT
 
 # Pipeline Modes [Hyperparameter Optimization] ----------------------------------------------------------------------------#
 def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: list, out_path: str, model_type: str,
                      dl_architecture : dict,
-                     scale_target    : bool            = True,
+                     trs_target      : bool            = True,
                      target_norm     : Optional[str]   = None,
-                     target_eps      : Optional[float] = 1e-6,
                      n_folds         : int             = 3,
                      study_name      : Optional[str]   = None,
                      storage         : Optional[str]   = None):
     """Run the optimization mode pipeline for DL tabular models."""
     
+    # Verbose
     logger.info(110*"_")
     logger.info(f"Space search of the params for the dltab {model_type} regressor using {n_folds}-fold cross-validation")
     logger.info(110*"_")
-    
-    # Load and prepare data partitions using LEMONscDataManager
     logger.info("Loading and preparing data partitions via DataLoaders...")
     
     # Handle None categorical features
@@ -202,13 +139,15 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     # Determine column names after transformation (use first fold as reference)
     fold_0_path = feats_path + "/0_fold/train.csv"
     temp_df     = pd.read_csv(fold_0_path, index_col=False)
-    temp_filt   = filter_simulation_artifacts(temp_df, min_denominator_threshold=CONFIG.min_dem_threshold,
-                                              filter_null_mass     = True, 
+    
+    temp_filt   = filter_simulation_artifacts(temp_df, min_denominator_threshold=CONFIG.dataconfig.min_dem_thr,
+                                              filter_null_mass     = True,
                                               filter_initial_state = False, 
                                               verbose              = False)
+    
     temp_feats  = tabular_features(temp_filt, names=feature_names, return_names=False,
-                                   eps_logscale_all_range     = CONFIG.eps_feats,
-                                   eps_logscale_limited_range = CONFIG.epsilon_target)
+                                   eps_logscale_all_range     = CONFIG.scalingconfig.feature_log_eps_all_range,
+                                   eps_logscale_limited_range = CONFIG.scalingconfig.feature_log_eps_lim_range)
     
     # Identify transformed column names
     cont_columns   = [col for col in temp_feats.columns if col in contfeats]
@@ -216,47 +155,93 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     target_columns = [col for col in temp_feats.columns if col in target]
     feature_cols   = cont_columns + cat_columns
     
-    # Log feature configuration
+    # Verbose
     logger.info("Features configuration:")
-    logger.info(f"  - Continuous features  : {contfeats} -> {cont_columns}")
-    logger.info(f"  - Categorical features : {catfeats} -> {cat_columns}")
-    logger.info(f"  - Target               : {target} -> {target_columns}")
+    logger.info(f"  - Continuous features  : {len(cont_columns)}")
+    logger.info(f"  - Categorical features : {len(cat_columns)}")
+    logger.info(f"  - Target               : {target_columns}")
     logger.info(f"  - Total features       : {len(feature_cols)}")
     
-    # Define transform function: filter artifacts then engineer features (consistent with mltrees_pipe)
+    # Define transform function: filter artifacts then engineer features
     transform_fn = lambda df: tabular_features(
-        filter_simulation_artifacts(df, min_denominator_threshold=CONFIG.min_dem_threshold,
-                                   filter_null_mass     = True, 
-                                   filter_initial_state = False, 
-                                   verbose              = False),
-        names=feature_names, return_names=False,
-        eps_logscale_all_range     = CONFIG.eps_feats,
-        eps_logscale_limited_range = CONFIG.epsilon_target)
+        filter_simulation_artifacts(df, min_denominator_threshold = CONFIG.dataconfig.min_dem_thr,
+                                    filter_null_mass     = True, 
+                                    filter_initial_state = False, 
+                                    verbose              = False
+                                    ),
+        names                      = feature_names, 
+        return_names               = False,
+        eps_logscale_all_range     = CONFIG.scalingconfig.feature_log_eps_all_range,
+        eps_logscale_limited_range = CONFIG.scalingconfig.feature_log_eps_lim_range
+        )
     
     # Process each fold: create DataLoaders for SpaceSearch
     partitions = []
+    
     for fold in range(n_folds):
+        # Prepare study name:
+        study_path = Path(out_path) / "optim"
         
+        # If not name provided, generate one based on storage presence and model/experiment details
+        if study_name is not None:
+            pass  
+        
+        # If a storage is provided but no study name, create a deterministic one based on model type, experiment tag and n_folds
+        elif storage is not None:
+            _exp_tag   = Path(out_path).name   
+            study_name = f"cv_study_{model_type}_{_exp_tag}_{n_folds}fold"
+            logger.info(f"SQLite storage active — using deterministic study name: '{study_name}'")
+        
+        # If no storage and no name, generate a timestamp-based name to avoid conflicts between independent runs
+        else:
+            timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
+            study_name = f"cv_study_{n_folds}fold_{timestamp}"
+        
+        # Create fold directory
+        foldpath = study_path/ f"{study_name}/fold_{fold}"
+        foldpath.mkdir(parents=True, exist_ok=True)
+
+        # Set fold seed for reproducibility (if applicable, use different seed per fold to avoid identical runs)
+        foldseed = set_numpy_torch_seed(seed_num=CONFIG.seed, idx=fold)
+        
+        # Configure the scalers for the data
+        should_scale  = CONFIG.scalingconfig.scale_features and CONFIG.scalingconfig.scale_target
+        scaler_kwargs = {
+            "feats"  : {
+                "scaler_name"   : CONFIG.scalingconfig.feature_scaler_name,
+                "scaler_kwargs" : CONFIG.scalingconfig.feature_scaler_kward},
+            "target" : {
+                "scaler_name"   : CONFIG.scalingconfig.target_scaler_name,
+                "scaler_kwargs" : CONFIG.scalingconfig.target_scaler_kward},
+            }
+
         # Use LEMONscDataManager to load datasets and create DataLoaders for the current fold
-        data_manager = LEMONscDataManager(dataset_root     = feats_path,
-                                          fold             = fold,
-                                          target_column    = target_columns[0],
-                                          feature_columns  = feature_cols,
-                                          metadata_columns = [target_norm] if target_norm is not None else None,
-                                          transform_fn     = transform_fn,
-                                          batch_size       = CONFIG.batch_size,
-                                          num_workers      = CONFIG.num_workers,
-                                          device           = CONFIG.device,
-                                          logger           = logger)
+        data_manager = LEMONscDataManager(
+            dataset_root     = feats_path,
+            fold             = fold,
+            target_column    = target_columns[0],
+            feature_columns  = feature_cols,
+            metadata_columns = [target_norm] if target_norm is not None else None,
+            transform_fn     = transform_fn,
+            batch_size       = CONFIG.dataconfig.batch_size,
+            num_workers      = CONFIG.dataconfig.num_workers,
+            seed             = foldseed,
+            device           = CONFIG.device,
+            logger           = logger,
+            scale            = should_scale,
+            scaler_kwargs    = scaler_kwargs,
+            scaler_dir       = foldpath
+            )
         
         # Load train and validation partitions (no test needed for optimization)
         data_manager.setup(load_train=True, load_val=True, load_test=False)
         
-        # Build scaler for the validation fold (mirrors mlbasics_pipe logic)
-        scaler = None
+        # Retrieve the feature and the target scaler
+        feat_scaler   = data_manager.train_dataset.feat_scaler
+        target_scaler = data_manager.train_dataset.target_scaler
         
         # Ensure that the validation dataset has the required metadata for denormalization (M_tot) and extract it
-        if ( scale_target                                                                     and
+        if ( trs_target                                                                       and
              (data_manager.val_dataset and hasattr(data_manager.val_dataset, '_metadata_df')) and
              (data_manager.val_dataset._metadata_df is not None)                              and
              (target_norm is not None)                                                        and
@@ -265,59 +250,49 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
             
             # Ensure that M_tot is numeric and extract it as a numpy array flattened to 1D
             val_norm = data_manager.val_dataset._metadata_df[target_norm].astype(np.float32).to_numpy().flatten()
-            scaler   = TargetLogScaler(norm_factor=val_norm, epsilon=target_eps)
+            val_trs  = TargetTransform(transformation = CONFIG.scalingconfig.target_transform, 
+                                       norm_factor    = val_norm, 
+                                       epsilon        = CONFIG.scalingconfig.target_log_eps)
         
         # Scale without normalization factor if target_norm column not found
-        elif scale_target:
-            scaler = TargetLogScaler(norm_factor=None, epsilon=target_eps)
-            logger.warning(f"Target normalization column '{target_norm}' not found in fold {fold + 1}. "
-                            "A default TargetLogScaler with no norm_factor will be used.")
+        else:
+            val_trs = TargetTransform(transformation="identity", norm_factor=None, epsilon=None)
+            logger.warning("A default identity transformation will be used as configuration is not well defined.")
 
         # Create partition dictionary with DataLoaders (DL format expected by SpaceSearch)
         partition = {
             'train_loader'   : data_manager.train_loader,
             'val_loader'     : data_manager.val_loader,
-            'scaler'         : scaler,
+            'trs'            : val_trs,
+            'scaler'         : target_scaler,
             'features_names' : feature_cols
-        }
+                    }
         partitions.append(partition)
         
+        # Verbose fold data loading summary
         n_train = len(data_manager.train_dataset) if data_manager.train_dataset else 0
         n_val   = len(data_manager.val_dataset) if data_manager.val_dataset else 0
         logger.info(f"Fold {fold + 1}/{n_folds} loaded: Train={n_train} samples, Val={n_val} samples")
 
     # Initialize optimizer with DL-specific configuration
     logger.info("Initializing SpaceSearch optimizer for DL...")
-    config = SpaceSearchConfig(model_type      = model_type, n_jobs = CONFIG.n_jobs, n_trials = CONFIG.n_trials,
-                               device          = CONFIG.device,
-                               seed            = CONFIG.seed,
-                               max_epochs      = CONFIG.max_epochs,
-                               dl_patience     = CONFIG.dl_patience,
-                               dl_loss_fn      = CONFIG.dl_loss_fn,
-                               dl_architecture = dl_architecture,
-                               storage         = storage,
-                               load_if_exists  = storage is not None)
+    config = SpaceSearchConfig(model_type           = model_type, n_jobs = CONFIG.loaders_n_jobs, 
+                               n_trials             = CONFIG.optconfig.n_trials,
+                               device               = CONFIG.device,
+                               seed                 = CONFIG.seed,
+                               max_epochs           = CONFIG.modelconfig.max_epochs,
+                               dl_use_amp           = CONFIG.modelconfig.use_amp,
+                               dl_patience          = CONFIG.optconfig.trial_patience,
+                               dl_loss_fn           = CONFIG.modelconfig.dl_loss_fn,
+                               dl_architecture      = dl_architecture,
+                               dl_grad_clip         = CONFIG.modelconfig.grad_clip_norm,
+                               dl_scheduler_name    = dl_architecture.get('scheduler_name', None),
+                               dl_scheduler_params  = dl_architecture.get('scheduler_params', None),
+                               storage              = storage,
+                               load_if_exists       = storage is not None)
     
     # Generate the optimizer instance with the provided configuration
     optimizer = SpaceSearch(config)
-    
-    # Prepare study name:
-    study_path = Path(out_path) / "optim"
-    
-    # If not name provided, generate one based on storage presence and model/experiment details
-    if study_name is not None:
-        pass  
-    
-    # If a storage is provided but no study name, create a deterministic one based on model type, experiment tag and n_folds
-    elif storage is not None:
-        _exp_tag   = Path(out_path).name   # last path component as experiment identifier
-        study_name = f"cv_study_{model_type}_{_exp_tag}_{n_folds}fold"
-        logger.info(f"SQLite storage active — using deterministic study name: '{study_name}'")
-    
-    # If no storage and no name, generate a timestamp-based name to avoid conflicts between independent runs (no resume expected)
-    else:
-        timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-        study_name = f"cv_study_{n_folds}fold_{timestamp}"
     
     # Log configuration before starting optimization
     logger.info(f"Starting optimization : {study_name}")
@@ -325,23 +300,23 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     logger.info(f"  - Load if exists    : {storage is not None}")
     logger.info(f"  - Model             : {model_type}")
     logger.info(f"  - Device            : {CONFIG.device}")
-    logger.info(f"  - Trials            : {CONFIG.n_trials}")
-    logger.info(f"  - Direction         : {CONFIG.direction}")
-    logger.info(f"  - Metric            : {CONFIG.metric}")
-    logger.info(f"  - Lambda penalty    : {CONFIG.lambda_penalty}")
-    logger.info(f"  - Patience          : {CONFIG.patience}")
-    logger.info(f"  - Max epochs        : {CONFIG.max_epochs}")
-    logger.info(f"  - DL patience       : {CONFIG.dl_patience}")
-    logger.info(f"  - DL loss fn        : {CONFIG.dl_loss_fn}")
-    logger.info(f"  - Batch size        : {CONFIG.batch_size}")
+    logger.info(f"  - Trials            : {CONFIG.optconfig.n_trials}")
+    logger.info(f"  - Direction         : {CONFIG.optconfig.direction}")
+    logger.info(f"  - Metric            : {CONFIG.optconfig.metric}")
+    logger.info(f"  - Lambda penalty    : {CONFIG.optconfig.lambda_penalty}")
+    logger.info(f"  - Patience          : {CONFIG.optconfig.trial_patience}")
+    logger.info(f"  - Max epochs        : {CONFIG.modelconfig.max_epochs}")
+    logger.info(f"  - DL patience       : {CONFIG.modelconfig.train_es_patience}")
+    logger.info(f"  - DL loss fn        : {CONFIG.modelconfig.dl_loss_fn}")
+    logger.info(f"  - Batch size        : {CONFIG.dataconfig.batch_size}")
     logger.info(f"  - Architecture      : {dl_architecture}")
     
     try:
-        # Set the global step as fold_idx * max_epochs + epoch for the Hyperband pruner
-        _max_resource = CONFIG.n_folds * CONFIG.max_epochs
+        # Hybrid pruning: fold 0 uses epoch-level steps [0, max_epochs-1], folds 1+ use fold-level steps 
+        _max_resource = CONFIG.modelconfig.max_epochs + max(0, CONFIG.dataconfig.n_folds - 1)
         
-        # Min_resource: earliest step where the pruner may act. Setting to max_epochs // 4
-        _min_resource = max(1, CONFIG.max_epochs // 4)
+        # Min_resource: earliest step where the pruner may act (within fold 0 epoch range)
+        _min_resource = max(1, CONFIG.modelconfig.max_epochs // 4)
         
         # Construct the Hyperband pruner with the specified resource limits and reduction factor
         pruner = optuna.pruners.HyperbandPruner(min_resource     = _min_resource,
@@ -349,17 +324,19 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
                                                 reduction_factor = 3)
         
         # Verbose
-        logger.info(f"  - Pruner            : HyperbandPruner(min={_min_resource}, "
-                    f"max={_max_resource}, r=3) | global step = fold*{CONFIG.max_epochs}+epoch")
+        logger.info("_"*110)
+        logger.info(f"  - Pruner: HyperbandPruner(min={_min_resource}, "
+                    f"max={_max_resource}, r=3) | hybrid: epoch-level fold 0, fold-level folds 1+")
+        logger.info("_"*110)
         
         # Run the optimization process with the defined partitions, study name, direction, metric, and pruner
-        results = optimizer.optimize(partitions= partitions, study_name= study_name, direction= CONFIG.direction, 
-                                     metric         = CONFIG.metric,
+        results = optimizer.optimize(partitions= partitions, study_name= study_name, direction= CONFIG.optconfig.direction, 
+                                     metric         = CONFIG.optconfig.metric,
                                      output_dir     = str(study_path),
                                      save_study     = True,
-                                     patience       = CONFIG.patience,
+                                     patience       = CONFIG.optconfig.trial_patience,
                                      pruner         = pruner,
-                                     lambda_penalty = CONFIG.lambda_penalty
+                                     lambda_penalty = CONFIG.optconfig.lambda_penalty
                                      )
         
         # Log results
@@ -407,21 +384,20 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
             },
             'architecture': dl_architecture,
             'config': {
-                'direction'      : CONFIG.direction,
-                'metric'         : CONFIG.metric,
-                'lambda_penalty' : CONFIG.lambda_penalty,
-                'patience'       : CONFIG.patience,
-                'max_epochs'     : CONFIG.max_epochs,
-                'dl_patience'    : CONFIG.dl_patience,
-                'train_patience' : CONFIG.train_patience,   
-                'dl_loss_fn'     : CONFIG.dl_loss_fn,
-                'batch_size'     : CONFIG.batch_size,
-                'device'         : CONFIG.device,
-                'n_jobs'         : CONFIG.n_jobs,
-                'seed'           : CONFIG.seed,
-                'scale_target'   : scale_target,
-                'target_norm'    : target_norm,
-                'epsilon_target' : target_eps
+                'direction'            : CONFIG.optconfig.direction,
+                'metric'               : CONFIG.optconfig.metric,
+                'lambda_penalty'       : CONFIG.optconfig.lambda_penalty,
+                'trial_patience'       : CONFIG.optconfig.trial_patience,
+                'scale features'       : CONFIG.scalingconfig.scale_features,
+                'scaler features name' : CONFIG.scalingconfig.feature_scaler_name,
+                'scale target'         : CONFIG.scalingconfig.scale_target,
+                'scaler target name'   : CONFIG.scalingconfig.target_scaler_name,
+                'max_epochs'           : CONFIG.modelconfig.max_epochs,
+                'train_patience'       : CONFIG.modelconfig.train_es_patience,
+                'dl_loss_fn'           : CONFIG.modelconfig.dl_loss_fn,
+                'batch_size'           : CONFIG.dataconfig.batch_size,
+                'device'               : CONFIG.device,
+                'seed'                 : CONFIG.seed
             }
         }
 
@@ -441,29 +417,33 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
                  model_type      : str, 
                  fig_path        : str, 
                  dl_architecture : dict,
-                 scale_target    : bool            = True,
-                 target_norm     : Optional[str]   = None,
-                 target_eps      : Optional[float] = 1e-6,
-                 n_folds         : int              = 3):
+                 trs_target      : bool,
+                 target_norm     : Optional[str],
+                 n_folds         : int):
     """Run the training mode pipeline for DL tabular models."""
+    
+    # Create unique training timestamp and create result directory
+    timestamp    = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_path = Path(out_path) / f"training_results_{timestamp}"
+    results_path.mkdir(parents=True, exist_ok=True)
     
     # Create the plot generator
     plot_generator = PlotGenerator(config=None, cmap="magma_r")
     
-    # Load best hyperparameters from optimization or use defaults ---------------------------------------------------------#
+    # Verbose
+    logger.info(110*"_")
+    logger.info(f"DLTab {model_type} regressor training and evaluation using {n_folds}-fold cross-validation")
+    logger.info(110*"_")
+
+    # Default nested structure built from dl_architecture
+    _default_model_params = {"architecture_params" : dl_architecture['model_params'],
+                             "optimizer_params"    : dl_architecture['optimizer_params'],
+                             "loss_params"         : dl_architecture['loss_params']}
     
-    # Default nested structure built from dl_architecture (used when no opt study is found or on error)
-    _default_model_params = {
-        "architecture_params" : dl_architecture['model_params'],
-        "optimizer_params"    : dl_architecture['optimizer_params'],
-        "loss_params"         : dl_architecture['loss_params']
-    }
-    
+    # Try Load of optimized hyperparameters if possible -------------------------------------------------------------------#
     try:
         optimization_path = Path(out_path) / "optim"
-
-        # Match both naming conventionsof storage type:
-        all_study_dirs = [d for d in optimization_path.glob("cv_study_*") if d.is_dir()]
+        all_study_dirs    = [d for d in optimization_path.glob("cv_study_*") if d.is_dir()]
 
         # Keep only dirs that have a valid summary for the current model_type
         study_dirs = []
@@ -476,27 +456,32 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
                         study_dirs.append(d)
                 except Exception:
                     pass
-
+        
+        # If name don't specified, take last optimization available
         if study_dirs:
-            # Use the summary file's mtime so SQLite-resumed studies (whose dir mtime did not change)
+
             latest_study = max(study_dirs, key=lambda x: (x / "optimization_summary.yaml").stat().st_mtime)
             opt_summary  = load_yaml_dict(str(latest_study / "optimization_summary.yaml"))
             model_params = opt_summary['best_params']
 
+            logger.info(110*"_")
             logger.info(f"Using optimized parameters from: {latest_study.name}")
+            logger.info(110*"_")
+            
+        # Else, use the default parameters defined by the dl_architecture config  
         else:
             model_params = _default_model_params
+            
+            logger.info(110*"_")
             logger.info(f"No optimization study found for model_type='{model_type}'. "
                         "Using default architecture parameters.")
-
+            logger.info(110*"_")
+            
+    # Catch any exception during the loading of optimization results and fallback to default parameters
     except Exception as e:
         logger.warning(f"Error loading parameters: {e}")
         logger.warning("Falling back to default architecture parameters.")
         model_params = _default_model_params
-    
-    logger.info(110*"_")
-    logger.info(f"DLTab {model_type} regressor training and evaluation using {n_folds}-fold cross-validation")
-    logger.info(110*"_")
     
     # Load and prepare data partitions via LEMONscDataManager -------------------------------------------------------------#
     logger.info("Loading and preparing data partitions...")
@@ -504,64 +489,76 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     # Handle None categorical features
     catfeats = catfeats if catfeats is not None else []
     
-    # Define feature configuration
+    # Define feature names for job
     feature_names = contfeats + catfeats + target
     
-    # Determine column names after transformation (use first fold as reference)
+    # Determine column dataframe names and filter numerical artifacts (use first fold as reference)
     fold_0_path = feats_path + "/0_fold/train.csv"
     temp_df     = pd.read_csv(fold_0_path, index_col=False)
-    temp_filt   = filter_simulation_artifacts(temp_df, min_denominator_threshold=CONFIG.min_dem_threshold,
-                                              filter_null_mass=True, filter_initial_state=False, verbose=False)
-    temp_feats  = tabular_features(temp_filt, names=feature_names, return_names=False,
-                                   eps_logscale_all_range     = CONFIG.eps_feats,
-                                   eps_logscale_limited_range = CONFIG.epsilon_target)
     
-    # Identify transformed column names
+    temp_filt   = filter_simulation_artifacts(temp_df, min_denominator_threshold= CONFIG.dataconfig.min_dem_thr,
+                                              filter_null_mass     = True,
+                                              filter_initial_state = False, 
+                                              verbose              = False)
+    
+    temp_feats  = tabular_features(temp_filt, names= feature_names, return_names= False,
+                                   eps_logscale_all_range     = CONFIG.scalingconfig.feature_log_eps_all_range,
+                                   eps_logscale_limited_range = CONFIG.scalingconfig.feature_log_eps_lim_range)
+    
+    # Identify transformed column names and ensure desired features
     cont_columns   = [col for col in temp_feats.columns if col in contfeats]
     cat_columns    = [col for col in temp_feats.columns if any(col.startswith(cf+"_") for cf in catfeats)]
     target_columns = [col for col in temp_feats.columns if col in target]
     feature_cols   = cont_columns + cat_columns
     
+    # Verbose
     logger.info("Features configuration:")
     logger.info(f"  - Continuous features  : {contfeats} -> {cont_columns}")
-    logger.info(f"  - Categorical features : {catfeats} -> {cat_columns}")
-    logger.info(f"  - Target               : {target} -> {target_columns}")
+    logger.info(f"  - Categorical features : {catfeats}  -> {cat_columns}")
+    logger.info(f"  - Target               : {target}    -> {target_columns}")
     logger.info(f"  - Total features       : {len(feature_cols)}")
     
-    # Define transform function: filter artifacts then engineer features (consistent with mltrees_pipe)
+    # Define transform function for the dataloader: filter artifacts then engineer features 
     transform_fn = lambda df: tabular_features(
-        filter_simulation_artifacts(df, min_denominator_threshold=CONFIG.min_dem_threshold,
-                                   filter_null_mass=True, filter_initial_state=False, verbose=False),
-        names=feature_names, return_names=False,
-        eps_logscale_all_range     = CONFIG.eps_feats,
-        eps_logscale_limited_range = CONFIG.epsilon_target)
+        filter_simulation_artifacts(df, min_denominator_threshold = CONFIG.dataconfig.min_dem_thr,
+                                    filter_null_mass     = True, 
+                                    filter_initial_state = False, 
+                                    verbose              = False
+                                    ),
+        names                      = feature_names, 
+        return_names               = False,
+        eps_logscale_all_range     = CONFIG.scalingconfig.feature_log_eps_all_range,
+        eps_logscale_limited_range = CONFIG.scalingconfig.feature_log_eps_lim_range
+        )
     
     # Load test set and build target scaler -------------------------------------------------------------------------------#
     test_path  = feats_path + "/test.csv"
     test_df    = pd.read_csv(test_path, index_col=False)
-    filt_test  = filter_simulation_artifacts(test_df, min_denominator_threshold=CONFIG.min_dem_threshold,
-                                             filter_null_mass=True, filter_initial_state=False)
-    feats_test = tabular_features(filt_test, names=feature_names, return_names=False,
-                                  eps_logscale_all_range     = CONFIG.eps_feats,
-                                  eps_logscale_limited_range = CONFIG.epsilon_target)
-    y_test     = feats_test[target_columns].astype(np.float32).to_numpy().flatten()
+
+    # Filter the artifacts and create the input/target vector
+    filt_test  = filter_simulation_artifacts(test_df, min_denominator_threshold= CONFIG.dataconfig.min_dem_thr,
+                                             filter_null_mass     = True, 
+                                             filter_initial_state = False)
+    feats_test = tabular_features(filt_test, names= feature_names, return_names= False,
+                                  eps_logscale_all_range     = CONFIG.scalingconfig.feature_log_eps_all_range,
+                                  eps_logscale_limited_range = CONFIG.scalingconfig.feature_log_eps_lim_range)
+    y_test     = feats_test[target_columns].astype(np.float32).to_numpy().flatten() 
     
-    # Create target scaler for the test set
-    if scale_target and target_norm is not None and target_norm in filt_test.columns:
-        test_norm     = filt_test[target_norm].astype(np.float32).to_numpy().flatten()
-        scaler_test   = TargetLogScaler(norm_factor=test_norm, epsilon=target_eps)
-        y_test_scaled = scaler_test.inverse_transform(y_test)
+    # Create target transformer for the test set (recover physical units and keep track of the ratio)
+    if trs_target and target_norm is not None and target_norm in filt_test.columns:
+        test_norm   = filt_test[target_norm].astype(np.float32).to_numpy().flatten()
+        test_trs    = TargetTransform(transformation = CONFIG.scalingconfig.target_transform, 
+                                      norm_factor    = test_norm, 
+                                      epsilon        = CONFIG.scalingconfig.target_log_eps)
+        y_test_phys = test_trs.inverse_transform(y_test)
     
-    elif scale_target:
-        scaler_test = TargetLogScaler(norm_factor=None, epsilon=target_eps)
-        logger.warning(f"Target normalization column '{target_norm}' not found in test set. "
-                       "A default scaler with no norm_factor will be used.")
-        y_test_scaled = scaler_test.inverse_transform(y_test)
-    
-    else:
-        scaler_test   = None
-        y_test_scaled = y_test
-        logger.warning("No scaling will be applied.")
+    # If none information, use identity transformation
+    else:        
+        # Verbose warning
+        logger.warning(f"A default identity transformation will be used as configuration is not well defined.")
+        
+        test_trs    = TargetTransform(transformation="identity", norm_factor=None, epsilon=None)
+        y_test_phys = test_trs.inverse_transform(y_test)
     
     # Verbose warning 
     logger.warning(f"The scaler is not integrated in LEMONscDataManager for the test set. "
@@ -571,34 +568,74 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     results        = []
     predictions    = []
     trained_models = []
-    
+        
     for fold in range(n_folds):
+        
+        # Create fold directory
+        foldpath = results_path / f"fold_{fold}"
+        foldpath.mkdir(parents=True, exist_ok=True)
+
+        # Set fold seed for reproducibility (if applicable, use different seed per fold to avoid identical runs)
+        foldseed = set_numpy_torch_seed(seed_num=CONFIG.seed, idx=fold)
+        
+        # Verbose
         logger.info(f"Processing fold {fold + 1}/{n_folds}")
         
+        # Configure the scalers for the data
+        should_scale  = CONFIG.scalingconfig.scale_features and CONFIG.scalingconfig.scale_target
+        scaler_kwargs = {
+                        "feats"  : {
+                            "scaler_name"   : CONFIG.scalingconfig.feature_scaler_name,
+                            "scaler_kwargs" : CONFIG.scalingconfig.feature_scaler_kward},
+                        "target" : {
+                            "scaler_name"   : CONFIG.scalingconfig.target_scaler_name,
+                            "scaler_kwargs" : CONFIG.scalingconfig.target_scaler_kward},
+                        }
+    
         # Load fold data using LEMONscDataManager
-        data_manager = LEMONscDataManager(dataset_root     = feats_path,
-                                          fold             = fold,
-                                          target_column    = target_columns[0],
-                                          feature_columns  = feature_cols,
-                                          metadata_columns = [target_norm] if target_norm is not None else None,
-                                          transform_fn     = transform_fn,
-                                          batch_size       = CONFIG.batch_size,
-                                          num_workers      = CONFIG.num_workers,
-                                          device           = CONFIG.device,
-                                          logger           = logger)
+        data_manager = LEMONscDataManager(
+            dataset_root     = feats_path,
+            fold             = fold,
+            target_column    = target_columns[0],
+            feature_columns  = feature_cols,
+            metadata_columns = [target_norm] if target_norm is not None else None,
+            transform_fn     = transform_fn,
+            batch_size       = CONFIG.dataconfig.batch_size,
+            num_workers      = CONFIG.dataconfig.num_workers,
+            seed             = foldseed,
+            device           = CONFIG.device,
+            logger           = logger,
+            scale            = should_scale,
+            scaler_kwargs    = scaler_kwargs,
+            scaler_dir       = foldpath
+            )
         
         # Load train, validation and test partitions
         data_manager.setup(load_train=True, load_val=True, load_test=True)
         
+        # Retrieve the feature and the target scaler
+        feat_scaler   = data_manager.train_dataset.feat_scaler
+        target_scaler = data_manager.train_dataset.target_scaler
+
+        # Verbose
         n_train = len(data_manager.train_dataset) if data_manager.train_dataset else 0
         n_val   = len(data_manager.val_dataset) if data_manager.val_dataset else 0
         logger.info(f"Fold {fold + 1}/{n_folds} loaded: Train={n_train} samples, Val={n_val} samples")
         
         # Merge optimized params into architecture
         fold_model_params = {**dl_architecture['model_params'], **model_params.get("architecture_params", {})}
+
+        # For NODE: route the fold-specific seed so ODST data-aware initialization is reproducible per fold.
+        if model_type == "node":
+            fold_model_params['seed'] = foldseed
+
         fold_opt_name     = model_params.get("optimizer_name", dl_architecture['optimizer_name'])
         fold_opt_params   = {**dl_architecture['optimizer_params'], **model_params.get("optimizer_params", {})}
         lossfn_params     = model_params.get("loss_params", dl_architecture['loss_params'])
+        
+        # Scheduler is a fixed architectural choice, not an optimized hyperparameter
+        fold_schd_name    = dl_architecture.get('scheduler_name', None)
+        fold_schd_params  = dl_architecture.get('scheduler_params', None)
 
         # Initialize the DL model
         model = DLTabularRegressor(model_type       = model_type,
@@ -606,19 +643,24 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
                                    model_params     = fold_model_params,
                                    optimizer_name   = fold_opt_name,
                                    optimizer_params = fold_opt_params,
+                                   scheduler_name   = fold_schd_name,
+                                   scheduler_params = fold_schd_params,
                                    feat_names       = feature_cols,
                                    device           = CONFIG.device,
+                                   use_amp          = True if CONFIG.device =="cuda" else False,
                                    verbose          = CONFIG.verbose)
         
         # Train the model
-        logger.info(f"Training DL model on {n_train} samples (max {CONFIG.max_epochs} epochs)...")
+        logger.info(f"Training DL model on {n_train} samples (max {CONFIG.modelconfig.max_epochs} epochs)...")
         model.fit(train_loader             = data_manager.train_loader,
                   val_loader               = data_manager.val_loader,
-                  epochs                   = CONFIG.max_epochs,
-                  loss_fn                  = CONFIG.dl_loss_fn,
+                  epochs                   = CONFIG.modelconfig.max_epochs,
+                  loss_fn                  = CONFIG.modelconfig.dl_loss_fn,
                   loss_params              = lossfn_params,
-                  early_stopping_patience  = CONFIG.train_patience,
-                  verbose_epoch            = 10)
+                  early_stopping_patience  = CONFIG.modelconfig.train_es_patience,
+                  use_grad_clipping        = True if CONFIG.modelconfig.grad_clip_norm is not None else False,
+                  grad_clip_max_norm       = CONFIG.modelconfig.grad_clip_norm,
+                  verbose_epoch            = 1)
         
         # Load best weights from early stopping
         model.load_best_weights()
@@ -627,17 +669,20 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         # Generate predictions on test set
         y_pred = model.predict(data_manager.test_loader)
         
-        # Transform predictions to original scale
-        if scaler_test is not None:
-            y_pred_scaled = scaler_test.inverse_transform(y_pred)
+        # Transform predictions to original scale physical scale
+        if target_scaler is not None:
+            y_pred_scaled = target_scaler.inverse_transform(y_pred)
+            y_pred_phys   = test_trs.inverse_transform(y_pred_scaled)
+        
         else:
-            y_pred_scaled = np.clip(y_pred, 0, None)
+            y_pred_phys = test_trs.inverse_transform(y_pred)
         
         # Calculate metrics
-        fold_metrics = {'fold': fold, **compute_metrics(y_test_scaled, y_pred_scaled)}
+        fold_metrics = {'fold': fold, **compute_metrics(y_test_phys, y_pred_phys)}
         
+        # Store fold metrics and predictions for later aggregation and visualization
         results.append(fold_metrics)
-        predictions.append({'fold': fold, 'y_pred': y_pred_scaled, 'y_true': y_test_scaled})
+        predictions.append({'fold': fold, 'y_pred': y_pred_phys, 'y_true': y_test_phys})
         
         logger.info(f"Fold {fold + 1} metrics:")
         for metric, value in fold_metrics.items():
@@ -656,12 +701,10 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     }
     
     # Save results --------------------------------------------------------------------------------------------------------#
-    timestamp    = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_path = Path(out_path) / f"training_results_{timestamp}"
-    results_path.mkdir(parents=True, exist_ok=True)
     
     # Save predictions
-    predictions_df = pd.DataFrame({'y_true': y_test_scaled.flatten()})
+    predictions_df = pd.DataFrame({'y_true': y_test_phys.flatten()})
+    
     for fold, pred_dict in enumerate(predictions):
         predictions_df[f'y_pred_fold_{fold}'] = pred_dict['y_pred'].flatten()
     predictions_df.to_csv(results_path / "predictions.csv", index=False)
@@ -682,18 +725,23 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
             'target'      : target_columns
         },
         'dataset_info': {
-            'test_size'      : len(y_test),
-            'scale_target'   : scale_target,
-            'target_norm'    : target_norm,
-            'epsilon_target' : target_eps
+            'test_size'        : len(y_test),
+            'transform target' : trs_target,
+            'transformation'   : CONFIG.scalingconfig.target_transform,
+            'target_norm'      : target_norm,
+            'epsilon_target'   : CONFIG.scalingconfig.target_log_eps
         },
         'config': {
-            'max_epochs'      : CONFIG.max_epochs,
-            'train_patience'  : CONFIG.train_patience,
-            'dl_loss_fn'      : CONFIG.dl_loss_fn,
-            'batch_size'      : CONFIG.batch_size,
-            'device'          : CONFIG.device,
-            'seed'            : CONFIG.seed
+            'scale features'       : CONFIG.scalingconfig.scale_features,
+            'scaler features name' : CONFIG.scalingconfig.feature_scaler_name,
+            'scale target'         : CONFIG.scalingconfig.scale_target,
+            'scaler target name'   : CONFIG.scalingconfig.target_scaler_name,
+            'max_epochs'           : CONFIG.modelconfig.max_epochs,
+            'train_patience'       : CONFIG.modelconfig.train_es_patience,
+            'dl_loss_fn'           : CONFIG.modelconfig.dl_loss_fn,
+            'batch_size'           : CONFIG.dataconfig.batch_size,
+            'device'               : CONFIG.device,
+            'seed'                 : CONFIG.seed
         },
         'metrics': {
             'per_fold'  : results,
@@ -701,13 +749,15 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
         }
     }
     
+    # Save the summary as a YAML file for easy readability and later reference
     with open(results_path / "training_summary.yaml", 'w') as f:
         yaml.dump(summary, f, default_flow_style=False)
     
     # Save trained models
     for fold, model in enumerate(trained_models):
-        model.save_model(str(results_path / f"model_fold_{fold}.pt"))
+        model.save_model(str(results_path / f"fold_{fold}/model.pt"))
     
+    # Verbose final results
     logger.info("Training completed successfully!")
     logger.info("Aggregate metrics:")
     for metric, value in aggregate_metrics.items():
@@ -722,7 +772,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     model_title_map = {"mlp": "MLP", "node": "NODE"}
 
     # Subsample predictions for visualization only 
-    predictions_df_plot = predictions_df.sample(frac=0.3, random_state=CONFIG.seed).reset_index(drop=True)
+    predictions_df_plot = predictions_df.sample(frac=0.5, random_state=CONFIG.seed).reset_index(drop=True)
 
     # Take the mean of all folds
     fold_columns = [f"y_pred_fold_{fold}" for fold in range(n_folds)]
@@ -731,12 +781,391 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     # Generate plots using the plot generator
     plot_generator.create_ml_results_plots(predictions_df_mean = df_results,
                                            true_values_df      = predictions_df_plot["y_true"],
-                                           feature_importances = None,
                                            out_path            = viz_path,
                                            model_name          = model_type,
                                            model_title         = model_title_map)  
 
     return trained_models, summary
+
+# Pipeline Modes [Interpretation] -----------------------------------------------------------------------------------------#
+def run_interpretation(feats_path : str, contfeats : list, catfeats : list, target : list, trs_target : bool, 
+                       target_norm   : Optional[str],
+                       out_path      : str,
+                       model_type    : str,
+                       fig_path      : str,
+                       n_folds       : int = 3,
+                       n_simulations : int = 4):
+    """Run the interpretation pipeline: feature importance and simulation example plots."""
+
+    plot_generator = PlotGenerator(config=None, cmap="magma")
+
+    logger.info(110*"_")
+    logger.info(f"MLBasic {model_type} interpretation mode")
+    logger.info(110*"_")
+
+    # Handle None categorical features -----------------------------------------------------------------------------------#
+    catfeats = catfeats if catfeats is not None else []
+
+    # Load and prepare the test set --------------------------------------------------------------------------------------#
+    test_path  = feats_path + "/test.csv"
+    test_df    = pd.read_csv(test_path, index_col=False)
+
+    feature_names = contfeats + catfeats + target
+    filter_test   = filter_simulation_artifacts(raw_df = test_df,
+                                                min_denominator_threshold = CONFIG.dataconfig.min_dem_thr,
+                                                filter_null_mass          = True,
+                                                filter_initial_state      = False,
+                                                verbose                   = False)
+    filter_test   = filter_test.reset_index(drop=True)
+
+    feats_test, feats_labels = tabular_features(filter_test, names=feature_names, return_names=True,
+                                                eps_logscale_all_range     = CONFIG.scalingconfig.feature_log_eps_all_range,
+                                                eps_logscale_limited_range = CONFIG.scalingconfig.feature_log_eps_lim_range)
+
+    cont_columns   = [col for col in feats_test.columns if col in contfeats]
+    cat_columns    = [col for col in feats_test.columns if any(col.startswith(cf+"_") for cf in catfeats)]
+    target_columns = [col for col in feats_test.columns if col in target]
+    feature_cols   = cont_columns + cat_columns
+
+    X_test = feats_test[feature_cols].astype(np.float32).to_numpy()
+    y_test = feats_test[target_columns].astype(np.float32).to_numpy().flatten()
+
+    # Locate the latest training results directory -----------------------------------------------------------------------#
+    training_dirs = sorted([d for d in Path(out_path).glob("training_results_*") if d.is_dir()],
+                           key=lambda x: x.stat().st_mtime)
+
+    if not training_dirs:
+        raise FileNotFoundError(f"No training results found in {out_path}. Run training first.")
+
+    latest_results = training_dirs[-1]
+    logger.info(f"Loading trained models from: {latest_results.name}")
+
+    # Load trained models and feature scalers from all folds ----------------------------------------------------------#
+    trained_models  = []
+    train_folds     = []
+    feature_scalers = []
+    target_scalers  = []
+    should_scale    = CONFIG.scalingconfig.scale_features
+
+    for fold in range(n_folds):
+        
+        # Load traning partitions per fold
+        train_data_path = feats_path + f"/{fold}_fold/train.csv"
+        train_df        = pd.read_csv(train_data_path, index_col=False)
+
+        # Filter possible numerical artifacts
+        filter_tab_train = filter_simulation_artifacts(raw_df                    = train_df,
+                                                       min_denominator_threshold = CONFIG.dataconfig.min_dem_thr,
+                                                       filter_null_mass          = True,
+                                                       filter_initial_state      = False,
+                                                       verbose                   = False)
+
+        # Extract features and target for train
+        feats_train = tabular_features(filter_tab_train, names=feature_names, return_names=False,
+                                       eps_logscale_all_range     = CONFIG.scalingconfig.feature_log_eps_all_range,
+                                       eps_logscale_limited_range = CONFIG.scalingconfig.feature_log_eps_lim_range)
+
+        X_train = feats_train[feature_cols].astype(np.float32).to_numpy()
+        y_train = feats_train[target_columns].astype(np.float32).to_numpy().flatten()
+
+        train_folds.append({'X_train': X_train, 'y_train': y_train})
+
+        # Load trained models from the latest training results directory
+        model_path = latest_results / f"fold_{fold}/model.pt"
+        model      = DLTabularRegressor.load_model(str(model_path))
+        trained_models.append(model)
+
+        # Load per-fold feature scaler saved during training
+        if should_scale:
+            scaler_path  = latest_results / f"fold_{fold}" 
+            
+            feat_scaler   = FeatureScaler(scaler_name      = CONFIG.scalingconfig.feature_scaler_name,
+                                          scaler_kwargs    = CONFIG.scalingconfig.feature_scaler_kward,
+                                          load_scaler_from = str(scaler_path / "feats_scaler.joblib"))
+            target_scaler = FeatureScaler(scaler_name      = CONFIG.scalingconfig.target_scaler_name,
+                                          scaler_kwargs    = CONFIG.scalingconfig.target_scaler_kward,
+                                          load_scaler_from = str(scaler_path / "target_scaler.joblib"))
+            
+            feature_scalers.append(feat_scaler)
+            target_scalers.append(target_scaler)
+
+            logger.info(f"Loaded model and scaler for fold {fold + 1}/{n_folds}")
+        else:
+
+            feature_scalers.append(None)
+            target_scalers.append(None)
+            logger.info(f"Loaded model for fold {fold + 1}/{n_folds}")
+    
+    # Feature Importance (Expected Gradients via GradientShap) -----------------------------------------------------------#
+    logger.info("Computing feature importance (Expected Gradients / GradientShap) from trained models...")
+    
+    # Select random elements from the test set
+    idx_inputs        = np.random.choice(len(X_test), CONFIG.interconfig.n_explain, replace=False)
+    subset_inputs_raw = X_test[idx_inputs] 
+
+    # Store magnitude, direciton and consistency of the features
+    fold_attr_magnitude   = []  
+    fold_attr_direction   = []  
+    fold_attr_consistency = []  
+
+    # Iterate through all trained models
+    for fold in range(len(trained_models)):
+        model       = trained_models[fold]
+        feat_scaler = feature_scalers[fold]
+        X_train     = train_folds[fold]['X_train']
+
+        # Compute the expected gradients
+        try:
+            model.model.eval()
+            gs = GradientShap(model.model)
+
+            # Sample baseline distribution from the real training data 
+            idx_base      = np.random.choice(len(X_train), CONFIG.interconfig.n_baselines, replace=False)
+            baseline_raw  = X_train[idx_base]                          
+
+            # Scale inputs and baselines independently per fold 
+            if feat_scaler is not None:
+                subset_inputs_scaled = feat_scaler.transform(subset_inputs_raw)   
+                baseline_scaled      = feat_scaler.transform(baseline_raw)        
+            else:
+                subset_inputs_scaled = subset_inputs_raw
+                baseline_scaled      = baseline_raw
+
+            # Make a torch tensor
+            baseline_tensor = torch.tensor(baseline_scaled, dtype=torch.float32)  
+
+            # Batched pass to avoid GPU/memory overflow; accumulate mean |attribution| per feature
+            n_features      = subset_inputs_scaled.shape[1]
+            fold_abs_attr   = np.zeros(n_features, dtype=np.float64)   
+            fold_raw_attr   = np.zeros(n_features, dtype=np.float64)   
+            fold_sq_attr    = np.zeros(n_features, dtype=np.float64)   
+            n_samples_total = 0
+
+            # Compute through batching
+            for i in range(0, len(subset_inputs_scaled), CONFIG.interconfig.batch):
+                batch  = subset_inputs_scaled[i:i + CONFIG.interconfig.batch]
+                inputs = torch.tensor(batch, dtype=torch.float32)
+
+                # GradientShap stochastically samples one baseline per input from baseline_tensor each call
+                attr    = gs.attribute(inputs, baselines=baseline_tensor, n_samples=CONFIG.interconfig.n_samples)
+                attr_np = attr.detach().cpu().numpy()                  
+
+                # Update the count on all features from the results
+                n_samples_total += attr_np.shape[0]
+                fold_abs_attr   += np.abs(attr_np).sum(axis=0)
+                fold_raw_attr   += attr_np.sum(axis=0)
+                fold_sq_attr    += (attr_np ** 2).sum(axis=0)
+
+            # Normalize the results by the total number of samples used
+            fold_abs_attr /= n_samples_total
+            fold_raw_attr /= n_samples_total
+            fold_sq_attr  /= n_samples_total
+
+            # Compute std(|a|) via computational formula: sqrt(E[a²] - E[|a|]²)
+            fold_std_abs_attr = np.sqrt(np.maximum(0, fold_sq_attr - fold_abs_attr ** 2))
+
+            # Compute consistency as 1 - CV(|a|), clamped to [0, 1]
+            magnitude_protected = np.where(fold_abs_attr > 1e-8, fold_abs_attr, 1.0)
+            fold_consistency    = 1.0 - np.minimum(1.0, fold_std_abs_attr / magnitude_protected)
+
+            # Store results
+            fold_attr_magnitude.append(fold_abs_attr)
+            fold_attr_direction.append(fold_raw_attr)
+            fold_attr_consistency.append(fold_consistency)
+
+            logger.info(f"Feature importance extracted for fold {fold + 1}")
+
+        except Exception as e:
+            logger.warning(f"Could not extract feature importance for fold {fold + 1}: {e}")
+
+    # Average across folds that succeeded ---------------------------------------------------------------------------------#
+    if not fold_attr_magnitude:
+        logger.error("Feature importance could not be computed for any fold.")
+
+    # Create output figure directory -------------------------------------------------------------------------------------#
+    viz_path = Path(fig_path)
+    viz_path.mkdir(parents=True, exist_ok=True)
+
+    # Save and plot feature importances -----------------------------------------------------------------------------------#
+    if fold_attr_magnitude:
+
+        n_valid_folds = len(fold_attr_magnitude)
+
+        # importances_by_feature
+        importances_by_feature = {feat: np.array([fold_attr_magnitude[fold][j] for fold in range(n_valid_folds)])
+                                  for j, feat in enumerate(feature_cols)}
+
+        # Direction
+        direction_by_feature = {feat: float(np.mean([fold_attr_direction[fold][j] for fold in range(n_valid_folds)]))
+                                for j, feat in enumerate(feature_cols)}
+
+        # Intra-fold consistency: mean CV(|a|) across folds per feature
+        consistency_by_feature = {feat: float(np.mean([fold_attr_consistency[fold][j] for fold in range(n_valid_folds)]))
+                                  for j, feat in enumerate(feature_cols)}
+
+        # Summary of the results obtained
+        importance_stats = {
+            feat: {
+                'magnitude_mean'       : float(np.mean(v)),
+                'magnitude_std'        : float(np.std(v, ddof=1)) if len(v) > 1 else 0.0,
+                'magnitude_folds'      : v.tolist(),
+                'direction_mean'       : direction_by_feature[feat],
+                'fold_cv'              : float(np.std(v, ddof=1) / np.mean(v)) if (np.mean(v) > 1e-8 and len(v) > 1) else float('inf'),
+                'sample_consistency'   : consistency_by_feature[feat],
+                  } for feat, v in importances_by_feature.items()
+                            }
+
+        # Save feature importance summary
+        importance_path = latest_results / "feature_importance.yaml"
+        with open(importance_path, 'w') as f:
+            yaml.dump(importance_stats, f, default_flow_style=False)
+        logger.info(f"Feature importance saved to: {importance_path}")
+
+        sorted_features = sorted(importance_stats.items(), key=lambda x: x[1]['magnitude_mean'], reverse=True)[:5]
+        logger.info("Top 5 most important features (mean |EG attribution|):")
+        for feat, stats in sorted_features:
+            sign_str = "+" if stats['direction_mean'] > 0 else "-"
+            logger.info(f"  [{sign_str}] {feat}: {stats['magnitude_mean']:.2f} ± {stats['magnitude_std']:.2f}")
+            logger.info(f"       fold_cv={stats['fold_cv']:.3f}  sample_consistency={stats['sample_consistency']:.3f}")
+        
+        # latex_names is anchored to feature_cols (same order as importances_by_feature)
+        latex_names = [feats_labels.get(feat, feat) for feat in feature_cols]
+        model_title = {"mlp": "MLP", "node": "NODE"}
+
+        plot_generator.plot_feature_importance_bars(importances_dict = importances_by_feature,
+                                                    path_save        = str(viz_path),
+                                                    name_file        = model_type,
+                                                    model_name       = model_title.get(model_type, model_type),
+                                                    importance_name  = "EG Attribution",
+                                                    features_names   = latex_names)
+        logger.info("Feature importance plot saved.")
+
+        # --- POC Plot 1: fold_cv bar chart (between-fold variability) ------------------------------------------------#
+        # Sort features by mean importance (descending) for consistent ordering
+        sorted_feat_keys = sorted(importance_stats.keys(),
+                                  key=lambda f: importance_stats[f]['magnitude_mean'], reverse=True)
+        sorted_latex     = [feats_labels.get(f, f) for f in sorted_feat_keys]
+        fold_cv_vals     = [importance_stats[f]['fold_cv'] for f in sorted_feat_keys]
+        # Replace inf (single-fold edge case) with NaN so the bar is omitted cleanly
+        fold_cv_vals     = [v if np.isfinite(v) else np.nan for v in fold_cv_vals]
+
+        fig_cv, ax_cv = plt.subplots(figsize=(10, 5))
+        x_cv = np.arange(len(sorted_latex))
+        ax_cv.bar(x_cv, fold_cv_vals, color="steelblue", alpha=0.8, width=0.6)
+        ax_cv.axhline(0.3, color="red", linestyle="--", linewidth=1.2, label="CV=0.3 threshold")
+        ax_cv.set_xticks(x_cv)
+        ax_cv.set_xticklabels(sorted_latex, rotation=45, ha="right", fontsize=10)
+        ax_cv.set_ylabel("Fold CV  (std / mean  |EG|)", fontsize=12)
+        ax_cv.set_title(f"{model_title.get(model_type, model_type)} – Between-fold variability (fold CV)", fontsize=13)
+        ax_cv.legend(fontsize=10)
+        fig_cv.tight_layout()
+        cv_path = viz_path / f"{model_type}_fold_cv.png"
+        fig_cv.savefig(cv_path, dpi=150)
+        plt.close(fig_cv)
+        logger.info(f"Fold-CV plot saved to: {cv_path}")
+
+        # --- POC Plot 2: sample_consistency heatmap (feature × fold) ------------------------------------------------#
+        # Build matrix shape (n_features_sorted, n_valid_folds)
+        consistency_matrix = np.array(
+            [[fold_attr_consistency[fold][list(feature_cols).index(f)] for fold in range(n_valid_folds)]
+             for f in sorted_feat_keys]
+        )
+
+        fig_ht, ax_ht = plt.subplots(figsize=(max(4, n_valid_folds * 1.2), max(5, len(sorted_latex) * 0.45)))
+        im = ax_ht.imshow(consistency_matrix, aspect="auto", cmap="RdYlGn", vmin=0, vmax=1)
+        ax_ht.set_xticks(np.arange(n_valid_folds))
+        ax_ht.set_xticklabels([f"Fold {k+1}" for k in range(n_valid_folds)], fontsize=10)
+        ax_ht.set_yticks(np.arange(len(sorted_latex)))
+        ax_ht.set_yticklabels(sorted_latex, fontsize=10)
+        ax_ht.set_title(f"{model_title.get(model_type, model_type)} – Sample consistency  (1 - CV(|EG|))", fontsize=13)
+        # Annotate cells with numeric values
+        for row in range(len(sorted_feat_keys)):
+            for col in range(n_valid_folds):
+                ax_ht.text(col, row, f"{consistency_matrix[row, col]:.2f}",
+                           ha="center", va="center", fontsize=8,
+                           color="black" if 0.3 < consistency_matrix[row, col] < 0.85 else "white")
+        fig_ht.colorbar(im, ax=ax_ht, label="Consistency (1 = stable)")
+        fig_ht.tight_layout()
+        ht_path = viz_path / f"{model_type}_consistency_heatmap.png"
+        fig_ht.savefig(ht_path, dpi=150)
+        plt.close(fig_ht)
+        logger.info(f"Consistency heatmap saved to: {ht_path}")
+
+    else:
+        logger.warning("No feature importances could be extracted from the loaded models.")
+    
+    # Simulation Example Plots --------------------------------------------------------------------------------------------#
+    logger.info(f"Selecting {n_simulations} random simulations from the test set...")
+
+    sim_col = "or_sim_path"
+    if sim_col not in filter_test.columns:
+        logger.warning(f"Column '{sim_col}' not found in the test set. Skipping simulation example plots.")
+        return trained_models
+
+    sim_ids  = filter_test[sim_col].unique()
+    n_select = min(n_simulations, len(sim_ids))
+
+    if n_select == 0:
+        logger.warning("No simulations available for example plots.")
+        return trained_models
+
+    n_cols   = min(2, n_select)
+    n_rows   = n_select // n_cols
+    n_select = n_rows * n_cols  # Ensure exact grid fit
+
+    if n_select == 0:
+        logger.warning("No simulations available for example plots.")
+        return trained_models
+
+    rng          = np.random.default_rng(CONFIG.seed)
+    selected_ids = rng.choice(sim_ids, size=n_select, replace=False)
+
+    subplot_data = []
+    for sim_id in selected_ids:
+
+        sim_mask  = filter_test[sim_col] == sim_id
+        sim_rows  = filter_test[sim_mask].sort_values('t')
+        sim_feats = feats_test.loc[sim_rows.index]
+
+        x_time = sim_rows['t'].to_numpy()
+        y_raw  = sim_feats[target_columns[0]].astype(np.float32).to_numpy()
+        X_sim  = sim_feats[feature_cols].astype(np.float32).to_numpy()
+
+        # Build per-simulation transformation of the target
+        if trs_target and target_norm is not None and target_norm in sim_rows.columns:
+            sim_norm = sim_rows[target_norm].astype(np.float32).to_numpy()
+            trs_sim  = TargetTransform(transformation = CONFIG.scalingconfig.target_transform,
+                                       norm_factor    = sim_norm,
+                                       epsilon        = CONFIG.scalingconfig.target_log_eps)
+        else:
+            trs_sim = TargetTransform(transformation="identity", norm_factor=None, epsilon=None)
+        
+        # Inverse-transform ground truth
+        y_true_phys = trs_sim.inverse_transform(y_raw) if trs_sim is not None else np.clip(y_raw, 0, None)
+
+        # Per-fold predictions
+        preds_dict = {}
+        for fold, model in enumerate(trained_models):
+            X_sim_scaled   = feature_scalers[fold].transform(X_sim)
+            y_pred_raw     = model.predict(X_sim_scaled)
+            y_preds_scaled = target_scalers[fold].inverse_transform(y_pred_raw) 
+            y_pred_phys    = trs_sim.inverse_transform(y_preds_scaled)
+            preds_dict[f"model_fold_{fold}"] = {"rescaled_pred": y_pred_phys}
+
+        subplot_data.append({
+            'xaxis'      : {'values': x_time, 'label': r"$t$ [Myr]"},
+            'yaxis'      : {'true_values': y_true_phys, 'label': r"M$_{\rm{MMO}}$ [M$_\odot$]"},
+            'iconds'     : {},
+            'predictions': preds_dict
+        })
+
+    save_path = str(viz_path / f"{model_type}_simulation_examples.png")
+    plot_generator.plot_simulation_predictions_agaist_gt(subplot_data = subplot_data,
+                                                         n_rows       = n_rows,
+                                                         n_cols       = n_cols,
+                                                         save_path    = save_path,
+                                                         figsize      = (8, 4))
+    logger.info(f"Simulation example plots saved to: {save_path}")
     
 def run_prediction():
     print("Prediction mode not yet implemented.")
@@ -752,7 +1181,6 @@ def run_pipeline(args):
                                out_dir  = args.out_dir,
                                fig_dir  = args.fig_dir)
     
-    # Run appropriate mode
     # Auto-select architecture config if not explicitly overridden and model is not mlp
     arch_config = args.arch_config
     if arch_config == "mlp.yaml" and args.model != "mlp":
@@ -760,38 +1188,52 @@ def run_pipeline(args):
         logger.info(f"Auto-selecting architecture config: {arch_config}")
     
     # Build DL architecture from YAML config files
-    dl_architecture = build_dl_architecture(arch_config=arch_config, opt_config=args.opt_config,
-                                            loss_config=args.loss_config)
+    dl_model_config = Path(__file__).resolve().parent.parent / "src" / "models" / "dltab" / "config"
+    dl_architecture = build_dl_architecture_from_YAML(config_path_base=dl_model_config, arch_config=arch_config, 
+                                                      opt_config  = args.opt_config,
+                                                      schd_config = args.schd_config,
+                                                      loss_config = args.loss_config)
     
     if args.mode == "optim":
         run_optimization(feats_path      = path_manager.data_path,
-                         contfeats       = CONFIG.cont_feats,
-                         catfeats        = CONFIG.cat_feats, 
-                         target          = CONFIG.target_feat,
+                         contfeats       = CONFIG.dataconfig.cont_feats,
+                         catfeats        = CONFIG.dataconfig.cat_feats,
+                         target          = CONFIG.dataconfig.target_feat,
                          out_path        = path_manager.base_out,
                          model_type      = args.model,
                          dl_architecture = dl_architecture,
-                         scale_target    = CONFIG.scale_target,
-                         target_norm     = CONFIG.norm_target,
-                         target_eps      = CONFIG.epsilon_target,
-                         n_folds         = CONFIG.n_folds,
+                         trs_target      = CONFIG.scalingconfig.trs_target,
+                         target_norm     = CONFIG.scalingconfig.target_norm_column,
+                         n_folds         = CONFIG.dataconfig.n_folds,
                          study_name      = args.study_name,
                          storage         = args.storage)
     
     elif args.mode == "train":
         run_training(feats_path      = path_manager.data_path,
-                     contfeats       = CONFIG.cont_feats,
-                     catfeats        = CONFIG.cat_feats,
-                     target          = CONFIG.target_feat,
+                     contfeats       = CONFIG.dataconfig.cont_feats,
+                     catfeats        = CONFIG.dataconfig.cat_feats,
+                     target          = CONFIG.dataconfig.target_feat,
                      out_path        = path_manager.base_out,
                      model_type      = args.model,
                      fig_path        = path_manager.fig_path,
                      dl_architecture = dl_architecture,
-                     scale_target    = CONFIG.scale_target,
-                     target_norm     = CONFIG.norm_target,
-                     target_eps      = CONFIG.epsilon_target,
-                     n_folds         = CONFIG.n_folds)
+                     trs_target      = CONFIG.scalingconfig.trs_target,
+                     target_norm     = CONFIG.scalingconfig.target_norm_column,
+                     n_folds         = CONFIG.dataconfig.n_folds)
     
+    elif args.mode == "inter":
+        run_interpretation(feats_path    = path_manager.data_path,
+                           contfeats     = CONFIG.dataconfig.cont_feats,
+                           catfeats      = CONFIG.dataconfig.cat_feats,
+                           target        = CONFIG.dataconfig.target_feat,
+                           trs_target    = CONFIG.scalingconfig.trs_target,
+                           target_norm   = CONFIG.scalingconfig.target_norm_column,
+                           out_path      = path_manager.base_out,
+                           model_type    = args.model,
+                           fig_path      = path_manager.fig_path,
+                           n_folds       = CONFIG.dataconfig.n_folds,
+                           n_simulations = args.n_sims)
+        
     elif args.mode == "predict":
         run_prediction()
 

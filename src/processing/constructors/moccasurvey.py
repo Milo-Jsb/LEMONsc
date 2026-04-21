@@ -10,71 +10,13 @@ from typing         import Tuple, Optional, List, Dict, Union, Any
 from dataclasses    import dataclass, field
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
-from src.utils.directory     import load_json_file
-from src.processing.format   import time_preparation, target_preparation, apply_noise
-from src.processing.features import compute_physical_parameters, determine_formation_channel
-
-# Default configuration of the experiments --------------------------------------------------------------------------------#
-DEFAULT_FEATURE_NAMES = [                                     # - Features names to retrieve (IN ORDER)
-        "t",                                                  #    - Time evolution of the simulation 
-        "t_coll", "t_relax", "t_cc", "t_cross",               #    - Timescales
-        "N",                                                  #    - Number of objects
-        "M_tot", "M_mean", "M_max", "M_crit",                 #    - Mass-related 
-        "M_loss",                                             #    - Mass loss channels
-        "safnum",                                             #    - Safranov Number 
-        "rho(R_h)", "rho(R_c)",                               #    - Density (half mass radius[num], core radius[mass])
-        "R_*", "R_h", "R_core", "R_tid",                      #    - Radii
-        "z",                                                  #    - Metallicity
-        "fracbin",                                            #    - Fraction of binaries of the model
-        "type_sim"]                                           #    - Categorical feature: type of simulation 
-                                                              #      (FAST, SLOW)
-
-DEFAULT_EXPECTED_ORDER = [                                    # - Actual column names of the tabular features in the 
-        "tcoll", "trelax", "tcc", "tcross",                   #   expected order
-        "n", 
-        "m_tot", "m_mean", "m_max", "mcrit", 
-        "m_loss_tot",
-        "safnum",
-        "rho_half", "rohut",
-        "stellar_radius", "rh", "cr", "rtid",
-        "z", 
-        "fracbin"] 
-
-@dataclass
-class MoccaSurveyExperimentConfig:
-    """
-    ________________________________________________________________________________________________________________________
-    Base Configuration elements for MOCCA-Survey Dataset preparation and Experiments.
-    ________________________________________________________________________________________________________________________
-    Parameters:
-    -> feature_names        : List of feature names to retrieve (in order)
-    -> expected_order       : List of actual column names of the tabular features in the expected order
-    -> target_name          : Target name (mass evolution of the IMBH)
-    -> min_points_threshold : Minimum number of points per simulation to be used
-    -> requires_temp_evol   : Whether some features require time-evolution data
-    -> sample_window        : Whether to sample a window of the simulation or use full data
-    -> reset_time_window    : Whether to reset time to zero for the sampled window (if sample_window=True)
-    -> mapping_dics_dir     : Directory path to mapping dictionaries
-    -> time_column_imbh     : Name of the time column in the IMBH history data
-    -> time_column_system   : Name of the time column in the system data
-    -> mass_column_imbh     : Name of the mass column in the IMBH history data
-    ________________________________________________________________________________________________________________________
-    """
-    feature_names        : List[str]      = field(default_factory=lambda: DEFAULT_FEATURE_NAMES.copy())
-    expected_order       : List[str]      = field(default_factory=lambda: DEFAULT_EXPECTED_ORDER.copy())
-    target_name          : str            = "M_MMO"                
-    min_points_threshold : int            = 1000                   
-    requires_temp_evol   : bool           = False                 
-    sample_window        : bool           = True  
-    reset_time_window    : bool           = True                 
-    mapping_dics_dir     : str            = "./rawdata/moccasurvey/mapping_dicts/"
-    time_column_imbh     : str            = "time[Myr]"  
-    time_column_system   : Optional[str]  = "tphys"
-    mass_column_imbh     : str            = "massNew[Msun](10)"
-    downsample_max_count : int            = 100
-    downsample_auto_bins : bool           = True
-    histogram_bins       : int            = 200
+from src.utils.directory                        import load_json_file
+from src.processing.format                      import time_preparation, target_preparation, apply_noise
+from src.processing.features                    import compute_physical_parameters
+from src.processing.constructors.utils._formats import _mocca_imbh_history_init_conds_header_columns, _load_mocca_system_data
+from src.processing.constructors.utils._config   import MoccaSurveyExperimentConfig
     
+# Initialize default configuration instance for use in functions that require it but not provided explicitly
 def_config = MoccaSurveyExperimentConfig()
 
 # Load MOCCASURVEY simulations files and retrieve information for posterior processing ------------------------------------#
@@ -141,11 +83,9 @@ def load_moccasurvey_imbh_history(file_path: str, init_conds_sim: bool= False, c
             
         # Parse initial conditions and columns for the dataframe ----------------------------------------------------------#
         if init_conds_sim:
-            init_conds, columns = __parse_moccasurvey_imbh_history_init_conds(imbh_path)
+            init_conds, columns = _mocca_imbh_history_init_conds_header_columns(imbh_path)
         else:
-            with open(imbh_path, 'r') as f:
-                for _ in range(86): f.readline()
-                columns = f.readline().strip()[1:].split()
+            _, columns = _mocca_imbh_history_init_conds_header_columns(imbh_path)
         
         # Load main simulation data ---------------------------------------------------------------------------------------#
         if verbose: print("Loading main simulation data with pandas...")
@@ -154,7 +94,9 @@ def load_moccasurvey_imbh_history(file_path: str, init_conds_sim: bool= False, c
         if verbose: print(f"Loaded {len(sim_df)} rows of simulation data")
 
         # Load system.dat file if requested
-        if init_conds_evo: system_df, system_dict = __load_moccasurvey_system_data(system_path)
+        if init_conds_evo: system_df, system_dict = _load_mocca_system_data(system_path, 
+                                                                            config.mapping_dics_dir + "system_columns.json", 
+                                                                            verbose)
 
     except Exception as e:
         print(f"Error: {e}")
@@ -162,15 +104,15 @@ def load_moccasurvey_imbh_history(file_path: str, init_conds_sim: bool= False, c
 
     return [sim_df, init_conds, col_dict, stellar_dict], [system_df, system_dict]
 
-# Process a single MOCCA simulation file ----------------------------------------------------------------------------------#
-def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, meta_dict:Optional[Dict[str, Any]], 
-                                    points_per_sim   : Optional[Union[int, float]], 
-                                    config           : MoccaSurveyExperimentConfig = def_config, 
-                                    environment      : Optional[str]               = None,
-                                    augment          : bool                        = False,
-                                    noise            : bool                        = False, 
-                                    n_virtual        : int                         = 1
-                                    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+# Process a single MOCCA survey simulation file ----------------------------------------------------------------------------------#
+def process_single_moccasurvey_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFrame, meta_dict:Optional[Dict[str, Any]], 
+                                          points_per_sim   : Optional[Union[int, float]], 
+                                          config           : MoccaSurveyExperimentConfig = def_config, 
+                                          environment      : Optional[str]               = None,
+                                          augment          : bool                        = False,
+                                          noise            : bool                        = False, 
+                                          n_virtual        : int                         = 1
+                                          ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Function to preprocess one simulation elements from moccasurvey dataset"""
 
     # Validate the number of input points and determine sampling size only if augmentation is enabled
@@ -230,7 +172,7 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
     def sample_window(reset_time_window: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray]:
         # If sample_size is None, use all available points
         if sample_size is None or sample_size >= n_points:
-            sidx = np.arange(n_points)
+            sidx           = np.arange(n_points)
             df_sampled     = imbh_df.copy()
             system_sampled = system_df.copy()
             
@@ -262,11 +204,13 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
     def make_features(df_sampled, system_sampled, iconds_dict, noise, environment, config):
 
         # Compute cluster features
-        cluster_feats = compute_mocca_cluster_features(system_sampled, df_sampled, iconds_dict, noise, 
-                                                       sim_env        = environment,
-                                                       temp_evol      = config.requires_temp_evol)
+        cluster_feats = compute_moccasurvey_cluster_features(system_sampled, df_sampled, iconds_dict, noise, 
+                                                             sim_env        = environment,
+                                                             temp_evol      = config.requires_temp_evol,
+                                                             mass_column    = config.mass_column_imbh,
+                                                             time_column    = config.time_column_imbh)
         
-        # Get temporal values
+        # Get temporal window and mass evolution for the target variable   
         time_evol = time_preparation(time_evolution = df_sampled[config.time_column_imbh])
         m_evol    = target_preparation(mass_evolution = df_sampled[config.mass_column_imbh])
         
@@ -274,8 +218,12 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
         t = apply_noise(time_evol) if noise else time_evol
         m = apply_noise(m_evol) if noise else m_evol
 
-        # Convert categorical variable to numeric codes
-        fchannel_codes = {"FAST": 0, "SLOW": 1}
+        # Extract initial processed mass of the MMO and store in cluster features
+        cluster_feats["m_mmo_0"] = m[0]
+
+        # Convert categorical variable to numeric codes using config class_labels (supports N classes)
+        class_labels   = getattr(config, 'class_labels', ["FAST", "SLOW"])
+        fchannel_codes = {label: float(i) for i, label in enumerate(class_labels)}
         type_sim_code  = fchannel_codes.get(cluster_feats["type_sim"], np.nan)
 
         # Define numeric features names in the expected order
@@ -326,99 +274,90 @@ def process_single_mocca_simulation(imbh_df: pd.DataFrame, system_df: pd.DataFra
     return np.vstack(feats_all), np.concatenate(targs_all), np.concatenate(idxs_all)
 
 # Retrieve elements from the mocca simulation and compute relevant features -----------------------------------------------#
-def compute_mocca_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFrame, 
-                                   iconds_dict : Optional[Dict[str, Any]] = None, 
-                                   noise       : bool                     = False, 
-                                   sim_env     : Optional[str]            = None,
-                                   temp_evol   : bool                     = False
-                                   ) -> Dict[str, Union[float, str]]:
+def compute_moccasurvey_cluster_features(system_df: pd.DataFrame, imbh_df: Optional[pd.DataFrame] = None,
+                                         iconds_dict : Optional[Dict[str, Any]] = None, 
+                                         noise       : bool                     = False,
+                                         sim_env     : Optional[str]            = None,
+                                         temp_evol   : bool                     = False,
+                                         mass_column : Optional[str]            = None,
+                                         time_column : Optional[str]            = None
+                                         ) -> Dict[str, Union[float, str]]:
     """
     ________________________________________________________________________________________________________________________
     Compute relevant cluster features from a MOCCA simulation data 
     ________________________________________________________________________________________________________________________
     Parameters:
     -> system_df   (pd.DataFrame)             : DataFrame with system evolution data. Mandatory.
-    -> imbh_df     (pd.DataFrame)             : DataFrame with IMBH formation
+    -> imbh_df     (pd.DataFrame)             : DataFrame with IMBH formation history. Optional.
     -> iconds_dict (Optional[Dict[str, Any]]) : Dictionary with initial conditions. Optional.
     -> noise       (bool)                     : Whether to apply noise to the features. Default is False.
-    -> sim_env     (Optional[str])            : Predefined simulation environment type. If None, it will be determined.
-                                                Default is None.
+    -> sim_env     (Optional[str])            : Pre-assigned environment label (e.g. 'FAST', 'SLOW', or any
+                                                category from classify_simulations_by_mass). If None, the
+                                                formation channel is determined automatically from imbh_df
+                                                using determine_formation_channel().
     -> temp_evol   (bool)                     : Whether to compute features as temporal evolution (arrays) or single
                                                 values. Default is False
+    -> mass_column (Optional[str])            : Name of the mass column in imbh_df. Used for automatic channel
+                                                determination when sim_env is None.
+    -> time_column (Optional[str])            : Name of the time column in imbh_df. Used for automatic channel
+                                                determination when sim_env is None.
     ________________________________________________________________________________________________________________________
     Returns:
-        - features_dict (Dict[str, Union[float, str]]) : Dictionary with computed cluster features.
-    ________________________________________________________________________________________________________________________
-    Notes:
-        - compute_mocca_cluster_features() is design to work with the output of MOCCA simulations. It extracts key cluster
-          properties from the system evolution data and computes derived features using established physical formulas.
-          Any changes in the MOCCA output format may require adjustments to this function.
-        
-        - If temp_evol is True, features will be returned as arrays representing their evolution over for the full 
-          simulation, meaning an output with dimensions:
-            - Dictionary[key]    : np.ndarray of len() = n_dimensions, where each element inside correspond to the full
-              temporal evolution of that feature, for each simulation, which is not necessary an homogeneous array, as some 
-              features are scalar and not all simulations have the same temporal resolution or evolution time.
-        
-        - If temp_evol is False, features will be returned as single values representing the initial state of the cluster.
-          The output will have the following dimensions:
-            - Dictionary[key]    : np.ndarray of len() = n_dimensions, where each element inside correspond to the initial 
-              value of that feature. In here all arrays share the same dimentions so its homogeneous, and the relevant 
-              leghtn of each array its given by the number of simulations processed.
+        - features_dict (Dict[str, Union[float, str]]) : Dictionary with computed cluster features, including
+          'type_sim' with the assigned environment/category label.
     ________________________________________________________________________________________________________________________
     """
     # Extract base values from the simulation data ------------------------------------------------------------------------#
     try: 
         if temp_evol:
             
-            n_total    = system_df["nt"].values - system_df["nbb"].values + (2*system_df["nbb"].values)
-            m_loss_tot = system_df["sloses"].values 
-
-                         
+            n_total = system_df["nt"].values - system_df["nbb"].values + (2*system_df["nbb"].values)
+            f_bin   = system_df["nbb"].values / system_df["nt"].values   
+                      
             base_values = {
-                'tau'         : np.max(system_df["tphys"].values) - system_df["tphys"].values,
-                'rh'          : system_df["r_h"].values,
-                'v_disp'      : system_df["vc"].values,
-                'm_tot'       : system_df["smt"].values,
-                'n'           : n_total,
-                'm_mean'      : system_df["atot"].values,
-                'm_max'       : system_df["smsm"].values,
-                "m_loss_tot"  : m_loss_tot,
-                'rohut'       : system_df["rohut"].values,
-                'cr'          : system_df["rc"].values,
-                'rtid'        : system_df["rtid"].values
+                'tau'    : np.max(system_df["tphys"].values) - system_df["tphys"].values,
+                'rh'     : system_df["r_h"].values,
+                'v_disp' : system_df["vc"].values,
+                'm_tot'  : system_df["smt"].values,
+                'n'      : n_total,
+                'm_mean' : system_df["atot"].values,
+                'm_max'  : system_df["smsm"].values,
+                'rohut'  : system_df["rohut"].values,
+                'cr'     : system_df["rc"].values,
+                'rtid'   : system_df["rtid"].values,
+                'r70%'   : system_df["r70%"].values,
+                'fbin'   : f_bin
             }
             
         else:
             n_total    = system_df["nt"].iloc[0] - system_df["nbb"].iloc[0] + (2*system_df["nbb"].iloc[0])
-            m_loss_tot = system_df["sloses"].iloc[-1]                         
-                         
+            f_bin      = system_df["nbb"].iloc[0] / system_df["nt"].iloc[0]
+             
             base_values = {
-                'tau'         : system_df["tphys"].iloc[-1],
-                'rh'          : system_df["r_h"].iloc[0],
-                'v_disp'      : system_df["vc"].iloc[0],
-                'm_tot'       : system_df["smt"].iloc[0],
-                'n'           : n_total,
-                'm_mean'      : system_df["atot"].iloc[0],
-                'm_max'       : system_df["smsm"].iloc[0],
-                "m_loss_tot"  : m_loss_tot,
-                'rohut'       : system_df["rohut"].iloc[0],
-                'cr'          : system_df["rc"].iloc[0],
-                'rtid'        : system_df["rtid"].iloc[0]
+                'tau'    : system_df["tphys"].iloc[-1],
+                'rh'     : system_df["r_h"].iloc[0],
+                'v_disp' : system_df["vc"].iloc[0],
+                'm_tot'  : system_df["smt"].iloc[0],
+                'n'      : n_total,
+                'm_mean' : system_df["atot"].iloc[0],
+                'm_max'  : system_df["smsm"].iloc[0],
+                'rohut'  : system_df["rohut"].iloc[0],
+                'cr'     : system_df["rc"].iloc[0],
+                'rtid'   : system_df["rtid"].iloc[0],
+                'r70%'   : system_df["r70%"].iloc[0],
+                'fbin'   : f_bin
             }
-
+        
         if iconds_dict:
-            z_val       = float(iconds_dict["zini"])
-            fracbin_val = float(iconds_dict.get("fracb", 0.0))
-
+            z_val = float(iconds_dict["zini"])
+            
+            # Repeat scalar values to match temporal dimension
             if temp_evol:
-                # Repeat scalar values to match temporal dimension
-                n_timesteps            = len(system_df)
-                base_values["z"]       = np.full(n_timesteps, z_val)
-                base_values["fracbin"] = np.full(n_timesteps, fracbin_val)
+                n_timesteps      = len(system_df)
+                base_values["z"] = np.full(n_timesteps, z_val)
+                
             else:
-                base_values["z"]       = z_val
-                base_values["fracbin"] = fracbin_val 
+                base_values["z"] = z_val
 
     except Exception as e:
         raise ValueError(f"Error extracting base cluster features: {e}")
@@ -438,57 +377,13 @@ def compute_mocca_cluster_features(system_df: pd.DataFrame, imbh_df: pd.DataFram
                         m_mean_values    = base_values['m_mean'],
                         m_max_values     = base_values['m_max'],
                         comp_stellar_val = temp_evol)
-            
-    # Type of the environment of the simulation (repeat if the simulation its already classified)
-    if (sim_env is not None):  env = sim_env
-    
-    # Determine the formation channel based on initial core density and time of IMBH formation if first seen
-    else: env = determine_formation_channel(imbh_df, mass_column_name="massNew[Msun](10)", time_column_name="time[Myr]")
 
-   
-    return {**base_values, **derived_values, 'type_sim': env}
+    # Determine simulation category label
+    if sim_env is not None:
+        type_sim = sim_env
+    else:
+        type_sim = np.nan
 
-# [Helper] Text to Dictionary IMBH file  ----------------------------------------------------------------------------------#
-def __parse_moccasurvey_imbh_history_init_conds(file_path: str) -> Tuple[Dict[str, Any], List[str]]:
-    """Helper function that load initial conditions from a single IMBH-HISTORY.DAT file into a dictionary, with respective 
-    column names for the dataframe"""
-    init_conds = {}
-    with open(file_path, 'r') as f:
-        for i in range(86):
-            line = f.readline().strip()
-            if line.startswith('#'):
-                parts = line[1:].strip().split('=', 1)
-                if len(parts) == 2:
-                    key, value = parts[0].strip(), parts[1].strip()
-                    init_conds[key] = value
-        columns_line = f.readline().strip()
-        if not columns_line.startswith('#'):
-            raise ValueError("Expected column headers at line 86")
-        columns = columns_line[1:].split()
-    return init_conds, columns
-
-# [Helper] Text to Dictionary System file ----------------------------------------------------------------------------------#
-def __load_moccasurvey_system_data(system_path:str, verbose:bool=False, config:MoccaSurveyExperimentConfig=def_config
-                                   ) -> Tuple[Optional[pd.DataFrame], Optional[Dict[str, Any]]]:
-    """Helper function that load the evolution of the initial conditions of the system from a single MOCCA-Survey 
-    simulation, load column description into a dictionary"""
-    
-    if not os.path.exists(system_path):
-        print(f"Warning: System file not found: {system_path}")
-        return None, None
-
-    # Load column mapping dictionary, assuming correct placement or files
-    with open(config.mapping_dics_dir + 'system_columns.json', 'r') as f:
-        system_dict = json.load(f)
-
-    column_names = [system_dict[str(i)]['column'] for i in range(1, len(system_dict) + 1) if str(i) in system_dict]
-
-    system_df = pd.read_csv(system_path, sep="\s+", header=None, names=column_names)
-    system_df = system_df.apply(pd.to_numeric, errors='coerce')
-    
-    if verbose:
-        print(f"Successfully loaded {len(system_df)} rows of system evolution data with {len(column_names)} columns")
-
-    return system_df, system_dict
+    return {**base_values, **derived_values, "type_sim": type_sim}
 
 #--------------------------------------------------------------------------------------------------------------------------#

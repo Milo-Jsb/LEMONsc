@@ -1,0 +1,16 @@
+List of experiments for random fold downsampling and random fold partition
+python3 -m jobs.dataset_pipe --mode study --exp_name downlog_noclass --partition random
+python3 -m jobs.dataset_pipe --mode comp --exp_name downlog_noclass --partition random
+python3 -m jobs.dataset_pipe --mode feats --exp_name downlog_noclass --partition random --aug --down --down_category none --folds 3
+python3 -m jobs.dataset_pipe --mode plot --exp_name downlog_noclass
+python3 -m jobs.dataset_pipe --mode dist --exp_name downlog_noclass
+
+List of experiments for environment fold downsampling and environment fold partition
+python3 -m jobs.dataset_pipe --mode study --exp_name downlog_envclass --partition env
+python3 -m jobs.dataset_pipe --mode comp --exp_name downlog_envclass --partition env
+python3 -m jobs.dataset_pipe --mode feats --exp_name downlog_envclass --partition env --aug --down --down_category environment --folds 3
+
+List of experiments for mass fold downsampling and mass fold partition
+python3 -m jobs.dataset_pipe --mode study --exp_name downlog_massclass --partition mass
+python3 -m jobs.dataset_pipe --mode feats --exp_name paperv5 --partition mass --aug --down --down_category mass --folds 3 --no_snake_draft
+

@@ -11,7 +11,7 @@ import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from pathlib         import Path
-from typing          import Dict, List, Optional, Union, Callable, Any, Sequence
+from typing          import Dict, List, Optional, Union, Callable, Any
 from sklearn.metrics import get_scorer
             
 # Custom functions --------------------------------------------------------------------------------------------------------#
@@ -61,50 +61,61 @@ class SpaceSearch:
     -> SpaceSearch is made to work upon MLBasicRegressor, MLTreeRegressor, and DLTabularRegressor.
     ________________________________________________________________________________________________________________________
     """
+    # Class-level constants: regressor type mapping
+    MODEL_GRID_MAP = {
+        "mlbasic": ["elasticnet", "linearsvr"],
+        "mltrees": ["rf", "lightgbm", "xgboost"],
+        "dltab"  : ["mlp", "node"]
+    }
+    
+    # Class-level constants: parameter grid mapping for each model type (functions that take a trial and return params)
+    PARAM_GRID_MAP = {
+        "elasticnet" : ElasticNetGrid,
+        "linearsvr"  : LinearSVRGrid,
+        "rf"         : RandomForestGrid,
+        "lightgbm"   : LightGBMGrid,
+        "xgboost"    : XGBoostGrid,
+        "mlp"        : MLPGrid,
+        "node"       : NODEGrid
+    }
+    
+    # Class-level constants: validation and normalization functions for each regressor type
+    VALIDATE_FN = {
+        "mlbasic" : validate_data_ml, 
+        "mltrees" : validate_data_ml, 
+        "dltab"   : validate_data_dl
+    }
+    
+    # Class-level constants: normalization functions for each regressor type (to standardize partition format)
+    NORMALIZE_FN = {
+        "mlbasic" : normalize_partitions_ml, 
+        "mltrees" : normalize_partitions_ml, 
+        "dltab"   : normalize_partitions_dl
+    }
+    
+    # Recoverable errors that should mark a trial as pruned, not crash the study
+    _RECOVERABLE_ERRORS = (torch.cuda.OutOfMemoryError, RuntimeError, ValueError)
+    
+    
+    # Initialization method for SpaceSearch, taking a configuration dataclass as input -----------------------------------#
     def __init__(self, config: SpaceSearchConfig):
         """Initialize SpaceSearch with configuration"""
         
         # Store configuration and set up logging
         self.config = config
-        self.logger = self.__setup_logging()
+        self.logger = self._setup_logging()
         
         # Initialize sampler
         self.sampler = config.sampler or optuna.samplers.TPESampler(seed=config.seed, multivariate=True)
         
-        # Tag of regressor type and mapping to model types
-        self.model_grid_map = {
-            "mlbasic": ["elasticnet", "linearsvr"],
-            "mltrees": ["rf", "lightgbm", "xgboost"],
-            "dltab"  : ["mlp", "node"]
-                              }
-        
         # Set model type from config, and infer regressor type
         self.model_type = config.model_type
-        self.regressor  = next((key for key, models in self.model_grid_map.items() if self.model_type in models), None)
+        self.regressor  = next((key for key, models in self.MODEL_GRID_MAP.items() if self.model_type in models), None)
         
         # If no regressor is found, raise error
         if self.regressor is None:
-            valid_models = [model for models in self.model_grid_map.values() for model in models]
+            valid_models = [model for models in self.MODEL_GRID_MAP.values() for model in models]
             raise ValueError(f"Unsupported model_type: '{config.model_type}'. Valid options are: {valid_models}")
-        
-        # Parameter grid mapping
-        self.param_grid_map = {
-            "elasticnet" : ElasticNetGrid,
-            "linearsvr"  : LinearSVRGrid,
-            "rf"         : RandomForestGrid,
-            "lightgbm"   : LightGBMGrid,
-            "xgboost"    : XGBoostGrid,
-            "mlp"        : MLPGrid,
-            "node"       : NODEGrid
-                              }
-        
-        # Dispatch maps for validation and normalization 
-        self._validate_fn  = {"mlbasic" : validate_data_ml, 
-                              "mltrees" : validate_data_ml, 
-                              "dltab"   : validate_data_dl}
-        self._normalize_fn = {"mlbasic" : normalize_partitions_ml, 
-                              "mltrees" : normalize_partitions_ml, 
-                              "dltab"   : normalize_partitions_dl}
         
         # Custom metrics registry, if needed for special cases like Huber loss (which requires delta parameter)
         self.custom_metrics = {"huber": lambda y_true, y_pred: huber_loss(y_true, y_pred, delta=self.config.huber_delta)}
@@ -123,7 +134,7 @@ class SpaceSearch:
             self.logger.info(f"SpaceSearch initialized for {self.model_type} model (device={self.config.device})")
     
     # [Helper] Logging ----------------------------------------------------------------------------------------------------#
-    def __setup_logging(self) -> logging.Logger:
+    def _setup_logging(self) -> logging.Logger:
         """Configure logging for the optimization process"""
         logger = logging.getLogger("SpaceSearch")
         if not logger.handlers:
@@ -138,22 +149,32 @@ class SpaceSearch:
         return logger
     
     # [Helper] Model creation ---------------------------------------------------------------------------------------------#
-    def __create_model(self, trial: optuna.trial.Trial, features_names: List[str]
-                       ) -> Union[MLBasicRegressor, MLTreeRegressor, DLTabularRegressor]:
+    def _create_model(self, trial: optuna.trial.Trial, features_names: List[str]
+                      ) -> Union[MLBasicRegressor, MLTreeRegressor, DLTabularRegressor]:
         """Create a model instance with parameters from trial"""
-        if self.model_type not in self.param_grid_map:
+        if self.model_type not in self.PARAM_GRID_MAP:
             raise ValueError(f"Unknown model_type: {self.model_type}")
         
         # Get trial parameters from grid
-        trial_params = self.param_grid_map[self.model_type](trial)
+        trial_params = self.PARAM_GRID_MAP[self.model_type](trial)
         
         # Route based on model type
         if self.regressor == "dltab":
             
+            # Validate dl_architecture keys for DL models
+            if self.config.dl_architecture is None:
+                raise ValueError("dl_architecture must be provided for DL models (mlp, node)")
+            
+            required_arch_keys = {"model_params", "optimizer_params", "loss_params"}
+            missing_keys = required_arch_keys - set(self.config.dl_architecture.keys())
+            if missing_keys:
+                raise ValueError(f"dl_architecture is missing required keys: {missing_keys}. "
+                                 f"Expected: {required_arch_keys}")
+            
             # Deep Learning path: specify fixed and optimizable parameters
-            model_params = self.config.dl_architecture["model_params"]     if self.config.dl_architecture else {}
-            opt_params   = self.config.dl_architecture["optimizer_params"] if self.config.dl_architecture else {}
-            loss_params  = self.config.dl_architecture["loss_params"]      if self.config.dl_architecture else {}
+            model_params = self.config.dl_architecture["model_params"]
+            opt_params   = self.config.dl_architecture["optimizer_params"]
+            loss_params  = self.config.dl_architecture["loss_params"]
             
             # Merge fixed and trial parameters (overwrite the fixed with trial where applicable)
             merge_model = {**model_params, **trial_params["model_params"]}
@@ -164,11 +185,7 @@ class SpaceSearch:
             trial.set_user_attr("delta", merge_loss.get("delta", 1.0))
             
             # Extract optimizer name from architecture config (not from merged opt params)
-            optimizer_name = (self.config.dl_architecture.get("optimizer_name", "adam") 
-                              if self.config.dl_architecture else "adam")
-            
-            # Extract use_amp from model params (training flag, not architecture param)
-            use_amp = merge_model.pop("use_amp", False)
+            optimizer_name = self.config.dl_architecture.get("optimizer_name", "adam")
             
             # Infer in_features from feature names
             in_features = len(features_names)
@@ -179,9 +196,11 @@ class SpaceSearch:
                                        model_params     = merge_model,
                                        optimizer_name   = optimizer_name,
                                        optimizer_params = merge_opt,
+                                       scheduler_name   = self.config.dl_scheduler_name,
+                                       scheduler_params = self.config.dl_scheduler_params,
                                        feat_names       = features_names,
                                        device           = self.config.device,
-                                       use_amp          = use_amp,
+                                       use_amp          = self.config.use_amp,
                                        verbose          = self.config.verbose)
         
         # Route for tree-based models
@@ -199,7 +218,6 @@ class SpaceSearch:
             # Construct the Regressor with the given params
             model = MLBasicRegressor(model_type = self.model_type, model_params = trial_params, 
                                      feat_names = features_names,
-                                     use_scaler = self.config.use_scaler,
                                      device     = self.config.device,
                                      n_jobs     = self.config.n_jobs)
         
@@ -209,26 +227,34 @@ class SpaceSearch:
         return model
     
     # [Helper] GPU memory cleanup -----------------------------------------------------------------------------------------#
-    def __cleanup_gpu_memory(self, model: Optional[Union[MLTreeRegressor, MLBasicRegressor, DLTabularRegressor]] = None
-                             ) -> None:
-        """Clean up GPU memory after trial to prevent memory leaks"""
-        # Delete model if provided
-        if model is not None: del model
+    def _cleanup_gpu_memory(self, model: Optional[Union[MLTreeRegressor, MLBasicRegressor, DLTabularRegressor]] = None
+                            ) -> None:
+        """Clean up GPU memory after trial to prevent memory leaks"""        
+        # CPU-only runs have nothing to clean
+        if self.config.device == 'cpu':
+            return
         
-        # Force garbage collection before clearing CUDA cache
+        # For torch-based DL models, move parameters off GPU before deletion
+        if model is not None and isinstance(model, DLTabularRegressor):
+            try:
+                model.model.cpu()
+            except Exception:
+                pass
+        
+        # Drop local reference and collect garbage 
+        del model
         gc.collect()
         
-        # Clear GPU cache if using CUDA
-        if torch.cuda.is_available() and self.config.device != 'cpu':
+        # Release torch CUDA cache
+        if torch.cuda.is_available():
             torch.cuda.empty_cache()
             if self.config.verbose:
-                # Get current memory usage (in MB)
                 allocated = torch.cuda.memory_allocated() / 1024**2 
                 reserved  = torch.cuda.memory_reserved() / 1024**2 
                 self.logger.debug(f"GPU Memory - Allocated: {allocated:.1f}MB, Reserved: {reserved:.1f}MB")
     
     # [Helper] Metric resolution ------------------------------------------------------------------------------------------#
-    def __resolve_metric(self, metric: Union[str, Callable]) -> Callable:
+    def _resolve_metric(self, metric: Union[str, Callable]) -> Callable:
         """Resolve metric to callable function for scoring after the fit"""
         
         # If a str given, check custom metrics first and then sklearn
@@ -238,10 +264,13 @@ class SpaceSearch:
             if metric.lower() in self.custom_metrics:
                 return self.custom_metrics[metric.lower()]
             
-            # Elif use sklearn's get_scorer. This returns a function that accepts (y_true, y_pred, **kwargs) 
+            # Elif use sklearn's get_scorer, preserving its sign convention (e.g., neg_mean_squared_error)
             else:
-                scorer = get_scorer(metric)
-                return scorer._score_func
+                scorer      = get_scorer(metric)
+                sign        = scorer._sign
+                score_func  = scorer._score_func
+                score_kwargs = scorer._kwargs
+                return lambda y_true, y_pred: sign * score_func(y_true, y_pred, **score_kwargs)
             
         # Elif a callable given, return as is
         elif callable(metric):
@@ -252,7 +281,7 @@ class SpaceSearch:
             raise ValueError(f"Invalid metric type: {type(metric)}")
     
     # [Helper] Save study state -------------------------------------------------------------------------------------------#
-    def __save_study(self, output_path: Path, compress: bool = True) -> None:
+    def _save_study(self, output_path: Path, compress: bool = True) -> None:
         """Save study state to disk"""
         
         # Create directory
@@ -263,15 +292,45 @@ class SpaceSearch:
         
         # Store study
         joblib.dump(self.study, save_path, compress=compress)
+    
+    # [Public] Load study state from disk ---------------------------------------------------------------------------------#
+    @staticmethod
+    def load_study(study_path: Union[str, Path]) -> optuna.study.Study:
+        """
+        ____________________________________________________________________________________________________________________
+        Load a previously saved study from a joblib file
+        ____________________________________________________________________________________________________________________
+        Parameters:
+        -> study_path : Path to the joblib file (e.g., 'output/study_name/study_state_compressed.joblib')
+        ____________________________________________________________________________________________________________________
+        Returns:
+        -> optuna.study.Study : The loaded Optuna study object
+        ____________________________________________________________________________________________________________________
+        """
+        study_path = Path(study_path)
+        if not study_path.exists():
+            raise FileNotFoundError(f"Study file not found: {study_path}")
+        return joblib.load(study_path)
             
     # [Helper] Define Optuna objective function ---------------------------------------------------------------------------#
-    def __create_objective(self, partitions: List[Dict], scorer: Callable, direction: str, is_cv : bool = True, 
-                           lambda_penalty : float = 0.0
-                           ) -> Callable[[optuna.trial.Trial], float]:
-        """Create the Optuna objective function for optimization, main check for CV or single partition mode"""
+    def _create_objective(self, partitions: List[Dict], scorer: Callable, direction: str, is_cv : bool = True, 
+                          lambda_penalty : float = 0.0
+                          ) -> Callable[[optuna.trial.Trial], float]:
+        """
+        ____________________________________________________________________________________________________________________
+        Create the Optuna objective function for optimization.
+        ____________________________________________________________________________________________________________________
+        For DL models in CV mode, uses hybrid pruning:
+            - Fold 0   : epoch-level pruning (fine-grained, all trials have data at these steps)
+            - Folds 1+ : fold-level pruning (coarse-grained, using running mean of scorer)
         
-        # Set the list of partitions
+        For ML models or single partition mode, no pruning is applied.
+        ____________________________________________________________________________________________________________________
+        """
+        # Set the list of partitions and check if DL regressor
         partition_list = partitions
+        is_dl          = (self.regressor == "dltab")
+        max_epochs     = getattr(self.config, 'max_epochs', 100) if is_dl else 0
         
         # Create the objective function
         def objective(trial: optuna.trial.Trial) -> float:
@@ -285,22 +344,42 @@ class SpaceSearch:
                 # Loop through each partition and evaluate the model
                 for idx, partition in enumerate(partition_list):
                     # Create model
-                    model = self.__create_model(trial, features_names=partition['features_names'])
+                    model = self._create_model(trial, features_names=partition['features_names'])
                     
-                    # Evaluate partition — pass fold index (for optimization with fold-global report)
-                    score = self.__evaluate_partition(model, partition, scorer, trial=trial, fold_idx=idx)
+                    # For DL CV: enable epoch-level pruning only on fold 0 (hybrid strategy)
+                    enable_pruning = (is_dl and is_cv and idx == 0)
+                    
+                    # Evaluate partition
+                    score = self._evaluate_partition(model, partition, scorer, trial=trial, fold_idx=idx, 
+                                                     enable_pruning=enable_pruning)
                     scores.append(score)
                     
                     # Report intermediate values for CV
                     if is_cv:
                         trial.set_user_attr(f'partition_{idx}_score', score)
                     
+                    # For DL CV folds > 0: fold-level pruning using running mean of scorer
+                    if is_dl and is_cv and idx > 0:
+                        
+                        # Compute running mean of scores up to current fold
+                        running_mean = float(np.mean(scores))
+                        
+                        # Use steps in the post-fold-0 space to avoid collision with epoch-level steps
+                        fold_step = max_epochs + idx
+                        trial.report(running_mean, fold_step)
+                        
+                        if trial.should_prune():
+                            self._cleanup_gpu_memory(model)
+                            model = None
+                            raise optuna.TrialPruned(f"Pruned at fold-level after fold {idx}")
+                    
                     # Clean up GPU memory after each partition evaluation
-                    self.__cleanup_gpu_memory(model)
+                    self._cleanup_gpu_memory(model)
                     model = None  
                 
                 # Calculate final score
                 if is_cv:
+                    # Calculate mean and std of scores across partitions for CV mode, with guard against non-finite std
                     mean_score = float(np.mean(scores))
                     std_score  = float(np.std(scores)) if np.isfinite(np.std(scores)) else 0.0
                     
@@ -309,40 +388,52 @@ class SpaceSearch:
                     trial.set_user_attr('score_std', std_score)
                     trial.set_user_attr('score_mean', mean_score)
                     
-                    # Define the final score with optional penalty for variability across partitions 
-                    final_score = mean_score - lambda_penalty * std_score
+                    # Define the final score with optional penalty for variability across partitions
+                    if direction == "maximize":
+                        final_score = mean_score - lambda_penalty * std_score
+                    else:
+                        final_score = mean_score + lambda_penalty * std_score
                     
-                    # Guard: return worst-case finite value if score is nan/inf (bad trial)
+                    # Guard: prune trial if score is nan/inf to avoid contaminating study.best_value
                     if not np.isfinite(final_score):
-                        return -float('inf') if direction == "maximize" else float('inf')
+                        raise optuna.TrialPruned(f"Non-finite CV score: {final_score}")
                     return final_score
                 
                 # If not CV, return the single partition score (with same guard for non-finite values)
                 else:
                     score = scores[0]
                     if not np.isfinite(score):
-                        return -float('inf') if direction == "maximize" else float('inf')
+                        raise optuna.TrialPruned(f"Non-finite score: {score}")
                     return score
             
             # If trial is pruned, re-raise the exception to let Optuna handle it    
             except optuna.TrialPruned:
                 raise
             
-            # Catch other exceptions to prevent study from crashing and log them
+            # Recoverable errors (OOM, NaN, shape mismatch) — mark as pruned to avoid contaminating best_value
+            except self._RECOVERABLE_ERRORS as e:
+                self.logger.warning(f"Trial {trial.number} failed (recoverable): {e}")
+                raise optuna.TrialPruned(f"Trial failed: {e}")
+            
+            # Unexpected errors (bugs) — let them propagate so Optuna marks them as FAIL, not PRUNED
             except Exception as e:
-                self.logger.warning(f"Trial {trial.number} failed: {e}")
-                return -float('inf') if direction == "maximize" else float('inf')
+                self.logger.error(f"Trial {trial.number} crashed (unexpected): {type(e).__name__}: {e}")
+                raise
             
             # At the end ensure GPU memory is cleaned up to prevent leaks, even if an exception occurred
             finally:
-                if model is not None:
-                    self.__cleanup_gpu_memory(model)
+                if model is not None and self.config.device != 'cpu':
+                    self._cleanup_gpu_memory(model)
         
         return objective
     
     # [Helper] callback for early stopping --------------------------------------------------------------------------------#
-    def __early_stopping_callback(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
+    def _early_stopping_callback(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
         """Handle early stopping logic"""
+        # Skip trials that were pruned or have non-finite values (failed trials)
+        if trial.state != optuna.trial.TrialState.COMPLETE or not np.isfinite(trial.value):
+            return
+        
         current = study.best_value
         
         # Update best value and no improvement count
@@ -365,30 +456,32 @@ class SpaceSearch:
             study.stop()
 
     # [Helper] Router for input validation of data-------------------------------------------------------------------------#
-    def __validate_data(self, partitions: List[Dict]) -> None:
+    def _validate_data(self, partitions: List[Dict]) -> None:
         """Validate input data shapes and types"""
-        self._validate_fn[self.regressor](partitions)
+        self.VALIDATE_FN[self.regressor](partitions)
         
     # [Helper] Router to normalize partitions and ensure standardization of format ----------------------------------------#
-    def __normalize_partitions(self, partitions: List[Dict]) -> List[Dict]:
+    def _normalize_partitions(self, partitions: List[Dict]) -> List[Dict]:
         """Normalize partitions for both ML and DL models"""
-        if self.regressor not in self._normalize_fn:
+        if self.regressor not in self.NORMALIZE_FN:
             raise ValueError(f"Unknown regressor type: {self.regressor}")
-        return self._normalize_fn[self.regressor](partitions)
+        return self.NORMALIZE_FN[self.regressor](partitions)
 
     # [Helper] Router to evaluation methods acording to the type of model selected ----------------------------------------#
-    def __evaluate_partition(self, model: Union[MLBasicRegressor, MLTreeRegressor, DLTabularRegressor], 
-                             partition : Dict, 
-                             scorer    : Callable, 
-                             trial     : Optional[optuna.trial.Trial] = None,
-                             fold_idx  : int                          = 0
+    def _evaluate_partition(self, model: Union[MLBasicRegressor, MLTreeRegressor, DLTabularRegressor], 
+                             partition      : Dict, 
+                             scorer         : Callable, 
+                             trial          : Optional[optuna.trial.Trial] = None,
+                             fold_idx       : int                          = 0,
+                             enable_pruning : bool                         = False
                              ) -> float:
         """Router to appropriate evaluation method based on model type"""
         
         if isinstance(model, DLTabularRegressor):
             if trial is None:
                 raise ValueError("Trial object required for DL model evaluation")
-            return evaluate_partition_dl(model, partition, scorer, trial, self.logger, self.config, fold_idx=fold_idx)
+            return evaluate_partition_dl(model, partition, scorer, trial, self.logger, self.config, 
+                                        fold_idx=fold_idx, enable_pruning=enable_pruning)
         
         elif isinstance(model, MLTreeRegressor) or isinstance(model, MLBasicRegressor):
             return evaluate_partition_ml(model, partition, scorer)
@@ -397,7 +490,7 @@ class SpaceSearch:
             raise ValueError(f"Unknown model type: {type(model)}")
     
     # [Helper] Extract CV results as DataFrame ----------------------------------------------------------------------------#
-    def __extract_cv_dataframe(self) -> pd.DataFrame:
+    def _extract_cv_dataframe(self) -> pd.DataFrame:
         """Extract CV results from completed trials into a DataFrame"""
         return pd.DataFrame([
             {
@@ -412,10 +505,10 @@ class SpaceSearch:
         ])
     
     # Store CV-specific results and visualizations ------------------------------------------------------------------------#  
-    def __save_cv_results(self, output_path: Path) -> None:
+    def _save_cv_results(self, output_path: Path) -> None:
         """Save CV-specific results and visualizations (experimental)"""
         # Extract partition-specific information using helper method
-        cv_results_df = self.__extract_cv_dataframe()
+        cv_results_df = self._extract_cv_dataframe()
         
         # Save detailed CV results
         cv_results_df.to_csv(output_path / 'cv_results.csv', index=False)
@@ -434,7 +527,6 @@ class SpaceSearch:
                  patience       : Optional[int]                             = None,
                  pruner         : Optional[optuna.pruners.BasePruner]       = None,
                  timeout        : Optional[int]                             = None,
-                 catch          : Union[tuple, Sequence[Exception]]         = (ValueError, RuntimeError),
                  callbacks      : Optional[List[Callable]]                  = None,
                  lambda_penalty : float                                     = 0.0
                 ) -> SpaceSearchResult:
@@ -463,7 +555,6 @@ class SpaceSearch:
         -> patience (Optional[int])                      : Early stopping patience
         -> pruner (Optional[optuna.pruners.BasePruner])  : Optuna pruner
         -> timeout (Optional[int])                       : Timeout in seconds
-        -> catch (Union[tuple, Sequence[Exception]])     : Exceptions to catch
         -> callbacks (Optional[List[Callable]])          : Additional callbacks
         -> lambda_penalty (float)                        : Penalty for std in CV mode (default: 0.0)
         ____________________________________________________________________________________________________________________
@@ -488,25 +579,31 @@ class SpaceSearch:
         partition_list = [partitions] if not is_cv else partitions
         
         # Validate and normalize partitions
-        self.__validate_data(partition_list)
-        partitions_normalized = self.__normalize_partitions(partition_list)
+        self._validate_data(partition_list)
+        partitions_normalized = self._normalize_partitions(partition_list)
             
         # Check if pruner is given based on the modeltype
         if (self.regressor == "dltab") and (pruner is None): 
-            warnings.warn("No pruner provided for DL model. Using MedianPruner by default to prevent state leakage.")
+            warnings.warn("No pruner provided for DL model. Using MedianPruner by default.")
+            # Default pruner: warmup covers fold 0 epoch-level steps; fold-level steps come after
             pruner = optuna.pruners.MedianPruner(n_startup_trials = 5,
-                                                 n_warmup_steps   = self.config.dl_patience,
+                                                 n_warmup_steps   = max(1, self.config.max_epochs // 4),
                                                  interval_steps   = 1)
+        
+        # Warn if pruner is provided for non-DL models (pruning has no effect on ML models)
+        if pruner is not None and self.regressor != "dltab":
+            warnings.warn("Pruner has no effect for ML models (no intermediate values reported). Ignoring.")
+            pruner = None
 
-        # Set up early stopping
-        self._early_stopping['patience'] = patience
+        # Reset early stopping state (safe for re-use of SpaceSearch instance across multiple optimize calls)
+        self._early_stopping = {'patience' : patience, 'best_value' : None, 'no_improve_count' : 0}
         
         # Create output directory
         output_path = Path(output_dir) / study_name
         output_path.mkdir(parents=True, exist_ok=True)
         
         # Prepare metric
-        scorer = self.__resolve_metric(metric)
+        scorer = self._resolve_metric(metric)
         
         # Create or load study
         self.study = optuna.create_study(direction      = direction,
@@ -525,6 +622,42 @@ class SpaceSearch:
             self.logger.info(f"Resuming study '{study_name}': {n_already_done} completed trials found. "
                              f"Running {remaining_trials} more (target={self.config.n_trials}).")
             
+            # Seed early stopping state from history so patience is consistent across reloads.
+            if patience and len(self.study.trials) > 0:
+                
+                # Count as complete only those trials that finished successfully for patience count
+                completed_trials  = sorted(
+                    [t for t in self.study.trials if t.state == optuna.trial.TrialState.COMPLETE],
+                    key=lambda t: t.number
+                    )
+                
+                # Set historical best value
+                historical_best   = self.study.best_value
+                
+                # Define improvement based on study direction
+                is_maximize       = (self.study.direction == optuna.study.StudyDirection.MAXIMIZE)
+                no_improve_count  = 0
+                
+                # Compute running best forward in time and count trailing non-improving trials
+                running_best = None
+                for t in completed_trials:
+                    if running_best is None:
+                        running_best     = t.value
+                        no_improve_count = 0
+                    elif (t.value > running_best) if is_maximize else (t.value < running_best):
+                        running_best     = t.value
+                        no_improve_count = 0
+                    else:
+                        no_improve_count += 1
+                
+                # Store best value and no improvement count in early stopping state
+                self._early_stopping['best_value']       = historical_best
+                self._early_stopping['no_improve_count'] = no_improve_count
+                
+                # Log the seeded early stopping state for transparency
+                self.logger.info(f"Early stopping seeded from history: best={historical_best:.6f}, "
+                                 f"no_improve_count={no_improve_count}/{patience}.")
+            
             # If no more trials to run, return existing results immediately without calling optimize again 
             if remaining_trials == 0:
                 self.logger.info("Study already complete — returning existing results.")
@@ -537,7 +670,7 @@ class SpaceSearch:
                                          output_dir  = str(output_path))
         
         # Create unified objective
-        objective = self.__create_objective(partitions     = partitions_normalized,
+        objective = self._create_objective(partitions     = partitions_normalized,
                                             scorer         = scorer,
                                             direction      = direction,
                                             is_cv          = is_cv,
@@ -545,14 +678,24 @@ class SpaceSearch:
         # Set up callbacks
         study_callbacks = callbacks or []
         if patience:
-            study_callbacks.append(self.__early_stopping_callback)
+            study_callbacks.append(self._early_stopping_callback)
         
         # Optimize (n_jobs=1: sequential trials for reproducibility with TPESampler and GPU memory safety)
-        self.study.optimize(objective, n_trials = remaining_trials, timeout = timeout, catch = catch,
+        self.study.optimize(objective, n_trials = remaining_trials, timeout = timeout, catch = (Exception,),
                             callbacks = study_callbacks if study_callbacks else None,
                             n_jobs    = 1)
         
-        # Store results
+        # Store results (guard against all trials being pruned/failed)
+        completed = [t for t in self.study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+        if not completed:
+            self.logger.warning("All trials were pruned or failed. No completed trials to extract results from.")
+            self.best_params    = {}
+            self.best_score     = float('nan')
+            self.trials_history = self.study.trials
+            return SpaceSearchResult(best_params=self.best_params, best_score=self.best_score,
+                                     study=self.study, n_trials=len(self.study.trials),
+                                     output_dir=str(output_path))
+        
         self.best_params    = self.study.best_params
         self.best_score     = self.study.best_value
         self.trials_history = self.study.trials
@@ -560,11 +703,11 @@ class SpaceSearch:
         # Generate visualization and save study
         if save_study:
             if is_cv:
-                self.__save_cv_results(output_path)
+                self._save_cv_results(output_path)
             
             # Create standard Optuna visualizations
             create_visualizations_per_study(self.study, output_path)
-            self.__save_study(output_path)
+            self._save_study(output_path)
 
         return SpaceSearchResult(best_params=self.best_params, best_score=self.best_score, 
                                  study      = self.study,

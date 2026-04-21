@@ -18,8 +18,8 @@ class FilterConfig:
     final_pos        : int   = -1    # Position of last-row data in physical_params entries (window end)
     Mcrit_pos        : int   = 8     # Position of M_crit in simulation data
     Mtot_pos         : int   = 5     # Position of M_total in simulation data
-    M_loss_total_pos : int   = 9     # Position of M_loss_total in simulation data (unused for epsilon)
     Mmmo_pos         : int   = -1    # Position of M_mmo in mmo_mass entries
+    r_h_pos          : int   = 13    # Position of the half mass radius
     k_thres          : float = 0.5   # Multiplier for IQR to set outlier threshold
 
 def_config = FilterConfig()
@@ -179,7 +179,7 @@ def efficiency_mass_ratio_relation(mmo_mass        : Union[List[float], np.ndarr
         of distances) are classified as outliers for further explorations. Outliers are not removed from
         the dataset, but flagged for review.
     
-    Reference: Vergara et al. (2025),  10.48550/arXiv.2508.14260
+    Reference: Vergara et al. (2025), 10.48550/arXiv.2508.14260
     ________________________________________________________________________________________________________________________
     """
     # Compute elements of interest from the input elements
@@ -187,13 +187,12 @@ def efficiency_mass_ratio_relation(mmo_mass        : Union[List[float], np.ndarr
     final_totmass = np.array([entry[config.final_pos][config.Mtot_pos] for entry in physical_params])
     init_mcrit    = np.array([entry[config.sim_pos][config.Mcrit_pos]  for entry in physical_params])
     final_bhmass  = np.array([mmo[config.Mmmo_pos] for mmo in mmo_mass])
+    init_rh       = np.array([entry[config.sim_pos][config.r_h_pos]    for entry in physical_params])
 
     # mass_ratio uses window-start conditions (the "initial" state of the window-as-new-simulation)
     mass_ratio = init_totmass / init_mcrit
 
     # epsilon uses final values only: M_stellar_final = M_tot_final - M_mmo_final
-    # This is consistent regardless of whether a window was applied, because it never relies on
-    # cumulative sloses which is always counted from t=0 of the original simulation.
     epsilon    = final_bhmass / (final_totmass - final_bhmass)
     
     # Define fit from Vergara et al. (2025)
@@ -251,12 +250,16 @@ def efficiency_mass_ratio_relation(mmo_mass        : Union[List[float], np.ndarr
             "labels"     : labels_list,
             "mass_ratio" : mass_ratio,
             "epsilon"    : epsilon,
+            "mtot"       : init_totmass,
+            "rh"         : init_rh,
         },
         "outliers": {
             "paths"      : [p for p, m in zip(path_list, mask_bad) if m],
             "labels"     : [l for l, m in zip(labels_list, mask_bad) if m],
             "mass_ratio" : mass_ratio[mask_bad],
             "epsilon"    : epsilon[mask_bad],
+            "mtot"       : init_totmass[mask_bad],
+            "rh"         : init_rh[mask_bad],
         }
             }
     

@@ -11,16 +11,17 @@ class EarlyStopping:
     By default, assumes lower metric values are better (minimization).
     ________________________________________________________________________________________________________________________
     Args:
-        -patience (int) : Number of epochs to wait for improvement before stopping.
-        -mode     (str) : One of 'min' or 'max'. 
+    -> patience (int) : Number of epochs to wait for improvement before stopping.
+    -> mode     (str) : One of 'min' or 'max'. 
     ________________________________________________________________________________________________________________________
     Attributes:
-        best_metric (float) : Best metric value observed so far.
-        counter     (int)   : Number of epochs without improvement.
-        patience    (int)   : Maximum epochs to wait for improvement.
-        mode        (str)   : Whether to minimize or maximize the metric.
+    -> best_metric (float) : Best metric value observed so far.
+    -> counter     (int)   : Number of epochs without improvement.
+    -> patience    (int)   : Maximum epochs to wait for improvement.
+    -> mode        (str)   : Whether to minimize or maximize the metric.
     ________________________________________________________________________________________________________________________
     """
+    # Initialize the early stopping mechanism -----------------------------------------------------------------------------#
     def __init__(self, patience: int = 10, mode: str = 'min'):
         """Initialize the EarlyStopping instance."""
         # Validate inputs -------------------------------------------------------------------------------------------------#
@@ -34,21 +35,25 @@ class EarlyStopping:
         self.mode        = mode
         self.best_metric = np.inf if mode == 'min' else -np.inf
         self.counter     = 0
-
+    
+    # Define the step function over epoch loop iteration
     def step(self, metric: float) -> tuple[bool, bool]:
         """Evaluate the current metric and determine if training should stop."""
         
+        # Determine if the current metric is an improvement 
         if self.mode == 'min':
             is_best = metric < self.best_metric
         else:
             is_best = metric > self.best_metric
 
+        # Update state based on whether it's the best metric 
         if is_best:
             self.best_metric = metric
             self.counter    = 0
         else:
             self.counter += 1
 
+        # Check if we should stop training 
         stop = self.counter >= self.patience
 
         return stop, is_best

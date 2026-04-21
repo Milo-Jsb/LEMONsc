@@ -34,20 +34,11 @@ class MLBasicRegressor:
     -> ElasticNet : sklearn.linear_model.ElasticNet (CPU only)
     -> LinearSVR  : cuml.svm.LinearSVR (GPU CUDA only)
     ________________________________________________________________________________________________________________________    
-    Notes:
-        - If needed standarization is made through a hardcoded StandardScaler, which is applied internally to input features 
-          before fitting and prediction.
-            - ElasticNet (CPU) : sklearn.preprocessing.StandardScaler.
-            - LinearSVR (GPU)  : cuml.preprocessing.StandardScaler..
-          
-          The scaler state is persisted together with the model via save_model/load_model.
-    ________________________________________________________________________________________________________________________
     """
     
     # Initialization of the Regressor--------------------------------------------------------------------------------------#
     def __init__(self, model_type: str = "elasticnet", model_params: Optional[Dict] = None, 
                  feat_names : Optional[List] = None,
-                 use_scaler : bool           = False, 
                  n_jobs     : Optional[int]  = None,
                  device     : str            = "cpu", 
                  verbose    : bool           = False):
@@ -59,7 +50,6 @@ class MLBasicRegressor:
         -> model_type   (str)  : Mandatory. Type of model to use ('elasticnet', 'linearsvr').
         -> model_params (dict) : Optional. Dictionary containing model-specific hyperparameters.
         -> feat_names   (List) : Optional. List of feature names.
-        -> use_scaler   (bool) : Mandatory. If use standard scaler together with the smodel selected.
         -> n_jobs       (int)  : Optional. Number of cores to use during computation (ElasticNet only).
         -> device       (str)  : Optional. 'cpu' (default) or 'cuda' for GPU acceleration.
                                  Note: LinearSVR (cuML) only supports 'cuda' and will override 'cpu' if specified.
@@ -86,13 +76,11 @@ class MLBasicRegressor:
         self.verbose       = verbose
         self.feature_names = feat_names
         self.device        = device
-        self.use_scaler    = use_scaler
 
         # Internal attributes ---------------------------------------------------------------------------------------------#
         self.is_fitted           = False
         self.importance_type     = DEFAULT_IMPORTANCE_TYPE
         self.feature_importance_ = None
-        self.scaler_             = None             
         
         # Validate model type ---------------------------------------------------------------------------------------------#
         if self.model_type not in SUPPORTED_MODELS:
@@ -155,16 +143,9 @@ class MLBasicRegressor:
             clean_params.pop("device", None)
             clean_params.pop("n_jobs", None)
             
-            # Initialize sklearn StandardScaler for CPU-based ElasticNet if required
-            if self.use_scaler: self.scaler_ = SklearnStandardScaler()
-
             # Verbose
-            if self.verbose: 
-                if self.use_scaler:
-                    print("Using sklearn (StandardScaler|ElasticNet)")
-
-                else:
-                    print("Using sklearn ElasticNet")
+            if self.verbose:
+                print("Using sklearn ElasticNet")
             
             return ElasticNet(**clean_params)
         
@@ -180,16 +161,9 @@ class MLBasicRegressor:
             clean_params.pop("device", None)
             clean_params.pop("n_jobs", None)
 
-            # Initialize cuML StandardScaler for GPU-based LinearSVR
-            if self.use_scaler: self.scaler_ = CumlStandardScaler()
-
             # Verbose
             if self.verbose:
-                if self.use_scaler:
-                    print("Using cuML (StandardScaler|LinearSVR) for GPU acceleration")
-                
-                else:
-                    print("Using cuML LinearSVR for GPU acceleration")
+                print("Using cuML LinearSVR for GPU acceleration")
         
             return LinearSVR(**clean_params)
  
@@ -256,17 +230,8 @@ class MLBasicRegressor:
             # Prepare parameters
             fit_params = dict_params if dict_params is not None else {}
             
-            # Fit the scaler and transform training features if required, else pass the original data
-            if self.use_scaler:
-                X_scaled = self.scaler_.fit_transform(X_train)
-                if self.verbose:
-                    print(f"StandardScaler fitted and applied to training features")
-            
-            else:
-                X_scaled = X_train
-
             # Fit the model on scaled features and flag as fitted
-            self.model.fit(X_scaled, y_train, **fit_params)
+            self.model.fit(X_train, y_train, **fit_params)
             self.is_fitted = True
             
             # Automatically compute and store feature importance after fitting
@@ -303,21 +268,10 @@ class MLBasicRegressor:
         # Input validation ------------------------------------------------------------------------------------------------#
         if not self.is_fitted : raise NotFittedError("Model must be fitted before making predictions")
         if X is None          : raise ValueError("X cannot be None")
-        
-        # Scale input features using the fitted scaler if required, else pass the original data ---------------------------#
-        if self.use_scaler:
-            try:
-                    X_scaled = self.scaler_.transform(X)
-
-            except Exception as e:
-                raise ValueError(f"Error scaling input features: {e}") from e
-
-        else: 
-            X_scaled = X
 
         # Make predictions ------------------------------------------------------------------------------------------------#
         try:           
-            preds = self.model.predict(X_scaled)
+            preds = self.model.predict(X)
             
             return preds
         
@@ -454,8 +408,7 @@ class MLBasicRegressor:
         
         try:
             # Scale input features using the fitted scaler if required, else pass the original data
-            X_scaled = self.scaler_.transform(X) if self.use_scaler else X
-            y_pred   = self.model.predict(X_scaled)
+            y_pred   = self.model.predict(X)
             results  = compute_metrics(y, y_pred, metrics, verbose=self.verbose)
 
             return results
@@ -491,7 +444,6 @@ class MLBasicRegressor:
                 "model_type"          : self.model_type,
                 "model_params"        : self.model_params,
                 "model"               : self.model,
-                "scaler"              : self.scaler_,
                 "is_fitted"           : self.is_fitted,
                 "feature_names"       : self.feature_names,
                 "device"              : self.device,
@@ -560,14 +512,6 @@ class MLBasicRegressor:
             instance.importance_type     = data.get("importance_type", DEFAULT_IMPORTANCE_TYPE)
             instance.feature_importance_ = data.get("feature_importance_", None)
             
-            # Restore scaler state (fallback to fresh scaler for backward compatibility)
-            if "scaler" in data and data["scaler"] is not None:
-                instance.scaler_ = data["scaler"]
-            else:
-                if verbose:
-                    warnings.warn("No scaler found in saved model. A new unfitted scaler was created. "
-                                  "Re-fit or re-save the model to persist the scaler.")
-            
             # Device validation and warnings
             if instance.model_type == "elasticnet" and load_device == "cuda":
                 if verbose:
@@ -606,7 +550,6 @@ class MLBasicRegressor:
             "device"                 : self.device,
             "importance_type"        : self.importance_type,
             "has_feature_importance" : self.feature_importance_ is not None,
-            "scaler_type"           : type(self.scaler_).__name__ if self.scaler_ is not None else None,
         }
         
         # Add model-specific information

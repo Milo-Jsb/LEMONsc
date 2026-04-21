@@ -3,17 +3,18 @@ opencv-python-headless
 chromadb>=0.5.0
 numpy>=1.26.0
 pandas>=2.1.0
-astropy
+astropy>=7.2.0
 scipy>=1.11.0
 scikit-learn>=1.4.0
 tqdm>=4.66.0
 matplotlib>=3.8.0
 requests>=2.31.0
 aiohttp>=3.9.0
-loguru
-optuna
-plotly
+loguru>=0.7.3
+optuna==4.7.0
+plotly==6.6.0
 lightgbm --no-binary lightgbm --config-settings=cmake.define.USE_CUDA=ON
-xgboost
+xgboost==3.2.0
 cudf-cu12==25.2.1
 cuml-cu12==25.2.1
+entmax==1.3

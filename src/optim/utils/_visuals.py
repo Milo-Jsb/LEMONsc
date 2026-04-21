@@ -1,5 +1,7 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
+import logging
 import warnings
+import optuna
 
 import numpy             as np
 import pandas            as pd
@@ -11,6 +13,8 @@ from optuna.importance               import get_param_importances
 from optuna.study                    import Study
 from pathlib                         import Path
 
+logger = logging.getLogger("SpaceSearch")
+
 # [Helper] Create visualizations ------------------------------------------------------------------------------------------#
 def create_visualizations_per_study(study: Study, output_path: Path) -> None:
     """Generate and save visualization plots from a single Optuna study"""
@@ -19,7 +23,7 @@ def create_visualizations_per_study(study: Study, output_path: Path) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
     
     # Check if study has completed trials
-    completed_trials = [t for t in study.trials if t.state == study.trials[0].state.__class__.COMPLETE]
+    completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
     if len(completed_trials) < 2:
         warnings.warn(f"Study has only {len(completed_trials)} completed trial(s). Skipping visualizations.")
         return
@@ -53,7 +57,7 @@ def create_visualizations_per_study(study: Study, output_path: Path) -> None:
             # Save the figure
             save_path = output_path / f"{plot_name}.jpg"
             fig.savefig(save_path, bbox_inches="tight", dpi=600)
-            print(f"✓ Saved {plot_name} to {save_path}")
+            logger.info(f"Saved {plot_name} to {save_path}")
             
             # Close the figure to free memory
             plt.close(fig)

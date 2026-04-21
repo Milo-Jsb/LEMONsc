@@ -5,11 +5,8 @@ import torch
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
 from pathlib import Path
-from typing  import Optional, Union, Dict, Any
+from typing  import Optional, Dict, Any
 from loguru  import logger
-
-# Custom imports ----------------------------------------------------------------------------------------------------------#
-from src.models.dltab.utils.handling import _to_cpu_state_dict
 
 # CheckpointManager Class -------------------------------------------------------------------------------------------------#
 class CheckpointManager:
@@ -24,7 +21,7 @@ class CheckpointManager:
     -> Handle device transitions (CPU/GPU) during save/load
     ________________________________________________________________________________________________________________________
     """
-    
+    # Initialize the manager with optional verbosity for logging ----------------------------------------------------------#
     def __init__(self, verbose: bool = False):
         """
         ____________________________________________________________________________________________________________________
@@ -35,14 +32,18 @@ class CheckpointManager:
         ____________________________________________________________________________________________________________________
         """
         self.verbose = verbose
-    
-    def save(self, path: str, model: torch.nn.Module, model_type: str, model_params: dict,
-             optimizer_name: str, optimizer_params: dict, is_fitted: bool,
-             in_features: int = 5,
-             feature_names: Optional[list] = None, history: Optional[dict] = None,
-             optimizer: Optional[torch.optim.Optimizer] = None,
-             scheduler: Optional[Any] = None, scheduler_name: Optional[str] = None,
-             scheduler_params: Optional[dict] = None) -> None:
+    # Save the model checkpoint to disk with comprehensive error handling --------------------------------------------------#
+    def save(self, path: str, model: torch.nn.Module, model_type: str, model_params: dict, optimizer_name: str, 
+             optimizer_params : dict, 
+             is_fitted        : bool,
+             in_features      : int,
+             feature_names    : Optional[list]                  = None, 
+             history          : Optional[dict]                  = None,
+             optimizer        : Optional[torch.optim.Optimizer] = None,
+             scheduler        : Optional[Any]                   = None, 
+             scheduler_name   : Optional[str]                   = None,
+             scheduler_params : Optional[dict]                  = None
+             ) -> None:
         """
         ____________________________________________________________________________________________________________________
         Save model and training state to disk.
@@ -68,13 +69,14 @@ class CheckpointManager:
         -> ValueError : If save operation fails
         ____________________________________________________________________________________________________________________
         """
-        # Input validation
+        # Input validation ------------------------------------------------------------------------------------------------#
         if not isinstance(path, str):
             raise TypeError("path must be a string")
         
         if not is_fitted and self.verbose:
             logger.warning("Saving model although `is_fitted` is False")
         
+        # Attempt to save the checkpoint with error handling --------------------------------------------------------------#
         try:
             # Create directory if it doesn't exist
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -95,12 +97,13 @@ class CheckpointManager:
             # Save using torch
             torch.save(save_data, path)
             
-            if self.verbose:
-                logger.success(f"Model saved successfully to: {path}")
+            # Verbose
+            if self.verbose: logger.success(f"Model saved successfully to: {path}")
         
         except (OSError, IOError, TypeError, RuntimeError) as e:
             raise ValueError(f"Error saving model: {e}") from e
     
+    # Load the model checkpoint from disk with comprehensive error handling -----------------------------------------------#
     def load(self, path: str) -> Dict[str, Any]:
         """
         ____________________________________________________________________________________________________________________
@@ -118,31 +121,60 @@ class CheckpointManager:
         -> ValueError       : If load operation fails
         ____________________________________________________________________________________________________________________
         """
-        # Input validation
+        # Input validation ------------------------------------------------------------------------------------------------#
         if not isinstance(path, str):
             raise TypeError("path must be a string")
         
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model file not found: {path}")
         
+        # Attempt to load the checkpoint with error handling --------------------------------------------------------------#
         try:
             # Load data from checkpoint (mapped to CPU first)
             checkpoint = torch.load(path, map_location='cpu')
             
-            if self.verbose:
-                logger.success(f"Checkpoint loaded successfully from: {path}")
+            # Verbose
+            if self.verbose: logger.success(f"Checkpoint loaded successfully from: {path}")
             
             return checkpoint
         
+        # Catch common errors during loading and re-raise as ValueError with context --------------------------------------#
         except (OSError, IOError, KeyError, EOFError, RuntimeError) as e:
             raise ValueError(f"Error loading checkpoint: {e}") from e
     
-    def _prepare_save_data(self, model: torch.nn.Module, model_type: str, model_params: dict,
-                          optimizer_name: str, optimizer_params: dict, is_fitted: bool,
-                          in_features: int, feature_names: Optional[list], history: Optional[dict],
-                          optimizer: Optional[torch.optim.Optimizer],
-                          scheduler: Optional[Any], scheduler_name: Optional[str],
-                          scheduler_params: Optional[dict]) -> Dict[str, Any]:
+    # [Helper] Regularize state_dict to CPU for saving/loading across devices ---------------------------------------------#
+    def _to_cpu_state_dict(self, state_dict: dict) -> dict:
+        """
+        ____________________________________________________________________________________________________________________
+        Convert a state_dict with tensors to CPU.
+        ____________________________________________________________________________________________________________________
+        Parameters:
+        -> state_dict (dict) : Model state dictionary potentially containing GPU tensors
+        ____________________________________________________________________________________________________________________
+        Returns:
+        -> dict : State dictionary with all tensors moved to CPU
+        ____________________________________________________________________________________________________________________
+        """
+        cpu_state = {}
+        for k, v in state_dict.items():
+            if isinstance(v, torch.Tensor):
+                cpu_state[k] = v.detach().cpu()
+            else:
+                cpu_state[k] = v
+        return cpu_state
+    
+    # [Helper] Prepare the model and metadata for saving ------------------------------------------------------------------#
+    def _prepare_save_data(self, model: torch.nn.Module, model_type: str, model_params: dict, optimizer_name: str, 
+                           optimizer_params : dict, 
+                           is_fitted        : bool,
+                           in_features      : int, 
+                           feature_names    : Optional[list], 
+                           history          : Optional[dict],
+                           optimizer        : Optional[torch.optim.Optimizer],
+                           scheduler        : Optional[Any], 
+                           scheduler_name   : Optional[str],
+                           scheduler_params : Optional[dict]
+                           ) -> Dict[str, Any]:
         """
         ____________________________________________________________________________________________________________________
         Prepare complete save data dictionary.
@@ -155,11 +187,11 @@ class CheckpointManager:
         -> save_data (dict) : Complete data dictionary ready for saving
         ____________________________________________________________________________________________________________________
         """
-        # Base save data
+        # Base save data dictionary ---------------------------------------------------------------------------------------#
         save_data = {
             "model_type"       : model_type,
             "model_params"     : model_params.copy(),
-            "model_state_dict" : _to_cpu_state_dict(model.state_dict()),
+            "model_state_dict" : self._to_cpu_state_dict(model.state_dict()),
             "optimizer_name"   : optimizer_name,
             "optimizer_params" : optimizer_params.copy(),
             "is_fitted"        : is_fitted,
@@ -169,11 +201,11 @@ class CheckpointManager:
             "history"          : history.copy() if history else {},
         }
         
-        # Save optimizer state if available
+        # Save optimizer state if available -------------------------------------------------------------------------------#
         if optimizer is not None:
             save_data["optimizer_state_dict"] = self._cpu_optimizer_state(optimizer)
         
-        # Save scheduler state and params if available
+        # Save scheduler state and params if available --------------------------------------------------------------------#
         if scheduler is not None:
             save_data["scheduler_name"]       = scheduler_name
             save_data["scheduler_params"]     = scheduler_params
@@ -181,6 +213,7 @@ class CheckpointManager:
         
         return save_data
     
+    # [Helper] Move optimizer state to CPU for saving ---------------------------------------------------------------------#
     def _cpu_optimizer_state(self, optimizer: torch.optim.Optimizer) -> dict:
         """
         ____________________________________________________________________________________________________________________
@@ -204,7 +237,8 @@ class CheckpointManager:
         
         return opt_sd
     
-    def _cpu_scheduler_state(self, scheduler: Any) -> dict:
+    # [Helper] Move scheduler state to CPU for saving ---------------------------------------------------------------------#
+    def _cpu_scheduler_state(self, scheduler: torch.optim.lr_scheduler._LRScheduler) -> dict:
         """
         ____________________________________________________________________________________________________________________
         Move scheduler state to CPU for saving.

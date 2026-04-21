@@ -14,7 +14,7 @@ DEFAULT_METRICS = ["mse", "rmse", "mae", "r2"]
 class Evaluator:
     """
     ________________________________________________________________________________________________________________________
-    Evaluator: Handles model evaluation and metric computation
+    Evaluator: Handles model evaluation and metric computation for DL Regression.
     ________________________________________________________________________________________________________________________
     Responsibilities:
     -> Compute regression metrics (MSE, RMSE, MAE, R²)
@@ -36,9 +36,9 @@ class Evaluator:
         self.predictor = predictor
         self.verbose   = verbose
     
-    def evaluate(self, X: Union[np.ndarray, torch.Tensor, DataLoader], 
-                 y: Union[np.ndarray, torch.Tensor],
-                 metrics: Optional[List[str]] = None) -> Dict[str, float]:
+    def evaluate(self, X: Union[np.ndarray, torch.Tensor, DataLoader], y: Union[np.ndarray, torch.Tensor], 
+                 metrics: Optional[List[str]] = None
+                 ) -> Dict[str, float]:
         """
         ____________________________________________________________________________________________________________________
         Evaluate the model performance using multiple metrics.
@@ -55,13 +55,14 @@ class Evaluator:
         -> ValueError : If X or y are None, or if dimensions don't match
         ____________________________________________________________________________________________________________________
         """
-        # Input validation
+        # Input validation ------------------------------------------------------------------------------------------------#
         if X is None or y is None:
             raise ValueError("X and y cannot be None")
         
         if metrics is None:
             metrics = DEFAULT_METRICS
         
+        # Evaluate the model and compute metrics --------------------------------------------------------------------------#
         try:
             # Get predictions
             y_pred = self.predictor.predict(X)

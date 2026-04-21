@@ -1,5 +1,7 @@
-num_trees    : 128
-depth        : 6
-num_layers   : 1
+num_trees    : 64
+depth        : 5
+num_layers   : 5
 out_features : 1
-dropout      : 0.0
+dropout      : 0.15
+gate         : "entmax15"
+seed         : 42

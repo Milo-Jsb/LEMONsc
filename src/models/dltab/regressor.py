@@ -1,6 +1,4 @@
 # Modules -----------------------------------------------------------------------------------------------------------------#
-import os
-
 import numpy as np
 import torch
 
@@ -18,27 +16,24 @@ from src.utils.directory import load_yaml_dict
 # Check GPU availability
 from src.utils.resources import check_gpu_available
 
-# DLTabular specific imports: Encoder architecture
-from src.models.dltab.encoders.mlp  import MLPRegressor
-from src.models.dltab.encoders.node import NODERegressor
+# DLTabular specific imports: Architecture for regression
+from src.models.dltab.archs  import MLPRegressor, NODERegressor
 
 # DLTabular specific imports: Trainer, Predictor, Evaluator, CheckpointManager
-from src.models.dltab.core.trainer     import Trainer
-from src.models.dltab.core.predictor   import Predictor
-from src.models.dltab.core.evaluator   import Evaluator
-from src.models.dltab.utils.checkpoint import CheckpointManager
+from src.models.dltab.core import Trainer, Predictor, Evaluator, CheckpointManager
 
 # Optimizer selection
 from src.models.dltab.utils.optimizers import select_optimizer
 
 # Helpers
-from src.models.dltab.utils.handling import _setup_logger
+from src.models.dltab.utils.log import _setup_logger
 
 # Constants ---------------------------------------------------------------------------------------------------------------#
 SUPPORTED_MODELS      = ["mlp", "node"]
 SUPPORTED_OPTIMIZERS  = ["adam", "sgd"]
+SUPPORTED_SCHEDULERS  = ["step", "rlrop", "cosine"]
 DEFAULT_METRICS       = ["mse", "rmse", "mae", "r2"]
-DEFAULT_VERBOSE_EPOCH = 10
+DEFAULT_VERBOSE_EPOCH = 1
 
 # Custom Deep Learning Tabular Regressor ----------------------------------------------------------------------------------#
 class DLTabularRegressor:
@@ -137,19 +132,25 @@ class DLTabularRegressor:
         if self.optimizer_name not in SUPPORTED_OPTIMIZERS:
             raise ValueError(f"Unsupported optimizer: {self.optimizer_name}. Supported optimizers: {SUPPORTED_OPTIMIZERS}")
         
+        # Validate scheduler if provided ----------------------------------------------------------------------------------#
+        if self.scheduler_name is not None and self.scheduler_name not in SUPPORTED_SCHEDULERS:
+            raise ValueError(f"Unsupported scheduler: {self.scheduler_name}. Supported schedulers: {SUPPORTED_SCHEDULERS}")
+        
         # Create the class element ----------------------------------------------------------------------------------------#
         if self.verbose: logger.info(f"Initializing {self.model_type} model (device={self.device})...")
         
         try:
+            # Initialize model
             self._init_model()
             
             if self.verbose: logger.success(f"Successfully initialized {self.model_type} architecture")
             
-            # Optimizer is now mandatory
+            # Initialize optimizer
             self._init_optimizer()
             
             if self.verbose: logger.success(f"Successfully initialized {self.optimizer_name} optimizer")
             
+            # Enable AMP if requested and supported
             if self.use_amp:
                 self.scaler = torch.amp.GradScaler(self.device.type)
                 if self.verbose: logger.success("Enabled Automatic Mixed Precision (AMP) for training")
@@ -165,7 +166,9 @@ class DLTabularRegressor:
     # Main fitting function -----------------------------------------------------------------------------------------------#        
     def fit(self, train_loader: DataLoader, val_loader: Optional[DataLoader]=None, epochs: int=100, loss_fn: str='mse', 
             loss_params             : Optional[Dict[str, Any]] = None,
-            early_stopping_patience : Optional[int]            = None, 
+            early_stopping_patience : Optional[int]            = None,
+            use_grad_clipping       : bool                     = False, 
+            grad_clip_max_norm      : Optional[float]          = 1.0,
             verbose_epoch           : int                      = DEFAULT_VERBOSE_EPOCH,
             checkpoint_path         : Optional[str]            = None, 
             save_best_only          : bool                     = True):
@@ -180,6 +183,8 @@ class DLTabularRegressor:
         -> loss_fn                  (str)        : Loss function name ('mse', 'l1', 'smooth_l1', 'huber')
         -> loss_params              (dict)       : Optional dictionary of additional loss function parameters
         -> early_stopping_patience  (int)        : Epochs to wait before stopping if no improvement
+        -> use_grad_clipping        (bool)       : If True, apply gradient clipping during training
+        -> grad_clip_max_norm       (float)      : Maximum norm for gradient clipping, if enabled grad_clip.
         -> verbose_epoch            (int)        : Print training info every N epochs
         -> checkpoint_path          (str)        : Optional path to save model checkpoints during training
         -> save_best_only           (bool)       : If True, only save checkpoint when validation loss improves
@@ -187,9 +192,12 @@ class DLTabularRegressor:
         """
         # Create checkpoint callback if path provided
         checkpoint_callback = None
+        
+        # If checkpointing is enabled, define a callback function to save the model at the specified path
         if checkpoint_path is not None:
+            
+            # Save if best_only and is_best, or if not best_only (i.e., save every epoch)
             def _checkpoint_fn(epoch, is_best, val_loss):
-                # Save if best_only and is_best, or if not best_only
                 should_save = (save_best_only and is_best) or (not save_best_only)
                 if should_save:
                     self.save_model(checkpoint_path)
@@ -198,18 +206,20 @@ class DLTabularRegressor:
                             logger.info(f"Model saved: Best val loss = {val_loss:.6f}")
                         else:
                             logger.info(f"Checkpoint saved at epoch {epoch}")
+            
+            # Assign the checkpoint callback function
             checkpoint_callback = _checkpoint_fn
         
         # Create trainer instance
         trainer = Trainer(model=self.model, optimizer=self.opt, device=self.device, use_amp=self.use_amp, 
                           scheduler = self.sched if hasattr(self, 'sched') else None, 
                           scaler    = getattr(self, 'scaler', None),
+                          grad_clip = grad_clip_max_norm if use_grad_clipping else None,
                           verbose   = self.verbose)
         
-        # Run training
-        if self.verbose:
-            logger.info(f"Model: {self.model_type}, Optimizer: {self.optimizer_name}")
+        if self.verbose: logger.info(f"Model: {self.model_type}, Optimizer: {self.optimizer_name}")
         
+        # Run training
         result = trainer.train(train_loader=train_loader, val_loader=val_loader, epochs=epochs, loss_fn=loss_fn,
                                loss_params             = loss_params,
                                early_stopping_patience = early_stopping_patience,
@@ -412,17 +422,23 @@ class DLTabularRegressor:
             - (optimizer, scheduler) : Tuple of optimizer and learning rate scheduler if applicable.
         ____________________________________________________________________________________________________________________
         """
+        # Prepare optimizer and scheduler parameters
         opt_params = self.optimizer_params.copy()
         
+        # If scheduler is specified, prepare scheduler parameters and create both optimizer and scheduler
         if self.scheduler_name is not None and self.scheduler_params:
+            
+            # Prepare scheduler parameters
             sch_params = self.scheduler_params.copy()
             
+            # Create optimizer and scheduler using the utility function
             self.opt, self.sched = select_optimizer(name             = self.optimizer_name,
                                                     model            = self.model,
                                                     optimizer_params = opt_params,
                                                     scheduler_name   = self.scheduler_name,
                                                     scheduler_params = sch_params)
         
+        # Else just create the optimizer without a scheduler
         else:
             self.opt = select_optimizer(name             = self.optimizer_name,
                                         model            = self.model,
@@ -461,7 +477,7 @@ class DLTabularRegressor:
             logger.info("Loaded best model weights")
     
     # [Helper] Lazy Trainer access for epoch-level control ----------------------------------------------------------------#
-    def _get_or_create_trainer(self) -> Trainer:
+    def _get_or_create_trainer(self, grad_clip_norm: Optional[float]=None) -> Trainer:
         """
         ____________________________________________________________________________________________________________________
         Get or lazily create a Trainer instance for epoch-level training control.
@@ -476,25 +492,28 @@ class DLTabularRegressor:
                 use_amp   = self.use_amp,
                 scheduler = self.sched if hasattr(self, 'sched') else None,
                 scaler    = getattr(self, 'scaler', None),
+                grad_clip = grad_clip_norm,
                 verbose   = self.verbose
             )
         return self._trainer
     
     # Epoch-level training (for optimization loops) -----------------------------------------------------------------------#
-    def train_one_epoch(self, train_loader: DataLoader, criterion: torch.nn.Module) -> float:
+    def train_one_epoch(self, train_loader: DataLoader, criterion: torch.nn.Module, grad_clip_norm: Optional[float]
+                        ) -> float:
         """
         ____________________________________________________________________________________________________________________
         Train the model for one epoch. Exposes epoch-level control for Optuna pruning integration.
         ____________________________________________________________________________________________________________________
         Parameters:
-            - train_loader (DataLoader)  : DataLoader containing training batches
-            - criterion    (nn.Module)   : Loss function
+        -> train_loader   (DataLoader)      : DataLoader containing training batches
+        -> criterion      (nn.Module)       : Loss function
+        -> grad_clip_norm (Optional[float]) : Maximum norm for gradient clipping, if enabled.
         ____________________________________________________________________________________________________________________
         Returns:
-            - avg_loss (float) : Average training loss for the epoch
+        -> avg_loss (float) : Average training loss for the epoch
         ____________________________________________________________________________________________________________________
         """
-        trainer = self._get_or_create_trainer()
+        trainer = self._get_or_create_trainer(grad_clip_norm=grad_clip_norm)
         return trainer.train_one_epoch(train_loader, criterion)
     
     # Epoch-level validation (for optimization loops) ---------------------------------------------------------------------#
@@ -504,11 +523,11 @@ class DLTabularRegressor:
         Validate the model for one epoch. Exposes epoch-level control for Optuna pruning integration.
         ____________________________________________________________________________________________________________________
         Parameters:
-            - val_loader (DataLoader)  : DataLoader containing validation batches
-            - criterion  (nn.Module)   : Loss function
+        -> val_loader (DataLoader)  : DataLoader containing validation batches
+        -> criterion  (nn.Module)   : Loss function
         ____________________________________________________________________________________________________________________
         Returns:
-            - avg_loss (float) : Average validation loss for the epoch
+        -> avg_loss (float) : Average validation loss for the epoch
         ____________________________________________________________________________________________________________________
         """
         trainer = self._get_or_create_trainer()
@@ -521,7 +540,7 @@ class DLTabularRegressor:
         Get comprehensive information about the model.
         ____________________________________________________________________________________________________________________
         Returns:
-            - dict : Dictionary containing model information
+        -> dict : Dictionary containing model information
         ____________________________________________________________________________________________________________________
         """
         info = {
@@ -564,7 +583,7 @@ class DLTabularRegressor:
             - str : String representation
         ____________________________________________________________________________________________________________________
         """
-        fitted_str = "fitted" if self.is_fitted else "not fitted"
+        fitted_str     = "fitted" if self.is_fitted else "not fitted"
         n_features_str = f", in_features={self.in_features}"
         return f"DLTabularRegressor(model_type='{self.model_type}', {fitted_str}, device='{self.device}'{n_features_str})"
 

@@ -15,9 +15,9 @@ OPTIMIZER_REGISTRY = {
 
 # Scheduler Registry ------------------------------------------------------------------------------------------------------#
 SCHEDULER_REGISTRY = {
-    'step'              : torch.optim.lr_scheduler.StepLR,
-    'cosine'            : torch.optim.lr_scheduler.CosineAnnealingLR,
-    'reduce_on_plateau' : torch.optim.lr_scheduler.ReduceLROnPlateau,
+    'step'   : torch.optim.lr_scheduler.StepLR,
+    'cosine' : torch.optim.lr_scheduler.CosineAnnealingLR,
+    'rlrop'  : torch.optim.lr_scheduler.ReduceLROnPlateau,
     }
 
 # Optimizer Selection -----------------------------------------------------------------------------------------------------#

@@ -37,10 +37,12 @@ RUN echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-chec
     && pip install --no-cache-dir --upgrade pip setuptools wheel
 
 # Copy requirements file first, separately
-COPY requirements.txt .
+COPY rqmts_set.txt .
+COPY rqmts_no_deps.txt .
 
 # Install Python requirements
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r rqmts_set.txt
+RUN pip install --no-deps -r rqmts_no_deps.txt
 
 # Create non-root user with same UID/GID as host
 ARG HOST_UID=1000

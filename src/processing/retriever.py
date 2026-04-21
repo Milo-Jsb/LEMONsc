@@ -10,8 +10,9 @@ from loguru._logger import Logger
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.processing.modules.downsampling     import DownsamplingProcessor
+from src.processing.scalers                  import TargetTransform
 from src.processing.constructors.moccasurvey import MoccaSurveyExperimentConfig, def_config
-from src.processing.constructors.moccasurvey import load_moccasurvey_imbh_history, process_single_mocca_simulation
+from src.processing.constructors.moccasurvey import load_moccasurvey_imbh_history, process_single_moccasurvey_simulation
 
 # Retrieve a partition of input / target values for a ML-Experiment -------------------------------------------------------#
 def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSurveyExperimentConfig = def_config,
@@ -97,9 +98,11 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
                                               ).reset_index(drop=True)
             
             # Check temporal resolution compatibility before accepting the alignment.
-            imbh_dt     = imbh_df[experiment_config.time_column_imbh].diff().median()
-            match_error = (matched_system_df[experiment_config.time_column_system]- imbh_df[experiment_config.time_column_imbh]
-                           ).abs().median()
+            imbh_dt  = imbh_df[experiment_config.time_column_imbh].diff().median()
+            res_time = matched_system_df[experiment_config.time_column_system]- imbh_df[experiment_config.time_column_imbh]
+            
+            # Compute the median match error after alignment to assess temporal resolution compatibility.
+            match_error = res_time.abs().median()
 
             # If the median match error is larger than the allowed threshold times the median IMBH timestep, skip.
             if imbh_dt > 0 and match_error > max_resolution_ratio * imbh_dt:
@@ -118,15 +121,18 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
             processed += 1
 
             # Retrieve single simulation data
-            feats, targs, idxs = process_single_mocca_simulation(imbh_df=imbh_df, system_df=matched_system_df,
-                                                                 meta_dict      = iconds_imbh_dict,
-                                                                 config         = experiment_config, 
-                                                                 points_per_sim = points_per_sim, 
-                                                                 environment    = env_type,
-                                                                 augment        = augmentation and not test_partition,
-                                                                 noise          = noise and not test_partition,
-                                                                 n_virtual      = n_virtual
-                                                                 )
+            if_aument = augmentation and not test_partition
+            if_noise  = noise        and not test_partition
+            
+            feats, targs, idxs = process_single_moccasurvey_simulation(imbh_df=imbh_df, system_df=matched_system_df,
+                                                                       meta_dict      = iconds_imbh_dict,
+                                                                       config         = experiment_config, 
+                                                                       points_per_sim = points_per_sim, 
+                                                                       environment    = env_type,
+                                                                       augment        = if_aument,
+                                                                       noise          = if_noise,
+                                                                       n_virtual      = n_virtual
+                                                                      )
 
             features.append(feats)
             targets.append(targs)
@@ -141,17 +147,69 @@ def moccasurvey_dataset(simulations_path: List[str], experiment_config: MoccaSur
     # Stack the features and the target given the selected features
     X = np.vstack(features) if features else np.empty((0, len(experiment_config.feature_names)))
     y = np.concatenate(targets) if targets else np.empty((0,))
-
-    # Perform downsampling if desired, using the same DownsamplingProcessor path as the comp/feats pipeline
+    
+    # Perform downsampling if desired (target axis scale is controlled by config.downsample_target_scale)
     if downsampled:
-        t_down, y_down, phy_down = DownsamplingProcessor(experiment_config).perform_downsampling(
-            t_augm   = X[:, 0],
-            m_augm   = y,
-            phy_augm = X[:, 1:]
-        )
+        
+        # Retrieve config values before using them
+        norm_col_name = getattr(experiment_config, 'downsample_norm_column', 'M_tot')
+        norm_col_idx  = experiment_config.feature_names.index(norm_col_name)
+        target_scale  = getattr(experiment_config, 'downsample_target_scale', 'ratio')
+        
+        # Check for numerical errors
+        invalid_y = (~np.isfinite(y)) | (y == 0)
+
+        if target_scale in ("ratio", "log_ratio"):
+            norm_factor_fwd = X[:, norm_col_idx]
+            invalid_norm    = (~np.isfinite(norm_factor_fwd)) | (norm_factor_fwd == 0)
+        else:
+            norm_factor_fwd = None
+            invalid_norm    = np.zeros_like(y, dtype=bool)
+
+        # Combine masks
+        invalid_mask = invalid_y | invalid_norm
+
+        # Apply filtering
+        if np.any(invalid_mask):
+            if logger: logger.warning(f"Removing {np.sum(invalid_mask)} invalid samples before downsampling")
+            X = X[~invalid_mask]
+            y = y[~invalid_mask]
+            
+        # Forward transform: scale target using pre-downsampling M_tot (row-aligned with y)
+        norm_factor_fwd = X[:, norm_col_idx] if target_scale in ("ratio", "log_ratio") else None
+        scaler_fwd      = TargetTransform(transformation = target_scale, 
+                                          norm_factor    = norm_factor_fwd, 
+                                          epsilon        = experiment_config.eps_target)
+        y_for_hist      = scaler_fwd.transform(y)
+        
+        if logger: logger.info(f"Downsampling in target space: {target_scale}")
+
+        # Build channel-separation criteria from config (if enabled)
+        down_category = getattr(experiment_config, 'downsample_category', 'none')
+        if down_category != "none" and "type_sim" in experiment_config.feature_names:
+            class_labels          = getattr(experiment_config, 'class_labels', ["FAST", "SLOW"])
+            filtering_criteria    = [(float(i), label) for i, label in enumerate(class_labels)]
+            criteria_var_position = experiment_config.feature_names.index("type_sim") - 1  # offset by time column
+        else:
+            filtering_criteria    = None
+            criteria_var_position = None
+
+        # Downsample
+        downsampler = DownsamplingProcessor(experiment_config)
+        t_down, y_down, phy_down = downsampler.perform_downsampling(x_var                 = X[:, 0], 
+                                                                    y_var                 = y_for_hist, 
+                                                                    metadata              = X[:, 1:],
+                                                                    filtering_criteria    = filtering_criteria,
+                                                                    criteria_var_position = criteria_var_position)
+        
         if len(t_down) > 0:
             X = np.column_stack([t_down, phy_down])
-            y = y_down
+            # Inverse transform: use post-downsampling M_tot (row-aligned with y_down)
+            norm_factor_inv = phy_down[:, norm_col_idx - 1] if target_scale in ("ratio", "log_ratio") else None
+            scaler_inv      = TargetTransform(transformation = target_scale, 
+                                              norm_factor    = norm_factor_inv, 
+                                              epsilon        = experiment_config.eps_target)
+            y               = scaler_inv.inverse_transform(y_down)
         else:
             if logger: logger.error("No data remaining after downsampling all channels")
 

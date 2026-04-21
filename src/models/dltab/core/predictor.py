@@ -18,7 +18,7 @@ class Predictor:
     -> Memory-efficient inference
     ________________________________________________________________________________________________________________________
     """
-    
+    # Initialize the Predictor with the model, device, and AMP settings ---------------------------------------------------#
     def __init__(self, model: torch.nn.Module, device: torch.device, use_amp: bool = False):
         """
         ____________________________________________________________________________________________________________________
@@ -33,7 +33,8 @@ class Predictor:
         self.model   = model
         self.device  = device
         self.use_amp = use_amp
-    
+        
+    # Main prediction method that handles different input types -----------------------------------------------------------#
     def predict(self, X: Union[np.ndarray, torch.Tensor, DataLoader]) -> np.ndarray:
         """
         ____________________________________________________________________________________________________________________
@@ -49,12 +50,14 @@ class Predictor:
         -> ValueError : If X is None or invalid
         ____________________________________________________________________________________________________________________
         """
+        # Input validation ------------------------------------------------------------------------------------------------#
         if X is None:
             raise ValueError("X cannot be None")
         
-        # Set model to evaluation mode
+        # Set model to evaluation mode and disable gradients for inference ------------------------------------------------#
         self.model.eval()
         
+        # Handle different input types (arrays/tensors vs DataLoader) and make predictions --------------------------------#
         try:
             # Check if input is a DataLoader for batch prediction
             if isinstance(X, DataLoader):
@@ -66,6 +69,7 @@ class Predictor:
         except (TypeError, ValueError, RuntimeError) as e:
             raise ValueError(f"Error making predictions: {e}") from e
     
+    # Internal method for making predictions on arrays/tensors ------------------------------------------------------------#
     def _predict_tensor(self, X: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
         """
         ____________________________________________________________________________________________________________________
@@ -99,6 +103,7 @@ class Predictor:
         
         return predictions.detach().cpu().numpy()
     
+    # Internal method for making predictions using a DataLoader ------------------------------------------------------------#
     def _predict_dataloader(self, dataloader: DataLoader) -> np.ndarray:
         """
         ____________________________________________________________________________________________________________________
@@ -121,7 +126,7 @@ class Predictor:
                 else:
                     batch_X = batch
                 
-                batch_X = batch_X.to(self.device, non_blocking=True)
+                batch_X = batch_X.to(self.device, dtype=torch.float32, non_blocking=True)
                 
                 with torch.amp.autocast(device_type=self.device.type, enabled=self.use_amp):
                     preds = self.model(batch_X)
