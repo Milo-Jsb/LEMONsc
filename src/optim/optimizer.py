@@ -5,6 +5,7 @@ import warnings
 import logging
 import torch
 import gc
+import yaml
 
 import numpy  as np
 import pandas as pd
@@ -280,6 +281,54 @@ class SpaceSearch:
         else:
             raise ValueError(f"Invalid metric type: {type(metric)}")
     
+    # [Helper] Create YAML best-trial summary callback -----------------------------------------------------------------------#
+    def _create_yaml_callback(self, output_path: Path, metric: Union[str, Callable], direction: str) -> Callable:
+        """Return a callback that rewrites best_trial_summary.yaml whenever a new best trial is found"""
+
+        metric_name = metric if isinstance(metric, str) else getattr(metric, '__name__', 'custom')
+
+        def yaml_callback(study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
+            # Only act on completed trials that are the current best
+            if trial.state != optuna.trial.TrialState.COMPLETE:
+                return
+            try:
+                if study.best_trial.number != trial.number:
+                    return
+            except ValueError:
+                return
+
+            n_complete = sum(1 for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE)
+
+            summary = {
+                'study_name'         : study.study_name,
+                'model_type'         : self.model_type,
+                'metric'             : metric_name,
+                'direction'          : direction,
+                'n_trials_completed' : n_complete,
+                'n_trials_total'     : len(study.trials),
+                'best_trial'         : {
+                    'number'           : trial.number,
+                    'score'            : float(trial.value),
+                    'score_mean'       : float(trial.user_attrs.get('score_mean', trial.value)),
+                    'score_std'        : (float(trial.user_attrs['score_std'])
+                                          if trial.user_attrs.get('score_std') is not None else None),
+                    'partition_scores' : [float(s) for s in trial.user_attrs.get('partition_scores', [])],
+                    'params'           : {k: (float(v) if isinstance(v, (np.floating, np.integer)) else v)
+                                          for k, v in trial.params.items()},
+                    'datetime'         : (trial.datetime_complete.isoformat()
+                                          if trial.datetime_complete else None),
+                },
+            }
+
+            yaml_path = output_path / 'best_trial_summary.yaml'
+            with open(yaml_path, 'w') as f:
+                yaml.dump(summary, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+            if self.config.verbose:
+                self.logger.debug(f"YAML summary updated → trial {trial.number}, score={trial.value:.6f}")
+
+        return yaml_callback
+
     # [Helper] Save study state -------------------------------------------------------------------------------------------#
     def _save_study(self, output_path: Path, compress: bool = True) -> None:
         """Save study state to disk"""
@@ -480,8 +529,8 @@ class SpaceSearch:
         if isinstance(model, DLTabularRegressor):
             if trial is None:
                 raise ValueError("Trial object required for DL model evaluation")
-            return evaluate_partition_dl(model, partition, scorer, trial, self.logger, self.config, 
-                                        fold_idx=fold_idx, enable_pruning=enable_pruning)
+            return evaluate_partition_dl(model, partition, scorer, trial, self.logger, self.config, fold_idx=fold_idx, 
+                                         enable_pruning=enable_pruning)
         
         elif isinstance(model, MLTreeRegressor) or isinstance(model, MLBasicRegressor):
             return evaluate_partition_ml(model, partition, scorer)
@@ -504,7 +553,7 @@ class SpaceSearch:
             if t.state == optuna.trial.TrialState.COMPLETE
         ])
     
-    # Store CV-specific results and visualizations ------------------------------------------------------------------------#  
+    # [Helper] Store CV-specific results and visualizations ---------------------------------------------------------------#  
     def _save_cv_results(self, output_path: Path) -> None:
         """Save CV-specific results and visualizations (experimental)"""
         # Extract partition-specific information using helper method
@@ -664,6 +713,13 @@ class SpaceSearch:
                 self.best_params    = self.study.best_params
                 self.best_score     = self.study.best_value
                 self.trials_history = self.study.trials
+
+                # Write YAML with historical best if using storage
+                _yaml_summary = isinstance(self.config.storage, str)
+                if _yaml_summary:
+                    yaml_cb = self._create_yaml_callback(output_path, metric, direction)
+                    yaml_cb(self.study, self.study.best_trial)
+
                 return SpaceSearchResult(best_params = self.best_params, best_score = self.best_score,
                                          study       = self.study,
                                          n_trials    = len(self.study.trials),
@@ -680,6 +736,11 @@ class SpaceSearch:
         if patience:
             study_callbacks.append(self._early_stopping_callback)
         
+        # Auto-register YAML callback when using persistent storage
+        _yaml_summary = isinstance(self.config.storage, str)
+        if _yaml_summary:
+            study_callbacks.append(self._create_yaml_callback(output_path, metric, direction))
+
         # Optimize (n_jobs=1: sequential trials for reproducibility with TPESampler and GPU memory safety)
         self.study.optimize(objective, n_trials = remaining_trials, timeout = timeout, catch = (Exception,),
                             callbacks = study_callbacks if study_callbacks else None,
