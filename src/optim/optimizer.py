@@ -201,7 +201,7 @@ class SpaceSearch:
                                        scheduler_params = self.config.dl_scheduler_params,
                                        feat_names       = features_names,
                                        device           = self.config.device,
-                                       use_amp          = self.config.use_amp,
+                                       use_amp          = self.config.dl_use_amp,
                                        verbose          = self.config.verbose)
         
         # Route for tree-based models

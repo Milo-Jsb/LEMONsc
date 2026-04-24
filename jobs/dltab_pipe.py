@@ -69,7 +69,7 @@ def get_args():
     parser.add_argument("--model", type=str, default="mlp",
                        choices=["mlp", "node"],
                        help="Type of model to use")
-    parser.add_argument("--n_sims", type=int, default=2,
+    parser.add_argument("--n_sims", type=int, default=4,
                         help = "Number of random simulations to plot in interpretation mode.")
     
     # DL architecture and optimizer config files
@@ -798,7 +798,7 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, targ
     plot_generator = PlotGenerator(config=None, cmap="magma")
 
     logger.info(110*"_")
-    logger.info(f"MLBasic {model_type} interpretation mode")
+    logger.info(f"DLTab {model_type} interpretation mode")
     logger.info(110*"_")
 
     # Handle None categorical features -----------------------------------------------------------------------------------#
@@ -1057,13 +1057,8 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, targ
         logger.warning("No simulations available for example plots.")
         return trained_models
 
-    n_cols   = min(2, n_select)
-    n_rows   = n_select // n_cols
-    n_select = n_rows * n_cols  # Ensure exact grid fit
-
-    if n_select == 0:
-        logger.warning("No simulations available for example plots.")
-        return trained_models
+    n_cols = n_select
+    n_rows = 1
 
     rng          = np.random.default_rng(CONFIG.seed)
     selected_ids = rng.choice(sim_ids, size=n_select, replace=False)
@@ -1112,7 +1107,7 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, targ
                                                          n_rows       = n_rows,
                                                          n_cols       = n_cols,
                                                          save_path    = save_path,
-                                                         figsize      = (8, 4))
+                                                         figsize      = (4*n_cols, 4))
     logger.info(f"Simulation example plots saved to: {save_path}")
     
 def run_prediction():

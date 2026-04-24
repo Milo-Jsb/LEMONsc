@@ -119,6 +119,7 @@ class ODST(ModuleWithInit):
         
         # Leaf response values per tree
         self.leaf_responses = nn.Parameter(torch.empty(num_trees, num_leaves))
+        
 
         # Weight initialization (data-agnostic fallback, overridden by initialize() on first forward pass) ----------------#
         nn.init.uniform_(self.feature_selectors, 0, 1)
@@ -384,6 +385,9 @@ class NODERegressor(nn.Module):
                  seed=seed + k if seed is not None else None)
             for k in range(num_layers)])
 
+        # Per-layer normalization applied to each ODST output before extending context ------------------------------------#
+        self.ctx_norms = nn.ModuleList([nn.LayerNorm(num_trees) for _ in range(num_layers)])
+
         # Optional dropout after each layer -------------------------------------------------------------------------------#
         self.dropout = nn.Dropout(dropout) if (dropout is not None and dropout > 0.0) else None
 
@@ -426,10 +430,13 @@ class NODERegressor(nn.Module):
         ctx     = x_norm
         outputs = []
 
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
 
             # Layer k receives [x_norm, out_0, ..., out_{k-1}]
             out = layer(ctx)
+
+            # Normalize out previous to extending the context
+            out_normed = self.ctx_norms[i](out)
 
             # Apply dropout only to the tensor going into the output head, NOT to the context.
             out_for_head = self.dropout(out) if self.dropout is not None else out
@@ -438,7 +445,7 @@ class NODERegressor(nn.Module):
             outputs.append(out_for_head)
 
             # Extend context with the CLEAN output (no dropout) to preserve information across layers
-            ctx = torch.cat([ctx, out], dim=-1)
+            ctx = torch.cat([ctx, out_normed], dim=-1)
 
         # Output head receives concatenation of all tree outputs (no raw features)
         return self.output_head(torch.cat(outputs, dim=-1))
