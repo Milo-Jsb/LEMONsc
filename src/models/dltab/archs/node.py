@@ -60,20 +60,22 @@ class ODST(ModuleWithInit):
     """
     # Initialization ------------------------------------------------------------------------------------------------------#
     def __init__(self, in_features: int, num_trees: int = 128, depth: int = 6, gate: str = "sparsemax", 
-                 seed: Optional[int] = None):
+                 dynamic_gate : bool          = False, 
+                 seed         : Optional[int] = None):
         """
         ____________________________________________________________________________________________________________________
         Initialize an ODST layer.
         ____________________________________________________________________________________________________________________
         Parameters:
-        -> in_features (int)           : Number of input features.
-        -> num_trees   (int)           : Number of trees in the ensemble. Default is 128.
-        -> depth       (int)           : Depth of each tree. Number of leaves = 2 ** depth. Default is 6.
-        -> gate        (str)           : Gate function for soft feature selection: 'softmax', 'sparsemax', 'entmax15'.
-                                         Default is 'sparsemax'. 'sparsemax' and 'entmax15' produce sparse weights,
-                                         each split to focus on a small number of features (closer to hard decision trees).
-                                         'softmax' produces dense weights, blending all features smoothly.
-        -> seed        (Optional[int]) : Random seed for reproducibility. Default is None.
+        -> in_features  (int)           : Number of input features.
+        -> num_trees    (int)           : Number of trees in the ensemble. Default is 128.
+        -> depth        (int)           : Depth of each tree. Number of leaves = 2 ** depth. Default is 6.
+        -> gate         (str)           : Gate function for soft feature selection: 'softmax', 'sparsemax', 'entmax15'.
+                                          Default is 'sparsemax'. 'sparsemax' and 'entmax15' produce sparse weights,
+                                          each split to focus on a small number of features (~ hard decision trees).
+                                          'softmax' produces dense weights, blending all features smoothly.
+        -> dynamic_gate (bool)          : Optional context network for dynamic gating.
+        -> seed         (Optional[int]) : Random seed for reproducibility. Default is None.
         ____________________________________________________________________________________________________________________
         Notes:
             -> The number of leaves per tree grows exponentially with depth (2^depth). Be mindful
@@ -82,6 +84,9 @@ class ODST(ModuleWithInit):
                discrete feature choices.        
             -> We follow the same initialization scheme as the original paper for feature selectors and leaf responses, 
                but thresholds and log_temperatures are initialized differently for stability.
+            -> Dynamic gating introduces a lightweight context network that produces an additive modulation over the 
+               feature_selectors, conditioned on the current input. Zero-initialized so the model starts as a standard 
+               static-gate ODST and learns to deviate. Experimental; not present in the original NODE paper.
         ____________________________________________________________________________________________________________________
         """
         ModuleWithInit.__init__(self)
@@ -101,11 +106,15 @@ class ODST(ModuleWithInit):
         self.num_trees   = num_trees
         self.depth       = depth
         self.gate        = gate
+        self.dym_gate    = dynamic_gate
         self._init_seed  = seed
         
         # By definition of a binary tree, the number of leaves is 2 raised to the power of the depth
         num_leaves = 2 ** depth
 
+        # Context network: maps input to additive modulation over feature_selectors (zero-init → static gate at t=0) --#
+        if self.dym_gate: self.context_net = nn.Linear(in_features, in_features, bias=False)
+        
         # Learnable parameters --------------------------------------------------------------------------------------------#
         
         # Feature selector weights per tree per split level: gate function over in_features selects the 'effective' feature
@@ -125,7 +134,8 @@ class ODST(ModuleWithInit):
         nn.init.uniform_(self.feature_selectors, 0, 1)
         nn.init.uniform_(self.thresholds, -1.0, 1.0)         
         nn.init.normal_(self.leaf_responses, std=1.0)        
-
+        if self.dym_gate: nn.init.zeros_(self.context_net.weight)
+    
     # Data-aware initialization of thresholds and log-temperatures -------------------------------------------------------#
     def initialize(self, x: torch.Tensor, eps: float = 1e-6) -> None:
         """
@@ -160,7 +170,7 @@ class ODST(ModuleWithInit):
                 UserWarning, stacklevel=2
             )
 
-        # Start initialization outise the gradient tracking ---------------------------------------------------------------#
+        # Start initialization outside the gradient tracking ---------------------------------------------------------------#
         with torch.no_grad():
 
             # Compute gates using the current (data-agnostic) feature_selectors
@@ -232,11 +242,19 @@ class ODST(ModuleWithInit):
         ____________________________________________________________________________________________________________________
         Notes:
             -> The logic goes as follows:
-                    1. Soft feature selection: the chosen gate function (softmax / sparsemax / entmax15) is applied
-                       over feature_selectors to produce a weight gate (sums to 1 per tree/depth). The input x is
-                       projected via matmul to get a soft feature value per split:
-                        |_gates  : (num_trees, depth, in_features)
-                        |_x_proj : (batch, num_trees, depth)
+                    1. Soft feature selection: the gate function (softmax / sparsemax / entmax15) produces weights
+                       over in_features for each (tree, depth) split, then projects the input to a scalar per split.
+                       Two execution paths depending on dynamic_gate:
+
+                       Static  (dynamic_gate=False):
+                        |_gates     : (num_trees, depth, in_features)  — shared across all samples
+                        |_x_proj    : (batch, num_trees, depth)         — via matmul + reshape
+
+                       Dynamic (dynamic_gate=True):
+                        |_modulation: (batch, in_features)              — additive shift from context_net(x)
+                        |_gates     : (batch, num_trees, depth, in_features) — per-sample gates
+                        |_x_proj    : (batch, num_trees, depth)         — via einsum 'bf,btdf->btd'
+
                     2. Temperature-scaled split logits: log_temperatures is clamped before exponentiation to keep
                        the sigmoid in a trainable range, preventing saturation and gradient collapse:
                         |_temperature : (num_trees, depth)
@@ -244,28 +262,45 @@ class ODST(ModuleWithInit):
                     3. Soft binary routing: sigmoid gives p_right at each node; 1 - sigmoid gives p_left:
                         |_p_right : (batch, num_trees, depth)
                         |_p_left  : (batch, num_trees, depth)
-                    4. Iterative leaf probability construction: starting from (B, T, 1), at each depth step the
-                       current leaf tensor is element-wise multiplied by [p_left, p_right] and concatenated,
+                    4. Iterative leaf probability construction: starting from (batch, num_trees, 1), at each depth
+                       step the current leaf tensor is element-wise multiplied by [p_left, p_right] and concatenated,
                        doubling the leaf dimension. After depth iterations leaf_probs covers all 2^depth paths.
-                       Complexity: O(batch x trees x 2^depth).
+                       Complexity: O(batch x num_trees x 2^depth).
                         |_leaf_probs : (batch, num_trees, num_leaves)
-                    5. Leaf aggregation: dot product of leaf_probs and leaf_responses yields the per-tree output:
+                    5. Leaf aggregation: element-wise product of leaf_probs and leaf_responses, summed over leaves,
+                       yields the per-tree scalar output:
                         |_output : (batch, num_trees)
         ____________________________________________________________________________________________________________________
         """
-        # Soft feature selection: weighted combination of input features for each split, then project to get split logits
-        if self.gate == "sparsemax":
-            gates = sparsemax(self.feature_selectors, dim=-1)
-        elif self.gate == "entmax15":
-            gates = entmax15(self.feature_selectors, dim=-1)
-        else:
-            gates = torch.softmax(self.feature_selectors, dim=-1)
-        
-        # Flat and matmul for efficient projection 
-        gates_flat = gates.reshape(self.num_trees * self.depth, self.in_features)
-        x_proj     = torch.matmul(x, gates_flat.T)
-        x_proj     = x_proj.reshape(x.shape[0], self.num_trees, self.depth)
+        # Dynamic gating logic --------------------------------------------------------------------------------------------#
+        if self.dym_gate:
+            
+            modulation  = self.context_net(x)
+            dym_weights = self.feature_selectors.unsqueeze(0) + modulation[:, None, None, :]
+            
+            if self.gate == "sparsemax":
+                gates = sparsemax(dym_weights, dim=-1)
+            elif self.gate == "entmax15":
+                gates = entmax15(dym_weights, dim=-1)
+            else:
+                gates = torch.softmax(dym_weights, dim=-1)
+            
+            # gates: (batch, T, D, F) → einsum en lugar de matmul plano
+            x_proj = torch.einsum('bf,btdf->btd', x, gates)
 
+        else:
+            # Soft feature selection: weighted combination of input features for each split, then project to get split logits
+            if self.gate == "sparsemax":
+                gates = sparsemax(self.feature_selectors, dim=-1)
+            elif self.gate == "entmax15":
+                gates = entmax15(self.feature_selectors, dim=-1)
+            else:
+                gates = torch.softmax(self.feature_selectors, dim=-1)
+        
+            gates_flat = gates.reshape(self.num_trees * self.depth, self.in_features)
+            x_proj     = torch.matmul(x, gates_flat.T)
+            x_proj     = x_proj.reshape(x.shape[0], self.num_trees, self.depth) 
+        
         # Temperature scaling: clamp prevents unbounded growth that would saturate sigmoid and kill gradients
         temperature = torch.exp(self.log_temperatures.clamp(min=-4.0, max=4.0))
 
@@ -292,10 +327,11 @@ class ODST(ModuleWithInit):
     # String representation of the ODST layer -----------------------------------------------------------------------------#
     def __repr__(self) -> str:
         return (f"{self.__class__.__name__}\n("
-                f"in_features={self.in_features}, "
-                f"num_trees  ={self.num_trees}, "
-                f"depth      ={self.depth}, "
-                f"gate       ={self.gate})\n")
+                f"in_features ={self.in_features}, "
+                f"num_trees   ={self.num_trees}, "
+                f"depth       ={self.depth}, "
+                f"gate        ={self.gate}, "
+                f"dynamic_gate={self.dym_gate})\n")
 
 # NODE Regressor ----------------------------------------------------------------------------------------------------------#
 class NODERegressor(nn.Module):
@@ -316,9 +352,10 @@ class NODERegressor(nn.Module):
     ________________________________________________________________________________________________________________________
     """
     def __init__(self, in_features: int, num_trees: int = 128, depth: int = 6, num_layers: int = 1, out_features: int  = 1,
-                 dropout : Optional[float] = 0.0, 
-                 gate    : str             = "sparsemax",
-                 seed    : Optional[int]   = None):
+                 dropout      : Optional[float] = 0.0, 
+                 gate         : str             = "sparsemax",
+                 dynamic_gate : bool            = False,
+                 seed         : Optional[int]   = None):
         """
         ____________________________________________________________________________________________________________________
         Initialize NODE Regressor
@@ -331,6 +368,8 @@ class NODERegressor(nn.Module):
         -> dropout      (Optional[float]) : Dropout rate applied after each ODST layer (default 0.0)
         -> gate         (str)             : Gate function for soft feature selection in each ODST layer.
                                             One of 'softmax', 'sparsemax', 'entmax15'. Default is 'sparsemax'.
+        -> dynamic_gate (bool)            : If True, enables input-conditioned (dynamic) gate weights via a shared
+                                            linear context network. Default is False (static gates, original NODE).
         -> seed         (Optional[int])   : Random seed for reproducibility. Default is None.
         ____________________________________________________________________________________________________________________
         Notes:
@@ -375,14 +414,16 @@ class NODERegressor(nn.Module):
         self.num_layers   = num_layers
         self.out_features = out_features
         self.gate         = gate
+        self.dym_gate     = dynamic_gate
 
         # Input normalization layer ---------------------------------------------------------------------------------------#
         self.input_norm = nn.LayerNorm(in_features)
         
         # Dense-stacked ODST layers: layer k receives in_features + k * num_trees inputs ----------------------------------#
         self.layers = nn.ModuleList([
-            ODST(in_features=in_features + k * num_trees, num_trees=num_trees, depth=depth, gate=gate,
-                 seed=seed + k if seed is not None else None)
+            ODST(in_features=in_features + k * num_trees, num_trees=num_trees, depth=depth, gate=gate, 
+                 dynamic_gate = self.dym_gate,
+                 seed         = seed + k if seed is not None else None)
             for k in range(num_layers)])
 
         # Per-layer normalization applied to each ODST output before extending context ------------------------------------#
@@ -414,12 +455,17 @@ class NODERegressor(nn.Module):
             -> Context is built iteratively using torch.cat (no in-place writes) to keep the autograd graph intact.
                In-place writes on a tensor that has already entered the computation graph cause version counter
                mismatches and break gradient computation.
-            -> ctx starts as x_norm and grows by one tree-output block per layer:
+            -> ctx starts as x_norm and grows by one normalized tree-output block per layer:
                     ctx_0 = x_norm
-                    ctx_1 = cat([x_norm, out_0])
-                    ctx_k = cat([ctx_{k-1}, out_{k-1}])
-            -> outputs accumulates each layer's output; torch.cat(outputs) feeds the output head.
-            -> The output head receives only tree outputs, not raw features.
+                    ctx_1 = cat([x_norm, LayerNorm(out_0)])
+                    ctx_k = cat([ctx_{k-1}, LayerNorm(out_{k-1})])
+               Each block is normalized independently before concatenation (ctx_norms) to keep all partitions
+               at unit scale and prevent later ODST layers from being dominated by unbounded leaf responses.
+            -> The output head and the context receive different versions of each layer's output:
+                    head  ← out            (raw, with dropout if enabled)
+                    ctx   ← LayerNorm(out) (normalized, no dropout — preserves information flow)
+            -> outputs accumulates the raw per-layer outputs; torch.cat(outputs, dim=-1) feeds the output head.
+            -> The output head receives only tree outputs, not raw input features.
         ____________________________________________________________________________________________________________________
         """
 
@@ -464,6 +510,7 @@ class NODERegressor(nn.Module):
                 f"depth        ={self.depth},\n"
                 f"num_layers   ={self.num_layers},\n"
                 f"out_features ={self.out_features},\n"
-                f"gate         ={self.gate})\n")
+                f"gate         ={self.gate},\n"
+                f"dynamic_gate ={self.dym_gate})\n")
 
 #--------------------------------------------------------------------------------------------------------------------------#
