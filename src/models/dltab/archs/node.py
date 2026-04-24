@@ -255,17 +255,20 @@ class ODST(ModuleWithInit):
                         |_gates     : (batch, num_trees, depth, in_features) — per-sample gates
                         |_x_proj    : (batch, num_trees, depth)         — via einsum 'bf,btdf->btd'
 
-                    2. Temperature-scaled split logits: log_temperatures is clamped before exponentiation to keep
-                       the sigmoid in a trainable range, preventing saturation and gradient collapse:
+                    2. Temperature-scaled split logits: log_temperatures is mapped through exp(4·tanh(x/4)),
+                       which keeps temperature in (e^-4, e^4) with smooth non-zero gradients everywhere.
+                       Unlike clamp+exp, gradients are never killed at the boundary:
                         |_temperature : (num_trees, depth)
                         |_logits      : (batch, num_trees, depth)
                     3. Soft binary routing: sigmoid gives p_right at each node; 1 - sigmoid gives p_left:
                         |_p_right : (batch, num_trees, depth)
                         |_p_left  : (batch, num_trees, depth)
-                    4. Iterative leaf probability construction: starting from (batch, num_trees, 1), at each depth
-                       step the current leaf tensor is element-wise multiplied by [p_left, p_right] and concatenated,
-                       doubling the leaf dimension. After depth iterations leaf_probs covers all 2^depth paths.
-                       Complexity: O(batch x num_trees x 2^depth).
+                    4. Log-space vectorized leaf construction: log-probabilities are computed for each split,
+                       then aggregated over all 2^depth leaf paths via two einsums against a fixed bit-mask
+                       matrix (leaf_bits). This avoids D serial cat iterations and is immune to float32
+                       underflow at depth >= 6 where product accumulation reaches ~1e-9:
+                        |_leaf_bits  : (num_leaves, depth)   — precomputed binary path mask, device-cached
+                        |_log_pr/pl  : (batch, num_trees, depth)
                         |_leaf_probs : (batch, num_trees, num_leaves)
                     5. Leaf aggregation: element-wise product of leaf_probs and leaf_responses, summed over leaves,
                        yields the per-tree scalar output:
@@ -301,8 +304,9 @@ class ODST(ModuleWithInit):
             x_proj     = torch.matmul(x, gates_flat.T)
             x_proj     = x_proj.reshape(x.shape[0], self.num_trees, self.depth) 
         
-        # Temperature scaling: clamp prevents unbounded growth that would saturate sigmoid and kill gradients
-        temperature = torch.exp(self.log_temperatures.clamp(min=-4.0, max=4.0))
+        # Temperature scaling: exp(4·tanh(x/4)) keeps temperature in (e^-4, e^4) with smooth non-zero gradients.
+        # Unlike clamp+exp, gradients are never killed at the boundary — critical during hyperparameter search.
+        temperature = torch.exp(4.0 * torch.tanh(self.log_temperatures / 4.0))
 
         # Compute split logits (scaled by temperature) for sharper splits and better gradient flow
         logits = (x_proj - self.thresholds) * temperature
@@ -311,15 +315,20 @@ class ODST(ModuleWithInit):
         p_right = torch.sigmoid(logits)
         p_left  = 1 - p_right
 
-        leaf_probs = torch.ones(x.shape[0], self.num_trees, 1, device=x.device, dtype=x.dtype)
-        
-        for d in range(self.depth):
-            pr = p_right[:, :, d].unsqueeze(-1)
-            pl = p_left[:, :, d].unsqueeze(-1)
-    
-            leaf_probs = torch.cat([leaf_probs * pl, leaf_probs * pr],dim=-1)
-        
-        # Leaf aggregation: weighted sum of leaf responses using the computed leaf probabilities
+        # Log-space vectorized leaf construction: avoids D serial iterations and float32 underflow at depth >= 6.
+        # leaf_bits: (num_leaves, depth) binary path mask — bit d of leaf index l indicates right (1) or left (0).
+        leaf_idx  = torch.arange(2 ** self.depth, device=x.device)
+        leaf_bits = ((leaf_idx.unsqueeze(-1) >> torch.arange(self.depth, device=x.device)) & 1).to(x.dtype)
+
+        log_pr = torch.log(p_right.clamp(min=1e-6))  # (batch, num_trees, depth)
+        log_pl = torch.log(p_left.clamp(min=1e-6))   # (batch, num_trees, depth)
+
+        # Aggregate log-probabilities over all 2^depth paths via einsum against the bit-mask
+        log_leaf_probs = (torch.einsum('btd,ld->btl', log_pr, leaf_bits) +
+                          torch.einsum('btd,ld->btl', log_pl, 1.0 - leaf_bits))
+        leaf_probs = torch.exp(log_leaf_probs)        # (batch, num_trees, num_leaves)
+
+        # Leaf aggregation: element-wise product of leaf_probs and leaf_responses, summed over leaves
         output = (leaf_probs * self.leaf_responses.unsqueeze(0)).sum(dim=-1)
 
         return output
@@ -368,8 +377,10 @@ class NODERegressor(nn.Module):
         -> dropout      (Optional[float]) : Dropout rate applied after each ODST layer (default 0.0)
         -> gate         (str)             : Gate function for soft feature selection in each ODST layer.
                                             One of 'softmax', 'sparsemax', 'entmax15'. Default is 'sparsemax'.
-        -> dynamic_gate (bool)            : If True, enables input-conditioned (dynamic) gate weights via a shared
-                                            linear context network. Default is False (static gates, original NODE).
+        -> dynamic_gate (bool)            : If True, enables input-conditioned (dynamic) gate weights on the first
+                                            ODST layer only, via a shared linear context network (F x F). Layers
+                                            k > 0 always use static gates to avoid the O(B·T·D·F_k) memory cost
+                                            that grows with the dense-stacked context dimension. Default is False.
         -> seed         (Optional[int])   : Random seed for reproducibility. Default is None.
         ____________________________________________________________________________________________________________________
         Notes:
@@ -380,6 +391,11 @@ class NODERegressor(nn.Module):
             -> Only tree outputs (not raw features) feed the output head.
             -> Dropout is applied after each ODST layer to regularize the model and prevent overfitting.
             -> The gate choice is shared across all ODST layers.
+            -> Dynamic gating is applied only to the first ODST layer (k=0), where in_features = F_orig is small
+               and the gates tensor (batch, T, D, F_orig) is memory-bounded. For k > 0, in_features grows by T
+               per layer (dense stacking), making the full per-sample gates tensor prohibitively large. Layer 0
+               operates on raw physical features, which is also where regime-aware feature selection is most
+               meaningful — subsequent layers already condition on learned tree representations.
         ____________________________________________________________________________________________________________________
         """
         super().__init__()
@@ -420,9 +436,11 @@ class NODERegressor(nn.Module):
         self.input_norm = nn.LayerNorm(in_features)
         
         # Dense-stacked ODST layers: layer k receives in_features + k * num_trees inputs ----------------------------------#
+        # Dynamic gating is restricted to k=0: F_0 = in_features (small), F_k grows by num_trees per layer,
+        # making the per-sample gates tensor (batch, T, D, F_k) prohibitively large for k > 0.
         self.layers = nn.ModuleList([
             ODST(in_features=in_features + k * num_trees, num_trees=num_trees, depth=depth, gate=gate, 
-                 dynamic_gate = self.dym_gate,
+                 dynamic_gate = (self.dym_gate and k == 0),
                  seed         = seed + k if seed is not None else None)
             for k in range(num_layers)])
 
