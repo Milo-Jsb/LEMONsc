@@ -52,7 +52,7 @@ class OptunaConfig:
     n_trials       : int           = 100
     direction      : str           = "maximize"
     metric         : str           = "r2"
-    trial_patience : int           = 15
+    trial_patience : int           = 30
     lambda_penalty : float         = 0.01
     storage        : Optional[str] = None  
 
@@ -77,7 +77,7 @@ class EGConfig:
 @dataclass
 class JobConfig:
     device         : str             = "cuda" if torch.cuda.is_available() else "cpu"
-    seed           : int             = 42
+    seed           : int             = 9654
     loaders_n_jobs : int             = 15
     verbose        : bool            = True
     dataconfig     : DataConfig      = field(default_factory=DataConfig)

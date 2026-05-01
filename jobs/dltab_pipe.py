@@ -35,7 +35,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Logger configuration  ---------------------------------------------------------------------------------------------------#
 logger.remove()
 logger.add(sink=sys.stdout, level="INFO", format="<level>{level}: {message}</level>")
-logger.add("./logs/dltabs_execution.log",
+logger.add("./logs/dltabs_execution_node.log",
            level     = "INFO",
            format    = "{time:YYYY-MM-DD HH:mm:ss} - {level}: {message}",
            rotation  = "10 MB",    
@@ -310,22 +310,18 @@ def run_optimization(feats_path: str, contfeats: list, catfeats: list, target: l
     logger.info(f"  - Architecture      : {dl_architecture}")
     
     try:
-        # Hybrid pruning: fold 0 uses epoch-level steps [0, max_epochs-1], folds 1+ use fold-level steps 
-        _max_resource = CONFIG.modelconfig.max_epochs + max(0, CONFIG.dataconfig.n_folds - 1)
-        
-        # Min_resource: earliest step where the pruner may act (within fold 0 epoch range)
-        _min_resource = max(1, CONFIG.modelconfig.max_epochs // 4)
-        
-        # Construct the Hyperband pruner with the specified resource limits and reduction factor
-        pruner = optuna.pruners.HyperbandPruner(min_resource     = _min_resource,
-                                                max_resource     = _max_resource,
-                                                reduction_factor = 3)
-        
-        # Verbose
-        logger.info("_"*110)
-        logger.info(f"  - Pruner: HyperbandPruner(min={_min_resource}, "
-                    f"max={_max_resource}, r=3) | hybrid: epoch-level fold 0, fold-level folds 1+")
-        logger.info("_"*110)
+        # Warmup: allow ~20% of epochs before evaluating pruning candidates.
+        # PatientPruner adds 1 extra interval (5 epochs) before acting, keeping the effective
+        # earliest prune point at ~25% of training while still protecting against noise spikes.
+        _n_warmup = max(5, CONFIG.modelconfig.max_epochs // 5)
+
+        pruner = optuna.pruners.PatientPruner(
+            wrapped_pruner = optuna.pruners.MedianPruner(
+                n_startup_trials = 10,         
+                n_warmup_steps   = _n_warmup,  
+                interval_steps   = 5           
+            ),
+            patience = 1)
         
         # Run the optimization process with the defined partitions, study name, direction, metric, and pruner
         results = optimizer.optimize(partitions= partitions, study_name= study_name, direction= CONFIG.optconfig.direction, 
@@ -511,9 +507,9 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     
     # Verbose
     logger.info("Features configuration:")
-    logger.info(f"  - Continuous features  : {contfeats} -> {cont_columns}")
-    logger.info(f"  - Categorical features : {catfeats}  -> {cat_columns}")
-    logger.info(f"  - Target               : {target}    -> {target_columns}")
+    logger.info(f"  - Continuous features  : {len(cont_columns)}")
+    logger.info(f"  - Categorical features : {len(cat_columns)}")
+    logger.info(f"  - Target               : {target_columns}")
     logger.info(f"  - Total features       : {len(feature_cols)}")
     
     # Define transform function for the dataloader: filter artifacts then engineer features 
