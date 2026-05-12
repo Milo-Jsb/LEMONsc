@@ -324,7 +324,7 @@ class LEMONscDataManager:
         if scaler_dir is not None:
             self.scaler_dir = scaler_dir
         else:
-            self.scaler_dir = str(self.dataset_root / f"{fold}_fold")
+            self.scaler_dir = self.dataset_root / f"{fold}_fold"
         
         # Datasets and dataloaders (initialized lazily)
         self.train_dataset : Optional[LEMONscDataset] = None

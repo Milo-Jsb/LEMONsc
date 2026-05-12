@@ -13,4 +13,21 @@ python3 -m jobs.dataset_pipe --mode feats --exp_name downlog_envclass --partitio
 List of experiments for mass fold downsampling and mass fold partition
 python3 -m jobs.dataset_pipe --mode study --exp_name downlog_massclass --partition mass
 python3 -m jobs.dataset_pipe --mode feats --exp_name paperv5 --partition mass --aug --down --down_category mass --folds 3 --no_snake_draft
+python3 -m jobs.dataset_pipe --mode comp --exp_name paperv5 --partition mass --no_snake_draft
 
+
+CUDA_VISIBLE_DEVICES=1 python3 -m jobs.dltab_pipe --mode train --exp_name paperv5 --model node --schd_config cosine.yaml
+
+CUDA_VISIBLE_DEVICES=1 python3 -m jobs.dltab_pipe --mode inter --exp_name paperv5 --model node --schd_config cosine.yaml
+
+
+CUDA_VISIBLE_DEVICES=1 python3 -m jobs.dltab_pipe --mode optim --exp_name paperv5 --model mlp --study_name cv_study_3fold_new --storage sqlite:///./output/paperv5/moccasurvey/mlp/optim/cv_study_3fold_new.db
+
+CUDA_VISIBLE_DEVICES=1 python3 -m jobs.dltab_pipe --mode optim --exp_name paperv5 --model node --schd_config cosine.yaml --study_name cv_study_3fold_new --storage sqlite:///./output/paperv5/moccasurvey/node/optim/cv_study_3fold_new.db
+
+
+CUDA_VISIBLE_DEVICES=1 python3 -m jobs.mltrees_pipe --mode train --exp_name paperv5 --model rf
+CUDA_VISIBLE_DEVICES=1 python3 -m jobs.dltab_pipe --mode train --exp_name paperv5 --model mlp --study_name cv_study_pv5study
+
+
+CUDA_VISIBLE_DEVICES=1 python3 -m jobs.dltab_pipe --mode train --exp_name paperv5 --model node --schd_config cosine.yaml --study_name cv_study_3fold_new 

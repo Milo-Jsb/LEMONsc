@@ -22,6 +22,7 @@ from src.processing.modules.plots  import PlotGenerator
 from src.models.mlbasics.regressor import MLBasicRegressor
 from src.utils.eval                import compute_metrics
 from jobs.config._mlbasics         import JobConfig
+from jobs.config._dataset          import FEATS_BASETICK
 
 # Warnings managment ------------------------------------------------------------------------------------------------------#
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -725,7 +726,7 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, targ
             logger.info(f"  - {feat}: {stats['mean']:.4f} ± {stats['std']:.4f}")
 
         # Build LaTeX display names aligned with importance dict keys
-        latex_names = [feats_labels.get(feat, feat) for feat in importances_by_feature.keys()]
+        latex_names = [FEATS_BASETICK.get(feat, feats_labels.get(feat, feat)) for feat in importances_by_feature.keys()]
         model_title = {"elasticnet": "ENet", "linearsvr": "LinearSVR"}
 
         # Plot feature importance bar chart

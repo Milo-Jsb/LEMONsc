@@ -9,10 +9,11 @@ import numpy  as np
 import pandas as pd
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
-from typing      import Optional
-from loguru      import logger
-from pathlib     import Path
-from datetime    import datetime
+from typing         import Optional
+from loguru         import logger
+from pathlib        import Path
+from datetime       import datetime
+from shap           import TreeExplainer, KernelExplainer
 
 # Custom functions --------------------------------------------------------------------------------------------------------#
 from src.utils.directory          import PathManagerTrainOptPipeline, load_yaml_dict
@@ -23,6 +24,7 @@ from src.processing.modules.plots import PlotGenerator
 from src.models.mltrees.regressor import MLTreeRegressor
 from src.utils.eval               import compute_metrics
 from jobs.config._mltrees         import JobConfig
+from jobs.config._dataset         import FEATS_BASETICK
 
 # Warnings managment ------------------------------------------------------------------------------------------------------#
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -34,7 +36,7 @@ logger.remove()
 logger.add(sink=sys.stdout, level="INFO", format="<level>{level}: {message}</level>")
 
 # Add outputs to the file
-logger.add("./logs/mltrees_execution.log",
+logger.add("./logs/mltrees_execution_rf.log",
            level     = "INFO",
            format    = "{time:YYYY-MM-DD HH:mm:ss} - {level}: {message}",
            rotation  = "10 MB",    
@@ -73,8 +75,8 @@ def get_args():
                         help = "Number of random simulations to plot in interpretation mode.")
     
     # Interpretation specifics
-    parser.add_argument("--nat_int_type", type=str, default="cover",
-                        choices = ["gain", "split", "weight", "cover"],
+    parser.add_argument("--nat_int_type", type=str, default="feature_importances",
+                        choices = ["gain", "split", "weight", "cover", "feature_importances"],
                         help    = "Native implementation of interpretability for a given model.")
     
     # Study persistence (SQLite)
@@ -90,7 +92,8 @@ def get_args():
     return parser.parse_args()
  
 # List of tabular features to compute for the dataset  --------------------------------------------------------------------#
-CONT_FEATS  = ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", "log(t/t_coll)", 
+CONT_FEATS  = ["log(t/t_cc)", "log(t/t_relax)", "log(t/t_cross)", 
+               "log(t/t_coll)",
                "log(M_tot)", "log(M_MMO_0)",
                "log(R_h/R_core)", "log(R_tid/R_core)", 
                "log(rho(R_h))",
@@ -640,7 +643,27 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, nat_
     cat_columns    = [col for col in feats_test.columns if any(col.startswith(cf+"_") for cf in catfeats)]
     target_columns = [col for col in feats_test.columns if col in target]
     feature_cols   = cont_columns + cat_columns
-    
+
+    X_test = feats_test[feature_cols].astype(np.float32).to_numpy()
+
+    # Load training partitions per fold for SHAP background --------------------------------------------------------------#
+    train_folds = []
+    for fold in range(n_folds):
+        train_data_path  = feats_path + f"/{fold}_fold/train.csv"
+        train_df         = pd.read_csv(train_data_path, index_col=False)
+        filter_tab_train = filter_simulation_artifacts(raw_df                    = train_df,
+                                                       min_denominator_threshold = CONFIG.dataconfig.min_dem_thr,
+                                                       filter_null_mass          = True,
+                                                       filter_initial_state      = False,
+                                                       verbose                   = False)
+        feats_train = tabular_features(filter_tab_train, names=feature_names, return_names=False,
+                                       eps_logscale_all_range     = CONFIG.scalingconfig.feature_log_eps_all_range,
+                                       eps_logscale_limited_range = CONFIG.scalingconfig.feature_log_eps_lim_range)
+        X_train = feats_train[feature_cols].astype(np.float32).to_numpy()
+        y_train = feats_train[target_columns].astype(np.float32).to_numpy().flatten()
+        train_folds.append({'X_train': X_train, 'y_train': y_train})
+    logger.info(f"Training data loaded for {n_folds} folds (SHAP background).")
+
     # Create output figure directory -------------------------------------------------------------------------------------#
     viz_path = Path(fig_path)
     viz_path.mkdir(parents=True, exist_ok=True)
@@ -678,7 +701,7 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, nat_
         }
 
         # Save feature importance summary
-        importance_path = latest_results / "feature_importance.yaml"
+        importance_path = latest_results / f"feature_importance_{nat_fi}.yaml"
         with open(importance_path, 'w') as f:
             yaml.dump(importance_stats, f, default_flow_style=False)
         logger.info(f"Feature importance saved to: {importance_path}")
@@ -689,12 +712,13 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, nat_
             logger.info(f"  - {feat}: {stats['mean']:.4f} ± {stats['std']:.4f}")
 
         # Build LaTeX display names aligned with importance dict keys
-        latex_names = [feats_labels.get(feat, feat) for feat in importances_by_feature.keys()]
+        latex_names = [FEATS_BASETICK.get(feat, feats_labels.get(feat, feat)) for feat in importances_by_feature.keys()]
         model_title = {"xgboost": "XGBoost", "lightgbm": "LightGBM", "rf": "RF"}
-        imp_axis    = {"gain"  : "Normalized Gains", 
-                       "split" : "Normalized Splits", 
-                       "cover" : "Normalized Coverage", 
-                       "weight": "Normalized Frequency"}
+        imp_axis    = {"gain"               : "Normalized Gains", 
+                       "split"              : "Normalized Splits", 
+                       "cover"              : "Normalized Coverage", 
+                       "weight"             : "Normalized Frequency",
+                       "feature_importances": "MDI (Impurity)"}
         
         # Plot feature importance bar chart
         plot_generator.plot_feature_importance_bars(importances_dict = importances_by_feature,
@@ -708,7 +732,133 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, nat_
     
     else:
         logger.warning("No feature importances could be extracted from the loaded models.")
+
+    # Feature Importance (SHAP via TreeExplainer or KernelExplainer) ------------------------------------------------------#
+    algorithm = "TreeExplainer" if model_type in ["xgboost", "lightgbm"] else "KernelExplainer"
+    logger.info(f"Computing SHAP feature importance ({algorithm}) from trained models...")
+
+    # Subsample test set for SHAP computation
+    n_explain   = min(CONFIG.interconfig.n_explain, len(X_test))
+    rng_shap    = np.random.default_rng(CONFIG.seed)
+    idx_explain = rng_shap.choice(len(X_test), n_explain, replace=False)
+    X_explain   = X_test[idx_explain]
+
+    shap_fold_magnitude   = []
+    shap_fold_direction   = []
+    shap_fold_consistency = []
+
+    for fold, model in enumerate(trained_models):
+        try:
+            raw_model = model.model
             
+            # Sample background from per-fold training data
+            X_train      = train_folds[fold]['X_train']
+            y_train      = train_folds[fold]['y_train']
+            n_background = min(CONFIG.interconfig.n_background, len(X_train))
+
+            if CONFIG.interconfig.background_strategy == "stratified":
+                # Quantile-stratified sampling on y_train: one sample per equal-frequency bin
+                # This ensures the background spans the full target range uniformly,
+                # countering the density bias from many timesteps per simulation.
+                quantile_edges = np.linspace(0, 1, n_background + 1)
+                bin_edges      = np.quantile(y_train, quantile_edges)
+                bin_edges[-1] += 1e-8  # make last edge inclusive
+                idx_bg = []
+                for b in range(n_background):
+                    in_bin = np.where((y_train >= bin_edges[b]) & (y_train < bin_edges[b + 1]))[0]
+                    if len(in_bin) > 0:
+                        idx_bg.append(int(rng_shap.choice(in_bin, 1)[0]))
+                idx_bg = np.array(idx_bg)
+            else:
+                idx_bg = rng_shap.choice(len(X_train), n_background, replace=False)
+
+            X_background = X_train[idx_bg]
+
+            # cuML RF does not support SHAP TreeExplainer, so we fall back to KernelExplainer for RF models
+            if model_type == "rf":                
+                explainer   = KernelExplainer(model=raw_model.predict, data = X_background)
+                shap_values = explainer.shap_values(X_explain)
+
+            else:
+                explainer   = TreeExplainer(raw_model,
+                                            data                 = X_background,
+                                            feature_perturbation = CONFIG.interconfig.feature_perturbation)
+                
+                shap_values = explainer.shap_values(X_explain,
+                                                    check_additivity = CONFIG.interconfig.check_additivity)
+
+            fold_abs = np.abs(shap_values).mean(axis=0)
+            fold_raw = shap_values.mean(axis=0)
+            fold_sq  = (shap_values ** 2).mean(axis=0)
+
+            # std(|shap|) via computational formula: sqrt(E[shap²] - E[|shap|]²)
+            fold_std_abs     = np.sqrt(np.maximum(0, fold_sq - fold_abs ** 2))
+
+            # Consistency = 1 - CV(|shap|), clamped to [0, 1]
+            mag_protected    = np.where(fold_abs > 1e-8, fold_abs, 1.0)
+            fold_consistency = 1.0 - np.minimum(1.0, fold_std_abs / mag_protected)
+
+            shap_fold_magnitude.append(fold_abs)
+            shap_fold_direction.append(fold_raw)
+            shap_fold_consistency.append(fold_consistency)
+
+            logger.info(f"SHAP values computed for fold {fold + 1}")
+
+        except Exception as e:
+            logger.warning(f"Could not compute SHAP values for fold {fold + 1}: {e}")
+
+    if shap_fold_magnitude:
+
+        n_valid = len(shap_fold_magnitude)
+
+        shap_importances_by_feature = {feat: np.array([shap_fold_magnitude[f][j] for f in range(n_valid)])
+                                        for j, feat in enumerate(feature_cols)}
+
+        shap_direction_by_feature   = {feat: float(np.mean([shap_fold_direction[f][j] for f in range(n_valid)]))
+                                        for j, feat in enumerate(feature_cols)}
+
+        shap_consistency_by_feature = {feat: float(np.mean([shap_fold_consistency[f][j] for f in range(n_valid)]))
+                                        for j, feat in enumerate(feature_cols)}
+
+        shap_importance_stats = {
+            feat: {
+                'magnitude_mean'    : float(np.mean(v)),
+                'magnitude_std'     : float(np.std(v, ddof=1)) if len(v) > 1 else 0.0,
+                'magnitude_folds'   : v.tolist(),
+                'direction_mean'    : shap_direction_by_feature[feat],
+                'fold_cv'           : float(np.std(v, ddof=1) / np.mean(v)) if (np.mean(v) > 1e-8 and len(v) > 1) else float('inf'),
+                'sample_consistency': shap_consistency_by_feature[feat],
+            } for feat, v in shap_importances_by_feature.items()
+        }
+
+        # Save SHAP importance summary
+        shap_path = latest_results / "feature_importance_shap.yaml"
+        with open(shap_path, 'w') as f:
+            yaml.dump(shap_importance_stats, f, default_flow_style=False)
+        logger.info(f"SHAP feature importance saved to: {shap_path}")
+
+        sorted_shap = sorted(shap_importance_stats.items(), key=lambda x: x[1]['magnitude_mean'], reverse=True)[:5]
+        logger.info("Top 5 most important features (mean |SHAP|):")
+        for feat, stats in sorted_shap:
+            sign_str = "+" if stats['direction_mean'] > 0 else "-"
+            logger.info(f"  [{sign_str}] {feat}: {stats['magnitude_mean']:.4f} ± {stats['magnitude_std']:.4f}")
+            logger.info(f"       fold_cv={stats['fold_cv']:.3f}  sample_consistency={stats['sample_consistency']:.3f}")
+
+        latex_names = [FEATS_BASETICK.get(feat, feats_labels.get(feat, feat)) for feat in feature_cols]
+        model_title = {"xgboost": "XGBoost", "lightgbm": "LightGBM", "rf": "RF"}
+
+        plot_generator.plot_feature_importance_bars(importances_dict = shap_importances_by_feature,
+                                                    path_save        = str(viz_path),
+                                                    name_file        = model_type + "_shap",
+                                                    model_name       = model_title[model_type],
+                                                    importance_name  = r"SHAP attribution",
+                                                    features_names   = latex_names,
+                                                    direction_dict   = shap_direction_by_feature)
+        logger.info("SHAP feature importance plot saved.")
+
+    else:
+        logger.warning("SHAP feature importance could not be computed for any fold.")
+
     # Simulation Example Plots --------------------------------------------------------------------------------------------#
     logger.info(f"Selecting {n_simulations} random simulations from the test set...")
 

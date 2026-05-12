@@ -78,8 +78,8 @@ class MoccaSurveyExperimentConfig:
     # Configuration for data processing                
     min_points_threshold    : int  = 1000                   
     requires_temp_evol      : bool = False                 
-    sample_window           : bool = True  
-    reset_time_window       : bool = True                 
+    sample_window           : bool = False  
+    reset_time_window       : bool = False                 
     
     # Donwsampling specifics
     downsample_max_count    : int   = 100

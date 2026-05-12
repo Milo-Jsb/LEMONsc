@@ -21,53 +21,68 @@ TARGET_FEAT = ["log(M_MMO/M_tot)"]
 MAP_FEATS_DICT = {
     "log(t/t_cc)"       :{
         "xtickname" : r"$\log_{10}(t/t_{\rm cc}+1)$" ,
+        "basetick"  : r"$t/t_{\rm cc}$",
         "featalias" : r"$x_1$",
     },
     "log(t/t_relax)"    :{
         "xtickname" : r"$\log_{10}(t/t_{\rm relax}+1)$" ,
+        "basetick"  : r"$t/t_{\rm relax}$",
         "featalias" : r"$x_2$",
     },
     "log(t/t_cross)"    :{
         "xtickname" : r"$\log_{10}(t/t_{\rm cross}+1)$" ,
+        "basetick"  : r"$t/t_{\rm cross}$",
         "featalias" : r"$x_3$",
     }, 
     "log(t/t_coll)" :{
-        "xtickname" : r"$\log_{10}(t/t_{\rm coll}+1)$",
+        "xtickname" : r"$\log_{10}(t/t_{\rm coll}+10^{-8})$",
+        "basetick"  : r"$t/t_{\rm coll}$",
         "featalias" : r"$x_4$",
     }, 
     "log(M_MMO_0)"  :{
         "xtickname" : r"$\log_{10}(M_{{\rm MMO},\, 0})$" ,
+        "basetick"  : r"$M_{{\rm MMO},\, 0}$",
         "featalias" : r"$x_{5}$",
     },
     "log(M_tot)"  :{
-        "xtickname" : r"$\log_{10}(M_{{\rm tot},\, 0})$" ,
+        "xtickname" : r"$\log_{10}(M_{{\rm tot}})$" ,
+        "basetick"  : r"$M_{{\rm tot}}$",
         "featalias" : r"$x_{6}$",
     },
     "log(R_h/R_core)"   :{
         "xtickname" : r"$\log_{10}(R_{h}/R_{{\rm core}}+1)$" ,
+        "basetick"  : r"$R_{h}/R_{{\rm core}}$",
         "featalias" : r"$x_7$",
     }, 
     "log(R_tid/R_core)" :{
         "xtickname" : r"$\log_{10}(R_{{\rm tid}}/R_{{\rm core}}+1)$" ,
+        "basetick"  : r"$R_{{\rm tid}}/R_{{\rm core}}$",
         "featalias" : r"$x_8$",
     },
     "log(rho(R_h))" :{
         "xtickname" : r"$\log_{10}(\rho(R_h)+1)$" ,
+        "basetick"  : r"$\rho(R_h)$",
         "featalias" : r"$x_9$",
     },
     "log(Z)"            :{
         "xtickname" : r"$\log_{10}(Z)$" ,
+        "basetick"  : r"$Z$",
         "featalias" : r"$x_{10}$",
     },
     "log(fbin)"         :{
         "xtickname" : r"$\log_{10}(f_{\rm bin})$" ,
+        "basetick"  : r"$f_{\rm bin}$",
         "featalias" : r"$x_{11}$",
     },
     "log(M_MMO/M_tot)"  :{
         "xtickname" : r"$\log_{10}(M_{{\rm MMO}}/M_{{\rm tot}})$" ,
+        "basetick"  : r"$M_{{\rm MMO}}/M_{{\rm tot}}$",
         "featalias" : r"$y$",
     }
 }
+
+# Flat mapping: feature name → basetick label (for plot axis/bar labels) -------------------------------------------------#
+FEATS_BASETICK = {feat: info["basetick"] for feat, info in MAP_FEATS_DICT.items()}
 
 # Dataset pipeline configuration -----------------------------------------------------------------------------------------#
 @dataclass

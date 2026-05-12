@@ -1,0 +1,3 @@
+T_0      : 20       # epochs in the first cycle (restart period)
+T_mult   : 2        # cycle length multiplier after each restart (1 → fixed period)
+eta_min  : 1.0e-06  # minimum learning rate floor

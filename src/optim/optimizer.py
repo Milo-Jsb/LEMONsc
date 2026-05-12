@@ -407,20 +407,8 @@ class SpaceSearch:
                     if is_cv:
                         trial.set_user_attr(f'partition_{idx}_score', score)
                     
-                    # For DL CV folds > 0: fold-level pruning using running mean of scorer
-                    if is_dl and is_cv and idx > 0:
-                        
-                        # Compute running mean of scores up to current fold
-                        running_mean = float(np.mean(scores))
-                        
-                        # Use steps in the post-fold-0 space to avoid collision with epoch-level steps
-                        fold_step = max_epochs + idx
-                        trial.report(running_mean, fold_step)
-                        
-                        if trial.should_prune():
-                            self._cleanup_gpu_memory(model)
-                            model = None
-                            raise optuna.TrialPruned(f"Pruned at fold-level after fold {idx}")
+                    # For DL CV folds > 0: rely on early stopping, not pruner
+                    if is_dl and is_cv and idx > 0: pass
                     
                     # Clean up GPU memory after each partition evaluation
                     self._cleanup_gpu_memory(model)

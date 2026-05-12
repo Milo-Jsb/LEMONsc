@@ -1,5 +1,5 @@
 # Use multi-stage build for a smaller final image
-FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-devel AS builder
+FROM pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
 
 # Environment variables for smoother builds & CUDA support
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -39,9 +39,10 @@ RUN echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-chec
 # Copy requirements file first, separately
 COPY rqmts_set.txt .
 COPY rqmts_no_deps.txt .
+COPY constraints.txt .
 
-# Install Python requirements
-RUN pip install --no-cache-dir -r rqmts_set.txt
+# Install Python requirements (constraints.txt pins torch>=2.8.0 to prevent downgrades)
+RUN pip install --no-cache-dir -c constraints.txt -r rqmts_set.txt
 RUN pip install --no-deps -r rqmts_no_deps.txt
 
 # Create non-root user with same UID/GID as host
@@ -52,7 +53,7 @@ RUN groupadd -g ${HOST_GID} appuser && \
     useradd -m -u ${HOST_UID} -g ${HOST_GID} appuser && \
     echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# Make port 8883 available to the world outside this container
+# Make port 8889 available to the world outside this container
 EXPOSE 8889
 
 # Final command

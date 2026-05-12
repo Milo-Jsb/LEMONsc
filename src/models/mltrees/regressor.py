@@ -343,8 +343,13 @@ class MLTreeRegressor:
         
         # Retrieve the feature importance of a trained model
         try:
+            # For RandomForest (cuML) — native .feature_importances_ (MDI, float32 array)
+            if self.model_type == "rf":
+                imp_type    = "feature_importances"
+                importances = np.array(self.model.feature_importances_, dtype=np.float64)
+
             # For LightGBM
-            if self.model_type =="lightgbm":
+            elif self.model_type =="lightgbm":
                 booster     = self.model.booster_
                 imp_type    = importance_type or self.importance_type or "gain"
                 importances = booster.feature_importance(importance_type=imp_type)

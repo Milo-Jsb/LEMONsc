@@ -28,6 +28,7 @@ from src.models.dltab.regressor     import DLTabularRegressor
 from src.models.dltab.data.datasets import LEMONscDataManager
 from src.utils.resources            import set_numpy_torch_seed
 from jobs.config._dltab             import JobConfig
+from jobs.config._dataset           import FEATS_BASETICK
 
 # Warnings managment ------------------------------------------------------------------------------------------------------#
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -67,7 +68,7 @@ def get_args():
     
     # Model specifics
     parser.add_argument("--model", type=str, default="mlp",
-                       choices=["mlp", "node"],
+                       choices=["mlp", "node", "ftt"],
                        help="Type of model to use")
     parser.add_argument("--n_sims", type=int, default=4,
                         help = "Number of random simulations to plot in interpretation mode.")
@@ -763,7 +764,7 @@ def run_training(feats_path: str, contfeats: list, catfeats: list, target: list,
     viz_path.mkdir(parents=True, exist_ok=True)
 
     # Create a mapping for model titles to be used in plots (if needed)
-    model_title_map = {"mlp": "MLP", "node": "NODE"}
+    model_title_map = {"mlp": "MLP", "node": "NODE", "ftt": "FTTransformer"}
 
     # Subsample predictions for visualization only 
     predictions_df_plot = predictions_df.sample(frac=0.5, random_state=CONFIG.seed).reset_index(drop=True)
@@ -1023,14 +1024,14 @@ def run_interpretation(feats_path : str, contfeats : list, catfeats : list, targ
             logger.info(f"       fold_cv={stats['fold_cv']:.3f}  sample_consistency={stats['sample_consistency']:.3f}")
         
         # latex_names is anchored to feature_cols (same order as importances_by_feature)
-        latex_names = [feats_labels.get(feat, feat) for feat in feature_cols]
-        model_title = {"mlp": "MLP", "node": "NODE"}
+        latex_names = [FEATS_BASETICK.get(feat, feats_labels.get(feat, feat)) for feat in feature_cols]
+        model_title = {"mlp": "MLP", "node": "NODE", "ftt": "FTTransformer"}
 
         plot_generator.plot_feature_importance_bars(importances_dict = importances_by_feature,
                                                     path_save        = str(viz_path),
                                                     name_file        = model_type,
                                                     model_name       = model_title.get(model_type, model_type),
-                                                    importance_name  = "EG Attribution",
+                                                    importance_name  = "Grad.SHAP Attribution",
                                                     features_names   = latex_names,
                                                     direction_dict   = direction_by_feature)
         logger.info("Feature importance plot saved.")

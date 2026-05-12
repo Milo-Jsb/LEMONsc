@@ -180,9 +180,9 @@ class PlotGenerator:
                             name_file    = experiment, 
                             dataset_name = dataset,
                             figsize      = (18, 8),
-                            violin_color = 'darkcyan',
+                            violin_color = 'goldenrod',
                             nrows        = 2,
-                            ncols        = 5,
+                            ncols        = 6,
                             num_points   = 800,
                             ifsave       = True,
                             ifshow       = False)
@@ -229,7 +229,7 @@ class PlotGenerator:
                      path_save   = str(out_path),
                      name_file   = f"{model_name}_mean_preds",
                      model_name  = f"{model_title[model_name]}",
-                     cmap        = "magma",
+                     cmap        = "magma_r",
                      scale       = None,
                      show        = False)
 
@@ -239,7 +239,7 @@ class PlotGenerator:
                     path_save   = str(out_path),
                     name_file   = f"{model_name}_mean_preds",
                     model_name  = f"{model_title[model_name]}",
-                    cmap        = "magma",
+                    cmap        = "magma_r",
                     scale       = None,
                     show        = False)
         
@@ -263,20 +263,22 @@ class PlotGenerator:
                                      path_save        : str,
                                      name_file        : str,
                                      model_name       : str,
-                                     features_names   : Optional[List[str]] = None,
-                                     importance_name  : Optional[str]       = None,
-                                     bar_color        : str                 = 'steelblue',
-                                     bar_edgecolor    : str                 = 'black',
-                                     bar_width        : float               = 0.6,
-                                     figsize          : tuple               = (12, 6),
-                                     rotation         : int                 = 45,
-                                     top_n            : Optional[int]       = None,
-                                     ifsave           : bool                = True,
-                                     ifshow           : bool                = False):
+                                     features_names   : Optional[List[str]]        = None,
+                                     importance_name  : Optional[str]              = None,
+                                     direction_dict   : Optional[Dict[str, float]] = None,
+                                     bar_color        : str                        = 'silver',
+                                     bar_edgecolor    : str                        = 'black',
+                                     bar_width        : float                      = 0.6,
+                                     figsize          : tuple                      = (8, 6),
+                                     rotation         : int                        = 45,
+                                     top_n            : Optional[int]              = None,
+                                     ifsave           : bool                       = True,
+                                     ifshow           : bool                       = False):
         
         feature_importance_plot(importances_dict, path_save, name_file, model_name,
                                 features_names  = features_names,
                                 importance_name = importance_name,
+                                direction_dict  = direction_dict,
                                 bar_color       = bar_color,
                                 bar_edgecolor   = bar_edgecolor,
                                 bar_width       = bar_width,

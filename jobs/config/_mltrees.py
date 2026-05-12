@@ -50,6 +50,15 @@ class OptunaConfig:
     lambda_penalty : float         = 0.01
     storage        : Optional[str] = None  
 
+# Default parameters for SHAP interpretation -----------------------------------------------------------------------------#
+@dataclass
+class SHAPConfig:
+    n_explain            : int  = 1500
+    n_background         : int  = 500
+    feature_perturbation : str  = "interventional"
+    check_additivity     : bool = True
+    background_strategy  : str  = "stratified"  # "random" | "stratified" (quantile bins on y_train)
+
 # Unify Job configuration for pipeline ------------------------------------------------------------------------------------#
 @dataclass
 class JobConfig:
@@ -60,5 +69,6 @@ class JobConfig:
     dataconfig     : DataConfig      = field(default_factory=DataConfig)
     scalingconfig  : ScalersConfig   = field(default_factory=ScalersConfig)
     optconfig      : OptunaConfig    = field(default_factory=OptunaConfig)
+    interconfig    : SHAPConfig      = field(default_factory=SHAPConfig)
 
 #--------------------------------------------------------------------------------------------------------------------------#

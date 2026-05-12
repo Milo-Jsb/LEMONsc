@@ -191,7 +191,7 @@ def run_comparison_mode(root_dir : str, data_path: str, out_figs: str, config: A
     sim_loader             = LoadSimulationFiles(config)
     data_processor         = DataProcessor(config)
     downsampling_processor = DownsamplingProcessor(config)
-    plot_generator         = PlotGenerator(config, cmap="cubehelix_r")
+    plot_generator         = PlotGenerator(config, cmap="afmhot_r")
     
     # Load simulations
     simulations = sim_loader.get_simulation_paths(data_path, root_dir=root_dir, load_all_sims=False)

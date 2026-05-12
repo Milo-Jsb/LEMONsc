@@ -5,6 +5,7 @@ import numpy               as np
 import pandas              as pd
 import matplotlib.pyplot   as plt
 import matplotlib.gridspec as gridspec
+import matplotlib.patches  as mpatches
 
 # External functions and utilities ----------------------------------------------------------------------------------------#
 
@@ -18,7 +19,6 @@ from matplotlib.colors                     import Normalize, LogNorm, Colormap, 
 from matplotlib.cm                         import ScalarMappable
 
 # Statistics and computation of correlations    
-from sklearn.metrics      import r2_score
 from scipy.stats          import gaussian_kde, rankdata
 from scipy.optimize       import curve_fit
 
@@ -220,9 +220,9 @@ def plot_partial_correlation_bars(df: pd.DataFrame, features: list, target: str,
 
 # Custom Correlation plot with density color map --------------------------------------------------------------------------#
 def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: str, name_file: str, model_name:str,
-                    cmap  : Union[str, Colormap]="inferno",
-                    scale : Optional[str] = None,
-                    show  : bool = True):
+                    cmap  : Union[str, Colormap] = "inferno",
+                    scale : Optional[str]        = None,
+                    show  : bool                 = True):
     """
     _______________________________________________________________________________________________________________________
     Generate a correlation plot between predictions and true values, with density coloring and R²-Score annotation.
@@ -263,12 +263,6 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
     if not isinstance(path_save, str) or not isinstance(name_file, str) or not isinstance(model_name, str):
         raise TypeError("path_save, name_file, and model_name must be strings.")
 
-    # Compute RMSE -------------------------------------------------------------------------------------------------------#
-    try:
-        r2 = r2_score(y_true=true_values, y_pred=predictions)
-    except Exception as e:
-        raise ValueError(f"Error computing R2-Score: {e}")
-
     # Correlation Plot ---------------------------------------------------------------------------------------------------#
     fig, ax = plt.subplots(figsize=(8, 5))
 
@@ -292,7 +286,7 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
         raise ValueError(f"Error computing density for scatter plot: {e}")
 
     # Points
-    sc = ax.scatter(x, y, marker=".", s=2.5, c=z, cmap=cmap, alpha=0.6, label=r"$f_{*}(t)$", vmin=0, vmax=1)
+    sc = ax.scatter(x, y, marker=".", s=2.5, c=z, cmap=cmap, alpha=0.85, label=r"$f_{*}(t)$", vmin=0, vmax=1)
 
     # Colormap 
     cbar = plt.colorbar(sc)
@@ -303,7 +297,7 @@ def correlation_plot(predictions: np.ndarray, true_values: np.ndarray, path_save
     ax.set_ylabel(r"Model's predictions: M$_{{\rm MMO}}$[$M_{\odot}$]", size=14)
     ax.set_xlabel(r"True values: M$_{{\rm MMO}}$[$M_{\odot}$]", size=14)
     ax.tick_params(labelsize=12)
-    ax.text(0.05, 0.95, f"{model_name}\n$R^2$-Score: {r2:.4f}", transform=ax.transAxes, fontsize=12, 
+    ax.text(0.05, 0.95, f"Model: {model_name}", transform=ax.transAxes, fontsize=12, 
             verticalalignment  = 'top',
             bbox               = dict(facecolor='white', alpha=0.5))
     
@@ -370,8 +364,7 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
     # Compute metrics ---------------------------------------------------------------------------------------------------#
     try:
         residuals = true_values - predictions
-        r2  = r2_score(true_values, predictions)
-
+    
     except Exception as e:
         raise ValueError(f"Error computing metrics: {e}")
 
@@ -406,7 +399,7 @@ def residual_plot(predictions: np.ndarray, true_values: np.ndarray, path_save: s
     ax.set_xlabel(r"Model's predictions M$_{{\rm MMO}}^{{\it pred}}$[$M_{\odot}$]", size=14)
     ax.set_ylabel(r"Residuals: M$_{{\rm MMO}}^{{\it true}}$-M$_{{\rm MMO}}^{{\it pred}}$ [$M_{\odot}$]", size=14)
     ax.tick_params(labelsize=12)
-    ax.text(0.05, 0.95, f"{model_name}\nR$^2$-Score: {r2:.4f}", transform=ax.transAxes, fontsize=12,
+    ax.text(0.05, 0.95, f"Model: {model_name}", transform=ax.transAxes, fontsize=12,
             verticalalignment ='top',
             bbox              =dict(facecolor='white', alpha=0.5))
     
@@ -672,9 +665,9 @@ def violinplot_features(features: pd.DataFrame,  mapping_dict: Dict[str, str], p
             # Style the violin plot
             for pc in parts['bodies']:
                 pc.set_facecolor(violin_color)
-                pc.set_alpha(0.7)
-                pc.set_edgecolor('silver')
-                pc.set_linewidth(0.8)
+                pc.set_alpha(0.8)
+                pc.set_edgecolor('maroon')
+                pc.set_linewidth(0.6)
 
             # Calculate statistics
             mean_val   = df_features[col].mean()
@@ -688,11 +681,11 @@ def violinplot_features(features: pd.DataFrame,  mapping_dict: Dict[str, str], p
             ax.plot([1, 1], [q1_val, q3_val], color='black', linewidth=2.5, zorder=2)
             
             # Add mean line
-            ax.axhline(y=mean_val, color=violin_color, linestyle='--', linewidth=1.5, alpha=0.8)
+            ax.axhline(y=mean_val, color="maroon", linestyle='--', linewidth=1.5, alpha=0.8)
             ax.text(0.98, mean_val, rf'$\mu$ = {mean_val:.2f}', transform = ax.get_yaxis_transform(), 
                     va       = 'bottom', 
                     ha       = 'right', 
-                    fontsize = 12)
+                    fontsize = 14)
             
             # Add ylabel only to leftmost plots and feat alias to the upper right corner
             if i % ncols == 0:
@@ -716,13 +709,13 @@ def violinplot_features(features: pd.DataFrame,  mapping_dict: Dict[str, str], p
             
             # Xtick
             ax.set_xticks([1])
-            ax.set_xticklabels(xtick_label)
+            ax.set_xticklabels(xtick_label, fontsize=18)
             ax.set_xlim(0.5, 1.5)
 
             # Statistics text
             stats_text = f'Q1: {q1_val:.3f}\nQ3: {q3_val:.3f}\n$\sigma$ : {std_val:.3f}'
             ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
-                    fontsize = 12,
+                    fontsize = 14,
                     va       = 'top',
                     ha       = 'left',)
 
@@ -740,7 +733,7 @@ def violinplot_features(features: pd.DataFrame,  mapping_dict: Dict[str, str], p
     if ifsave:
         try:
             os.makedirs(path_save, exist_ok=True)
-            plt.savefig(file_path, bbox_inches="tight", dpi=600)
+            plt.savefig(file_path, bbox_inches="tight", dpi=900)
         except Exception as e:
             raise OSError(f"Could not save plot to {file_path}: {e}")
 
@@ -1954,16 +1947,17 @@ def plot_stellar_mass_half_mass_radius_dataset(data_dict : Dict[str, Dict[str, U
     
 # Feature Importance Plot with error bars ---------------------------------------------------------------------------------#
 def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: str, name_file: str, model_name: str,
-                            features_names  : Optional[List[str]] = None,
-                            importance_name : Optional[str]       = None,
-                            bar_color       : str                 = 'steelblue',
-                            bar_edgecolor   : str                 = 'black',
-                            bar_width       : float               = 0.6,
-                            figsize         : tuple               = (12, 6),
-                            rotation        : int                 = 45,
-                            top_n           : Optional[int]       = None,
-                            ifsave          : bool                = True,
-                            ifshow          : bool                = False):
+                            features_names  : Optional[List[str]]        = None,
+                            importance_name : Optional[str]              = None,
+                            direction_dict  : Optional[Dict[str, float]] = None,
+                            bar_color       : str                        = 'steelblue',
+                            bar_edgecolor   : str                        = 'black',
+                            bar_width       : float                      = 0.6,
+                            figsize         : tuple                      = (12, 6),
+                            rotation        : int                        = 45,
+                            top_n           : Optional[int]              = None,
+                            ifsave          : bool                       = True,
+                            ifshow          : bool                       = False):
     """
     _______________________________________________________________________________________________________________________
     Plot feature importance with error bars across cross-validation folds.
@@ -2033,14 +2027,23 @@ def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: 
     
     # Map sorted keys to their display names
     feature_names = [key_to_display[key] for key in feature_keys]
-    
+
+    # Determine bar colors: use direction_dict to color by sign if provided
+    _pos_color = "#05554cff"
+    _neg_color = "#810806"  
+    if direction_dict is not None:
+        bar_colors = [_pos_color if direction_dict.get(key, 0) >= 0 else _neg_color
+                      for key in feature_keys]
+    else:
+        bar_colors = bar_color
+
     # Create Plot ---------------------------------------------------------------------------------------------------------#
     fig, ax = plt.subplots(figsize=figsize)
     
     x_pos = np.arange(len(feature_names))
     
     # Create bars with error bars
-    bars = ax.bar(x_pos, mean_importances, yerr=std_importances, width=bar_width, color=bar_color, edgecolor=bar_edgecolor,
+    bars = ax.bar(x_pos, mean_importances, yerr=std_importances, width=bar_width, color=bar_colors, edgecolor=bar_edgecolor,
                   capsize   = 5, 
                   linewidth = 0.8, 
                   alpha     = 0.85, 
@@ -2048,7 +2051,7 @@ def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: 
     
     # Customize axes
     ax.set_xticks(x_pos)
-    ax.set_xticklabels(feature_names, rotation=rotation, ha='right', fontsize=11)
+    ax.set_xticklabels(feature_names, rotation=rotation, ha='right', fontsize=16)
     
     ax.set_ylabel(importance_name if importance_name is not None else "Feature Importance", 
                   fontsize   = 16, 
@@ -2060,6 +2063,12 @@ def feature_importance_plot(importances_dict: Dict[str, np.ndarray], path_save: 
                  pad         = 15)
     ax.tick_params(axis='y', labelsize=14)
     ax.tick_params(axis='x', labelsize=14)
+
+    # Add direction legend when coloring by sign
+    if direction_dict is not None:
+        pos_patch = mpatches.Patch(color=_pos_color, alpha=0.85, label=r'$(+)$ Influence')
+        neg_patch = mpatches.Patch(color=_neg_color, alpha=0.85, label=r'$(-)$ Influence')
+        ax.legend(handles=[pos_patch, neg_patch], fontsize=11, loc='upper right', framealpha=0.85)
     
     # Add value labels on top of bars (only if not too many features)
     if len(feature_names) <= 20:
@@ -2156,8 +2165,7 @@ def plot_simulation_grid(subplot_data: List[Dict], n_rows: int = 1, n_cols: int 
                             )
 
         # Predictions scatter plot
-        tag = "$\mu$ model predictions" if y_pred_std is not None else "prediction"
-        ax.scatter(x, y_pred_mean, s=6, color="maroon", marker='o', label=tag)
+        ax.scatter(x, y_pred_mean, s=6, color="maroon", marker='o', label="Prediction")
 
         # Initial conditions: float values displayed as an in-plot text box; non-float values as the subplot title --------#
         text_dict = data.get("iconds", {})

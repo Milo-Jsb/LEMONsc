@@ -9,15 +9,17 @@ from torch.optim.lr_scheduler import _LRScheduler
 
 # Optimizer Registry ------------------------------------------------------------------------------------------------------#
 OPTIMIZER_REGISTRY = {
-    'adam' : torch.optim.Adam,
-    'sgd'  : torch.optim.SGD
+    'adam'  : torch.optim.Adam,
+    'adamw' : torch.optim.AdamW,
+    'sgd'   : torch.optim.SGD
     }
 
 # Scheduler Registry ------------------------------------------------------------------------------------------------------#
 SCHEDULER_REGISTRY = {
-    'step'   : torch.optim.lr_scheduler.StepLR,
-    'cosine' : torch.optim.lr_scheduler.CosineAnnealingLR,
-    'rlrop'  : torch.optim.lr_scheduler.ReduceLROnPlateau,
+    'step'      : torch.optim.lr_scheduler.StepLR,
+    'cosine'    : torch.optim.lr_scheduler.CosineAnnealingLR,
+    'rlrop'     : torch.optim.lr_scheduler.ReduceLROnPlateau,
+    "cosine_wr" : torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
     }
 
 # Optimizer Selection -----------------------------------------------------------------------------------------------------#

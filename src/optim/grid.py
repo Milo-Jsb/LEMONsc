@@ -28,7 +28,6 @@ def RandomForestGrid(trial):
         "min_samples_leaf"  : trial.suggest_int("min_samples_leaf", 1, 10),
         "max_samples"       : trial.suggest_float("max_samples", 0.5, 1.0),
         "max_features"      : trial.suggest_float("max_features", 0.1, 1.0),
-        "bootstrap"         : trial.suggest_categorical("bootstrap", [True, False]),
         "n_bins"            : trial.suggest_int("n_bins", 128, 512)
                  }
     
@@ -40,12 +39,12 @@ def XGBoostGrid(trial):
         "objective"         : "reg:pseudohubererror",
         "huber_slope"       : trial.suggest_float("huber_slope", 0.01, 3.25, step=0.05),
         "learning_rate"     : trial.suggest_float("learning_rate", 1e-4, 1e-1, log=True),
-        "min_child_weight"  : trial.suggest_int("min_child_weight", 5, 100),    # era min_child_samples
-        "subsample"         : trial.suggest_float("subsample", 0.4, 1.0),       # era bagging_fraction
+        "min_child_weight"  : trial.suggest_int("min_child_weight", 5, 100),    
+        "subsample"         : trial.suggest_float("subsample", 0.4, 1.0),       
         "n_estimators"      : trial.suggest_int("n_estimators", 600, 2200, step=100),
-        "max_depth"         : trial.suggest_int("max_depth", 3, 15),            # nuevo
-        "reg_alpha"         : trial.suggest_float("reg_alpha", 0.0, 5.0),       # era lambda_l1
-        "reg_lambda"        : trial.suggest_float("reg_lambda", 0.0, 5.0),      # nuevo (L2)
+        "max_depth"         : trial.suggest_int("max_depth", 3, 15),            
+        "reg_alpha"         : trial.suggest_float("reg_alpha", 0.0, 5.0),       
+        "reg_lambda"        : trial.suggest_float("reg_lambda", 0.0, 5.0),      
     }
     return param_grid
 
@@ -74,16 +73,16 @@ def MLPGrid(trial):
     
     param_grid = { 
         "model_params": { 
-            "dropout"       : trial.suggest_float("dropout", 0.0, 0.5, step=0.02),
+            "dropout"       : trial.suggest_float("dropout", 0.0, 0.3, step=0.01),
             "activation"    : trial.suggest_categorical("activation", ["relu", "leaky_relu", "gelu", "silu"]),
-            "normalization" : trial.suggest_categorical("normalization", ["batch", "layer", None])},
+            "normalization" : trial.suggest_categorical("normalization", ["batch", "layer", "rms",  None])},
         
         "optimizer_params": {
             "lr"            : trial.suggest_float("lr", 1e-5, 1e-2, log=True),
             "weight_decay"  : trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True)},
         
         "loss_params": {
-            "delta"     : trial.suggest_float("delta", 0.05, 2.0, step=0.05)}
+            "delta"     : trial.suggest_float("delta", 0.05, 2.5, step=0.05)}
                  }
     
     return param_grid
@@ -99,27 +98,28 @@ MLP_PARAM_GROUPS = {
 def NODEGrid(trial):
     param_grid = {
         "model_params": {
-            "num_trees"  : trial.suggest_int("num_trees",  128,  1024, log=True),
-            "depth"      : trial.suggest_int("depth",       3,    6),
-            "num_layers" : trial.suggest_int("num_layers",  1,    4),
-            "dropout"    : trial.suggest_float("dropout", 0.0, 0.4, step=0.05),
-            "gate"       : trial.suggest_categorical("gate", ["entmax15", "softmax"])},
+            "num_trees"    : trial.suggest_int("num_trees",  16,  80),
+            "depth"        : trial.suggest_int("depth",       1,  6),
+            "num_layers"   : trial.suggest_int("num_layers",  1,  6),
+            "dropout"      : trial.suggest_float("dropout", 0.15, 0.45, step=0.05),
+            "dynamic_gate" : trial.suggest_categorical("dynamic_gate", [True, False]),
+            "gate"         : trial.suggest_categorical("gate", ["sparsemax", "entmax15", "softmax"])},
 
         "optimizer_params": {
-            "lr"          : trial.suggest_float("lr", 1e-5, 1e-2, log=True),
-            "weight_decay": trial.suggest_float("weight_decay", 1e-7, 1e-3, log=True)},
+            "lr"          : trial.suggest_float("lr", 5e-5, 1e-3, log=True),
+            "weight_decay": trial.suggest_float("weight_decay", 1e-7, 1e-5, log=True)},
 
         "loss_params": {
-            "delta" : trial.suggest_float("delta", 0.05, 2.0, step=0.05)}
+            "delta" : trial.suggest_float("delta", 0.05, 4.0, step=0.05)}
                  }
 
     return param_grid
 
 # Key groupings for NODE flat Optuna params -> structured best_params (must stay in sync with NODEGrid) -------------------#
 NODE_PARAM_GROUPS = {
-    "architecture_params" : ["num_trees", "depth", "num_layers", "dropout", "gate"],
+    "architecture_params" : ["num_trees", "depth", "num_layers", "dropout", "dynamic_gate", "gate"],
     "optimizer_params"    : ["lr", "weight_decay"],
     "loss_params"         : ["delta"]
-}        
+}
 
 #--------------------------------------------------------------------------------------------------------------------------#    

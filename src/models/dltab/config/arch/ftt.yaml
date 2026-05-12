@@ -1,0 +1,16 @@
+# FT-Transformer default architecture parameters -------------------------------------------------------------------------#
+# Reference: Gorishniy et al., "Revisiting Deep Learning Models for Tabular Data", NeurIPS 2021.
+# in_features is injected at runtime by DLTabularRegressor._init_model()
+#--------------------------------------------------------------------------------------------------------------------------#
+out_features   : 1
+d_token        : 60
+n_layers       : 2
+n_heads        : 6
+d_ffn_factor   : 1.3333
+dropout        : 0.2
+activation     : reglu
+norm_first     : true
+token_bias     : true
+layer_norm_eps : 1.0e-5
+bias           : true
+#--------------------------------------------------------------------------------------------------------------------------#

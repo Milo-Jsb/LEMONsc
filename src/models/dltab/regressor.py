@@ -17,7 +17,7 @@ from src.utils.directory import load_yaml_dict
 from src.utils.resources import check_gpu_available
 
 # DLTabular specific imports: Architecture for regression
-from src.models.dltab.archs  import MLPRegressor, NODERegressor
+from src.models.dltab.archs  import MLPRegressor, NODERegressor, FTTRegressor
 
 # DLTabular specific imports: Trainer, Predictor, Evaluator, CheckpointManager
 from src.models.dltab.core import Trainer, Predictor, Evaluator, CheckpointManager
@@ -29,9 +29,9 @@ from src.models.dltab.utils.optimizers import select_optimizer
 from src.models.dltab.utils.log import _setup_logger
 
 # Constants ---------------------------------------------------------------------------------------------------------------#
-SUPPORTED_MODELS      = ["mlp", "node"]
-SUPPORTED_OPTIMIZERS  = ["adam", "sgd"]
-SUPPORTED_SCHEDULERS  = ["step", "rlrop", "cosine"]
+SUPPORTED_MODELS      = ["mlp", "node", "ftt"]
+SUPPORTED_OPTIMIZERS  = ["adam", "sgd", "adamw"]
+SUPPORTED_SCHEDULERS  = ["step", "rlrop", "cosine", "cosine_wr"]
 DEFAULT_METRICS       = ["mse", "rmse", "mae", "r2"]
 DEFAULT_VERBOSE_EPOCH = 1
 
@@ -410,6 +410,14 @@ class DLTabularRegressor:
             default_params.update(params)
             default_params['in_features'] = self.in_features
             self.model = NODERegressor(**default_params).to(self.device)
+
+        # Feature Tokenizer + Transformer Regressor -----------------------------------------------------------------------#
+        elif self.model_type == "ftt":
+            config_path    = Path(__file__).parent / "config" / "arch" / "ftt.yaml"
+            default_params = load_yaml_dict(path=str(config_path))
+            default_params.update(params)
+            default_params['in_features'] = self.in_features
+            self.model = FTTRegressor(**default_params).to(self.device)
     
     # [Helper] Optimizer selection ----------------------------------------------------------------------------------------#
     def _init_optimizer(self) -> None:

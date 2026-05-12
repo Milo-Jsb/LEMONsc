@@ -70,7 +70,7 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
         },
         "log(t/t_coll)" :{
             "label"     : r"$\log(t/t_{\rm{coll}})$",
-            "operation" : lambda df: np.log10(df['t'] / df['t_coll'] + eps_logscale_all_range)
+            "operation" : lambda df: np.log10(df['t'] / df['t_coll'] + 1e-8)
         },
         "log(t)" :{
             "label"     : r"$\log(t)$",
@@ -79,6 +79,10 @@ def tabular_features(process_df: pd.DataFrame, names:list, return_names:bool=Tru
         "log(t_coll)" :{
             "label"     : r"$\log(t_{\rm{coll}})$",
             "operation" : lambda df: np.log10(df['t_coll'] + eps_logscale_all_range)
+        },
+        "log(t_cross/t_relax)": {
+            "label"    : r"$\log(t_{\rm cross}/t_{\rm relax})$",
+            "operation": lambda df: np.log10(df['t_cross'] / df['t_relax'] + eps_logscale_all_range)
         },
         "log(rho(R_h))" :{
             "label"     : r"$\log(\rho(R_{h}))$",
