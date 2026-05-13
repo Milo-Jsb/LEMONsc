@@ -29,7 +29,7 @@ from src.optim.grid import ElasticNetGrid, LinearSVRGrid
 from src.optim.grid import RandomForestGrid, LightGBMGrid, XGBoostGrid
 
 # Grid of hyperparams to optimize [Deep learning models]
-from src.optim.grid import MLPGrid, NODEGrid
+from src.optim.grid import MLPGrid, NODEGrid, FTTGrid
 
 # Import helper functions for each type of regressor framework
 from src.optim.utils._ml    import validate_data_ml, normalize_partitions_ml, evaluate_partition_ml
@@ -66,7 +66,7 @@ class SpaceSearch:
     MODEL_GRID_MAP = {
         "mlbasic": ["elasticnet", "linearsvr"],
         "mltrees": ["rf", "lightgbm", "xgboost"],
-        "dltab"  : ["mlp", "node"]
+        "dltab"  : ["mlp", "node", "ftt"]
     }
     
     # Class-level constants: parameter grid mapping for each model type (functions that take a trial and return params)
@@ -77,7 +77,8 @@ class SpaceSearch:
         "lightgbm"   : LightGBMGrid,
         "xgboost"    : XGBoostGrid,
         "mlp"        : MLPGrid,
-        "node"       : NODEGrid
+        "node"       : NODEGrid,
+        "ftt"        : FTTGrid
     }
     
     # Class-level constants: validation and normalization functions for each regressor type

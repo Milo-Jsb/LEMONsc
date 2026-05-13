@@ -112,15 +112,11 @@ class NumericalTokenizer(nn.Module):
             tokens (Tensor): (batch, in_features+1, d_token) — [CLS] first, then feature tokens.
         """
         ones   = torch.ones(x.shape[0], 1, device=x.device, dtype=x.dtype)
-        x_aug  = torch.cat([ones, x], dim=1)             # (batch, in_features+1)
-        tokens = self.weight[None] * x_aug[:, :, None]   # (batch, in_features+1, d_token)
+        x_aug  = torch.cat([ones, x], dim=1)             
+        tokens = self.weight[None] * x_aug[:, :, None]   
 
         if self.bias is not None:
-            # Pad CLS position with zero so bias is only added to feature tokens
-            bias_padded = torch.cat(
-                [torch.zeros(1, self.bias.shape[1], device=x.device, dtype=x.dtype), self.bias], dim=0
-            )
-            tokens = tokens + bias_padded
+            tokens[:, 1:] = tokens[:, 1:] + self.bias
 
         return tokens
 

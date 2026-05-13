@@ -122,4 +122,31 @@ NODE_PARAM_GROUPS = {
     "loss_params"         : ["delta"]
 }
 
+# FT-Transformer grid to optimize search ----------------------------------------------------------------------------------#
+def FTTGrid(trial):
+    param_grid = {
+        "model_params": {
+            "d_token"      : trial.suggest_categorical("d_token",      [48, 72, 96, 120]),
+            "n_layers"     : trial.suggest_int("n_layers",             2, 5),
+            "n_heads"      : trial.suggest_categorical("n_heads",      [4, 6, 8]),
+            "d_ffn_factor" : trial.suggest_float("d_ffn_factor",       1.0, 2.0, step=0.1667),
+            "dropout"      : trial.suggest_float("dropout",            0.2, 0.45, step=0.05)},
+
+        "optimizer_params": {
+            "lr"           : trial.suggest_float("lr",           5e-6, 5e-5, log=True),
+            "weight_decay" : trial.suggest_float("weight_decay", 5e-3, 5e-2, log=True)},
+
+        "loss_params": {
+            "delta"        : trial.suggest_float("delta", 0.5, 2.0, step=0.25)}
+    }
+
+    return param_grid
+
+# Key groupings for FTT flat Optuna params -> structured best_params (must stay in sync with FTTGrid) ---------------------#
+FTT_PARAM_GROUPS = {
+    "architecture_params" : ["d_token", "n_layers", "n_heads", "d_ffn_factor", "dropout"],
+    "optimizer_params"    : ["lr", "weight_decay"],
+    "loss_params"         : ["delta"]
+}
+
 #--------------------------------------------------------------------------------------------------------------------------#    
